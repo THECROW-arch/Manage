@@ -2,6 +2,10 @@ import { useState } from 'react';
 
 function App() {
   const [salary, setSalary] = useState('');
+  const [needsPercent, setNeedsPercent] = useState(50);
+  const [wantsPercent, setWantsPercent] = useState(30);
+  const [savingsPercent, setSavingsPercent] = useState(20);
+
   const parsedSalary = parseFloat(salary);
   const isValid = !isNaN(parsedSalary) && parsedSalary >= 0;
 
@@ -27,16 +31,40 @@ function App() {
       </div>
       <div className="w-full max-w-md grid grid-cols-1 gap-4">
         <div className="p-4 rounded-md bg-indigo-600 shadow-md">
-          <h2 className="text-lg font-semibold">Needs (50%)</h2>
+          <h2 className="text-lg font-semibold">Needs ({needsPercent}%)</h2>
           <p className="mt-2 text-2xl font-bold">${needs}</p>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={needsPercent}
+            onChange={(e) => setNeedsPercent(Number(e.target.value))}
+            className="w-full mt-2"
+          />
         </div>
         <div className="p-4 rounded-md bg-pink-600 shadow-md">
-          <h2 className="text-lg font-semibold">Wants (30%)</h2>
+          <h2 className="text-lg font-semibold">Wants ({wantsPercent}%)</h2>
           <p className="mt-2 text-2xl font-bold">${wants}</p>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={wantsPercent}
+            onChange={(e) => setWantsPercent(Number(e.target.value))}
+            className="w-full mt-2"
+          />
         </div>
         <div className="p-4 rounded-md bg-green-600 shadow-md">
-          <h2 className="text-lg font-semibold">Savings/Investments (20%)</h2>
+          <h2 className="text-lg font-semibold">Savings/Investments ({savingsPercent}%)</h2>
           <p className="mt-2 text-2xl font-bold">${savings}</p>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={savingsPercent}
+            onChange={(e) => setSavingsPercent(Number(e.target.value))}
+            className="w-full mt-2"
+          />
         </div>
       </div>
     </div>
