@@ -9,9 +9,33 @@ function App() {
   const parsedSalary = parseFloat(salary);
   const isValid = !isNaN(parsedSalary) && parsedSalary >= 0;
 
-  const needs = isValid ? (parsedSalary * 0.5).toFixed(2) : '0.00';
-  const wants = isValid ? (parsedSalary * 0.3).toFixed(2) : '0.00';
-  const savings = isValid ? (parsedSalary * 0.2).toFixed(2) : '0.00';
+  // Calculate dollar amounts dynamically based on current slider percentages
+  const needs = isValid ? (parsedSalary * (needsPercent / 100)).toFixed(2) : '0.00';
+  const wants = isValid ? (parsedSalary * (wantsPercent / 100)).toFixed(2) : '0.00';
+  const savings = isValid ? (parsedSalary * (savingsPercent / 100)).toFixed(2) : '0.00';
+
+  // Proportional balancing logic
+  const handleSliderChange = (type, newValue) => {
+    const val = Math.min(100, Math.max(0, Number(newValue)));
+    const remaining = 100 - val;
+
+    if (type === 'needs') {
+      setNeedsPercent(val);
+      const ratio = (wantsPercent + savingsPercent > 0) ? wantsPercent / (wantsPercent + savingsPercent) : 0.6;
+      setWantsPercent(Math.round(remaining * ratio));
+      setSavingsPercent(remaining - Math.round(remaining * ratio));
+    } else if (type === 'wants') {
+      setWantsPercent(val);
+      const ratio = (needsPercent + savingsPercent > 0) ? needsPercent / (needsPercent + savingsPercent) : 0.714;
+      setNeedsPercent(Math.round(remaining * ratio));
+      setSavingsPercent(remaining - Math.round(remaining * ratio));
+    } else {
+      setSavingsPercent(val);
+      const ratio = (needsPercent + wantsPercent > 0) ? needsPercent / (needsPercent + wantsPercent) : 0.625;
+      setNeedsPercent(Math.round(remaining * ratio));
+      setWantsPercent(remaining - Math.round(remaining * ratio));
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-4 text-white">
@@ -38,7 +62,7 @@ function App() {
             min="0"
             max="100"
             value={needsPercent}
-            onChange={(e) => setNeedsPercent(Number(e.target.value))}
+            onChange={(e) => handleSliderChange('needs', e.target.value)}
             className="w-full mt-2"
           />
         </div>
@@ -50,7 +74,7 @@ function App() {
             min="0"
             max="100"
             value={wantsPercent}
-            onChange={(e) => setWantsPercent(Number(e.target.value))}
+            onChange={(e) => handleSliderChange('wants', e.target.value)}
             className="w-full mt-2"
           />
         </div>
@@ -62,7 +86,7 @@ function App() {
             min="0"
             max="100"
             value={savingsPercent}
-            onChange={(e) => setSavingsPercent(Number(e.target.value))}
+            onChange={(e) => handleSliderChange('savings', e.target.value)}
             className="w-full mt-2"
           />
         </div>
