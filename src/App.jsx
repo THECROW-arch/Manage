@@ -6,7 +6,6 @@ function App() {
   const [wantsPercent, setWantsPercent] = useState(30);
   const [savingsPercent, setSavingsPercent] = useState(20);
 
-  // New expense state variables
   const [expenses, setExpenses] = useState([]);
   const [expenseName, setExpenseName] = useState('');
   const [expenseCost, setExpenseCost] = useState('');
@@ -15,7 +14,6 @@ function App() {
   const parsedSalary = parseFloat(salary);
   const isValid = !isNaN(parsedSalary) && parsedSalary >= 0;
 
-  // Calculate total expenses per category
   const totalNeedsExpenses = expenses
     .filter((e) => e.category === 'needs')
     .reduce((sum, e) => sum + parseFloat(e.cost || 0), 0);
@@ -28,7 +26,6 @@ function App() {
     .filter((e) => e.category === 'savings')
     .reduce((sum, e) => sum + parseFloat(e.cost || 0), 0);
 
-  // Calculate remaining amounts dynamically based on sliders minus expenses
   const needsBase = isValid ? parsedSalary * (needsPercent / 100) : 0;
   const wantsBase = isValid ? parsedSalary * (wantsPercent / 100) : 0;
   const savingsBase = isValid ? parsedSalary * (savingsPercent / 100) : 0;
@@ -37,7 +34,6 @@ function App() {
   const wants = Math.max(0, wantsBase - totalWantsExpenses).toFixed(2);
   const savings = Math.max(0, savingsBase - totalSavingsExpenses).toFixed(2);
 
-  // Proportional balancing logic
   const handleSliderChange = (type, newValue) => {
     const val = Math.min(100, Math.max(0, Number(newValue)));
     const remaining = 100 - val;
@@ -60,14 +56,16 @@ function App() {
     }
   };
 
-  // Handle adding an expense
   const handleAddExpense = (e) => {
     e.preventDefault();
-    if (!expenseName || !expenseCost || isNaN(expenseCost)) return;
+    const cost = parseFloat(expenseCost);
+    
+    // Prevent empty strings, NaNs, and negative/zero amounts
+    if (!expenseName || isNaN(cost) || cost <= 0) return;
 
     const newExpense = {
       name: expenseName,
-      cost: parseFloat(expenseCost),
+      cost: cost,
       category: expenseCategory,
     };
 
@@ -88,8 +86,10 @@ function App() {
         <input
           id="salary"
           type="number"
+          min="0"
+          step="0.01"
           value={salary}
-          onWheel={(e) => e.target.blur()} 
+          onWheel={(e) => e.target.blur()}
           onChange={(e) => setSalary(e.target.value)}
           placeholder="Enter amount"
           className="w-full px-3 py-2 rounded-md bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -107,6 +107,7 @@ function App() {
             value={needsPercent}
             onChange={(e) => handleSliderChange('needs', e.target.value)}
             className="w-full mt-2"
+            aria-label="Adjust Needs Percentage"
           />
         </div>
         <div className="p-4 rounded-md bg-pink-600 shadow-md">
@@ -119,6 +120,7 @@ function App() {
             value={wantsPercent}
             onChange={(e) => handleSliderChange('wants', e.target.value)}
             className="w-full mt-2"
+            aria-label="Adjust Wants Percentage"
           />
         </div>
         <div className="p-4 rounded-md bg-green-600 shadow-md">
@@ -131,17 +133,18 @@ function App() {
             value={savingsPercent}
             onChange={(e) => handleSliderChange('savings', e.target.value)}
             className="w-full mt-2"
+            aria-label="Adjust Savings Percentage"
           />
         </div>
       </div>
 
-      {/* Expense Form */}
       <div className="w-full max-w-md mt-8">
         <h2 className="text-2xl font-semibold mb-4">Add Expense</h2>
         <form onSubmit={handleAddExpense} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-1">Expense Name</label>
+            <label htmlFor="expenseName" className="block text-sm font-medium mb-1">Expense Name</label>
             <input
+              id="expenseName"
               type="text"
               value={expenseName}
               onChange={(e) => setExpenseName(e.target.value)}
@@ -150,18 +153,23 @@ function App() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Expense Cost</label>
+            <label htmlFor="expenseCost" className="block text-sm font-medium mb-1">Expense Cost</label>
             <input
+              id="expenseCost"
               type="number"
+              min="0"
+              step="0.01"
               value={expenseCost}
+              onWheel={(e) => e.target.blur()}
               onChange={(e) => setExpenseCost(e.target.value)}
-              placeholder="e.g., 1200"
+              placeholder="e.g., 1200.50"
               className="w-full px-3 py-2 rounded-md bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Category</label>
+            <label htmlFor="expenseCategory" className="block text-sm font-medium mb-1">Category</label>
             <select
+              id="expenseCategory"
               value={expenseCategory}
               onChange={(e) => setExpenseCategory(e.target.value)}
               className="w-full px-3 py-2 rounded-md bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -180,7 +188,6 @@ function App() {
         </form>
       </div>
 
-      {/* Expense List */}
       <div className="w-full max-w-md mt-6">
         <h3 className="text-xl font-semibold mb-2">Expenses</h3>
         {expenses.length === 0 ? (
@@ -189,7 +196,7 @@ function App() {
           <ul className="space-y-2">
             {expenses.map((exp, index) => (
               <li key={index} className="p-2 rounded-md bg-gray-800 flex justify-between items-center">
-                <span><strong className="text-white">{exp.name}</strong> (${exp.cost})</span>
+                <span><strong className="text-white">{exp.name}</strong> (${exp.cost.toFixed(2)})</span>
                 <span className="text-xs uppercase px-2 py-1 bg-gray-700 rounded text-gray-300">{exp.category}</span>
               </li>
             ))}
