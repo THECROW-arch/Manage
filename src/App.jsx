@@ -15,10 +15,27 @@ function App() {
   const parsedSalary = parseFloat(salary);
   const isValid = !isNaN(parsedSalary) && parsedSalary >= 0;
 
-  // Calculate dollar amounts dynamically based on current slider percentages
-  const needs = isValid ? (parsedSalary * (needsPercent / 100)).toFixed(2) : '0.00';
-  const wants = isValid ? (parsedSalary * (wantsPercent / 100)).toFixed(2) : '0.00';
-  const savings = isValid ? (parsedSalary * (savingsPercent / 100)).toFixed(2) : '0.00';
+  // Calculate total expenses per category
+  const totalNeedsExpenses = expenses
+    .filter((e) => e.category === 'needs')
+    .reduce((sum, e) => sum + parseFloat(e.cost || 0), 0);
+
+  const totalWantsExpenses = expenses
+    .filter((e) => e.category === 'wants')
+    .reduce((sum, e) => sum + parseFloat(e.cost || 0), 0);
+
+  const totalSavingsExpenses = expenses
+    .filter((e) => e.category === 'savings')
+    .reduce((sum, e) => sum + parseFloat(e.cost || 0), 0);
+
+  // Calculate remaining amounts dynamically based on sliders minus expenses
+  const needsBase = isValid ? parsedSalary * (needsPercent / 100) : 0;
+  const wantsBase = isValid ? parsedSalary * (wantsPercent / 100) : 0;
+  const savingsBase = isValid ? parsedSalary * (savingsPercent / 100) : 0;
+
+  const needs = Math.max(0, needsBase - totalNeedsExpenses).toFixed(2);
+  const wants = Math.max(0, wantsBase - totalWantsExpenses).toFixed(2);
+  const savings = Math.max(0, savingsBase - totalSavingsExpenses).toFixed(2);
 
   // Proportional balancing logic
   const handleSliderChange = (type, newValue) => {
@@ -43,9 +60,27 @@ function App() {
     }
   };
 
+  // Handle adding an expense
+  const handleAddExpense = (e) => {
+    e.preventDefault();
+    if (!expenseName || !expenseCost || isNaN(expenseCost)) return;
+
+    const newExpense = {
+      name: expenseName,
+      cost: parseFloat(expenseCost),
+      category: expenseCategory,
+    };
+
+    setExpenses([...expenses, newExpense]);
+    setExpenseName('');
+    setExpenseCost('');
+    setExpenseCategory('needs');
+  };
+
   return (
-    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-4 text-white">
+    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-4 text-white pb-12">
       <h1 className="text-4xl font-semibold mb-6">Salary Allocator</h1>
+      
       <div className="w-full max-w-md mb-8">
         <label htmlFor="salary" className="block text-sm font-medium mb-1">
           Monthly Net Salary
@@ -54,11 +89,13 @@ function App() {
           id="salary"
           type="number"
           value={salary}
+          onWheel={(e) => e.target.blur()} 
           onChange={(e) => setSalary(e.target.value)}
           placeholder="Enter amount"
           className="w-full px-3 py-2 rounded-md bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
         />
       </div>
+
       <div className="w-full max-w-md grid grid-cols-1 gap-4">
         <div className="p-4 rounded-md bg-indigo-600 shadow-md">
           <h2 className="text-lg font-semibold">Needs ({needsPercent}%)</h2>
@@ -101,7 +138,7 @@ function App() {
       {/* Expense Form */}
       <div className="w-full max-w-md mt-8">
         <h2 className="text-2xl font-semibold mb-4">Add Expense</h2>
-        <form className="space-y-4">
+        <form onSubmit={handleAddExpense} className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-1">Expense Name</label>
             <input
@@ -134,10 +171,9 @@ function App() {
               <option value="savings">Savings/Investments</option>
             </select>
           </div>
-          {/* Submit button placeholder (no functionality yet) */}
           <button
-            type="button"
-            className="w-full py-2 px-4 rounded-md bg-indigo-600 text-white hover:bg-indigo-700"
+            type="submit"
+            className="w-full py-2 px-4 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition"
           >
             Add Expense
           </button>
@@ -147,13 +183,18 @@ function App() {
       {/* Expense List */}
       <div className="w-full max-w-md mt-6">
         <h3 className="text-xl font-semibold mb-2">Expenses</h3>
-        <ul className="space-y-2">
-          {expenses.map((exp, index) => (
-            <li key={index} className="p-2 rounded-md bg-gray-800">
-              <span className="font-medium">{exp.name}</span> - ${exp.cost} ({exp.category})
-            </li>
-          ))}
-        </ul>
+        {expenses.length === 0 ? (
+          <p className="text-gray-400 text-sm">No expenses logged yet.</p>
+        ) : (
+          <ul className="space-y-2">
+            {expenses.map((exp, index) => (
+              <li key={index} className="p-2 rounded-md bg-gray-800 flex justify-between items-center">
+                <span><strong className="text-white">{exp.name}</strong> (${exp.cost})</span>
+                <span className="text-xs uppercase px-2 py-1 bg-gray-700 rounded text-gray-300">{exp.category}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );
