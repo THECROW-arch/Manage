@@ -6,6 +6,12 @@ function App() {
   const [wantsPercent, setWantsPercent] = useState(30);
   const [savingsPercent, setSavingsPercent] = useState(20);
 
+  // New expense state variables
+  const [expenses, setExpenses] = useState([]);
+  const [expenseName, setExpenseName] = useState('');
+  const [expenseCost, setExpenseCost] = useState('');
+  const [expenseCategory, setExpenseCategory] = useState('needs');
+
   const parsedSalary = parseFloat(salary);
   const isValid = !isNaN(parsedSalary) && parsedSalary >= 0;
 
@@ -90,6 +96,64 @@ function App() {
             className="w-full mt-2"
           />
         </div>
+      </div>
+
+      {/* Expense Form */}
+      <div className="w-full max-w-md mt-8">
+        <h2 className="text-2xl font-semibold mb-4">Add Expense</h2>
+        <form className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Expense Name</label>
+            <input
+              type="text"
+              value={expenseName}
+              onChange={(e) => setExpenseName(e.target.value)}
+              placeholder="e.g., Rent"
+              className="w-full px-3 py-2 rounded-md bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Expense Cost</label>
+            <input
+              type="number"
+              value={expenseCost}
+              onChange={(e) => setExpenseCost(e.target.value)}
+              placeholder="e.g., 1200"
+              className="w-full px-3 py-2 rounded-md bg-gray-800 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Category</label>
+            <select
+              value={expenseCategory}
+              onChange={(e) => setExpenseCategory(e.target.value)}
+              className="w-full px-3 py-2 rounded-md bg-gray-800 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="needs">Needs</option>
+              <option value="wants">Wants</option>
+              <option value="savings">Savings/Investments</option>
+            </select>
+          </div>
+          {/* Submit button placeholder (no functionality yet) */}
+          <button
+            type="button"
+            className="w-full py-2 px-4 rounded-md bg-indigo-600 text-white hover:bg-indigo-700"
+          >
+            Add Expense
+          </button>
+        </form>
+      </div>
+
+      {/* Expense List */}
+      <div className="w-full max-w-md mt-6">
+        <h3 className="text-xl font-semibold mb-2">Expenses</h3>
+        <ul className="space-y-2">
+          {expenses.map((exp, index) => (
+            <li key={index} className="p-2 rounded-md bg-gray-800">
+              <span className="font-medium">{exp.name}</span> - ${exp.cost} ({exp.category})
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
