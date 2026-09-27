@@ -63,6 +63,22 @@ function App() {
     // Prevent empty strings, NaNs, and negative/zero amounts
     if (!expenseName || isNaN(cost) || cost <= 0) return;
 
+    // --- OVERDRAFT PROTECTION LOGIC ---
+    let availableBalance = 0;
+    if (expenseCategory === 'needs') {
+      availableBalance = Math.max(0, needsBase - totalNeedsExpenses);
+    } else if (expenseCategory === 'wants') {
+      availableBalance = Math.max(0, wantsBase - totalWantsExpenses);
+    } else if (expenseCategory === 'savings') {
+      availableBalance = Math.max(0, savingsBase - totalSavingsExpenses);
+    }
+
+    if (cost > availableBalance) {
+      window.alert("Error: Expense exceeds the available balance for this category.");
+      return;
+    }
+    // ----------------------------------
+
     const newExpense = {
       name: expenseName,
       cost: cost,
