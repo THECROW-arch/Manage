@@ -15,7 +15,6 @@ const colorClassMap = {
   'amber-600': 'bg-amber-600',
 };
 
-// Map Tailwind classes to hex codes for Recharts SVG rendering
 const hexColorMap = {
   'indigo-600': '#4f46e5',
   'pink-600': '#db2777',
@@ -112,17 +111,40 @@ export default function App() {
   useEffect(() => {
     if (!session || loadingData) return;
     const delayDebounceFn = setTimeout(async () => {
-      await supabase.from('profiles').upsert({ 
-        user_id: session.user.id, 
-        salary: parseFloat(salary) || 0,
-        currency: currency 
-      });
-      for (const cat of categories) {
-        if (cat.id) await supabase.from('categories').update({ percentage: Math.round(cat.percentage) }).eq('id', cat.id);
+      try {
+        await supabase.from('profiles').upsert({ 
+          user_id: session.user.id, 
+          salary: parseFloat(salary) || 0,
+          currency: currency 
+        });
+        for (const cat of categories) {
+          if (cat.id) await supabase.from('categories').update({ percentage: Math.round(cat.percentage) }).eq('id', cat.id);
+        }
+      } catch (error) {
+        setAlertMsg("Warning: Auto-save failed. Your network connection might be interrupted.");
       }
     }, 1000);
     return () => clearTimeout(delayDebounceFn);
   }, [salary, categories, session, loadingData, currency]);
+
+  // Handle Logout & Clear State securely
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      setSession(null);
+      setExpenses([]);
+      setCategories([]);
+      setSalary('');
+      setCurrency('$');
+      setCurrencyMode('preset');
+      setSelectedMonth(getCurrentMonth());
+      setExpenseName('');
+      setExpenseCost('');
+      setAlertMsg('');
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
 
   const monthlyExpenses = expenses.filter(e => e.expense_date && e.expense_date.startsWith(selectedMonth));
   const parsedSalary = parseFloat(salary) || 0;
@@ -153,22 +175,40 @@ export default function App() {
     const colors = ['teal-600', 'orange-600', 'cyan-600', 'purple-600', 'rose-600', 'amber-600'];
     const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
-    const { data, error } = await supabase.from('categories').insert([{
-      user_id: session.user.id, name: newCategoryName.trim(), percentage: 0, color: randomColor
-    }]).select();
-
-    if (error) { setAlertMsg("Database Error: " + error.message); return; }
-    setCategories([...categories, data[0]]);
+    const previousCategories = [...categories];
+    const tempId = Date.now().toString();
+    
+    // Optimistic UI update
+    setCategories([...categories, { id: tempId, user_id: session.user.id, name: newCategoryName.trim(), percentage: 0, color: randomColor }]);
     setNewCategoryName('');
+
+    try {
+      const { data, error } = await supabase.from('categories').insert([{
+        user_id: session.user.id, name: newCategoryName.trim(), percentage: 0, color: randomColor
+      }]).select();
+
+      if (error) throw error;
+      setCategories(current => current.map(c => c.id === tempId ? data[0] : c));
+    } catch (error) {
+      setAlertMsg("Database Error: Failed to add category. Reverting.");
+      setCategories(previousCategories);
+    }
   };
 
   const handleUpdateCategory = async (id, newName) => {
     if (!newName.trim()) return;
-    const { error } = await supabase.from('categories').update({ name: newName.trim() }).eq('id', id);
-    if (error) { setAlertMsg("Error updating: " + error.message); return; }
     
+    const previousCategories = [...categories];
     setCategories(categories.map(c => c.id === id ? { ...c, name: newName.trim() } : c));
     setEditingCategory(null);
+
+    try {
+      const { error } = await supabase.from('categories').update({ name: newName.trim() }).eq('id', id);
+      if (error) throw error;
+    } catch (error) {
+      setAlertMsg("Error updating category. Reverting.");
+      setCategories(previousCategories);
+    }
   };
 
   const handleDeleteCategory = async (id, percentage) => {
@@ -176,15 +216,25 @@ export default function App() {
       setAlertMsg("You must have at least one category to allocate your budget.");
       return;
     }
-    const { error } = await supabase.from('categories').delete().eq('id', id);
-    if (error) { setAlertMsg("Database Error: " + error.message); return; }
 
+    const previousCategories = [...categories];
+    const previousExpenses = [...expenses];
+    
     const remainingCategories = categories.filter(c => c.id !== id);
     remainingCategories[0].percentage += percentage;
     
     setCategories(remainingCategories);
     setExpenses(expenses.filter(e => e.category_id !== id));
     if (expenseCategoryId === id) setExpenseCategoryId(remainingCategories[0].id);
+
+    try {
+      const { error } = await supabase.from('categories').delete().eq('id', id);
+      if (error) throw error;
+    } catch (error) {
+      setAlertMsg("Database Error: Failed to delete category. Reverting.");
+      setCategories(previousCategories);
+      setExpenses(previousExpenses);
+    }
   };
 
   const handleAddExpense = async (e) => {
@@ -205,41 +255,74 @@ export default function App() {
       }
     }
 
-    const { data, error } = await supabase.from('expenses').insert([{
+    const previousExpenses = [...expenses];
+    const tempId = Date.now().toString();
+    const newExpenseObj = {
+      id: tempId,
       user_id: session.user.id, 
       name: expenseName, 
       cost: cost, 
       category_id: expenseCategoryId, 
       category: categories.find(c => c.id === expenseCategoryId).name,
       expense_date: expenseDate 
-    }]).select();
+    };
 
-    if (error) { setAlertMsg("Database Error: " + error.message); return; }
-
-    setExpenses([data[0], ...expenses]);
+    // Optimistic UI Update
+    setExpenses([newExpenseObj, ...expenses]);
     setExpenseName('');
     setExpenseCost('');
+
+    try {
+      const { data, error } = await supabase.from('expenses').insert([{
+        user_id: newExpenseObj.user_id,
+        name: newExpenseObj.name,
+        cost: newExpenseObj.cost,
+        category_id: newExpenseObj.category_id,
+        category: newExpenseObj.category,
+        expense_date: newExpenseObj.expense_date
+      }]).select();
+
+      if (error) throw error;
+      setExpenses(current => current.map(exp => exp.id === tempId ? data[0] : exp));
+    } catch (error) {
+      setAlertMsg("Database Error: Failed to save expense. Reverting.");
+      setExpenses(previousExpenses);
+    }
   };
 
   const handleUpdateExpense = async (id, updatedExp) => {
     const cost = parseFloat(updatedExp.cost);
     if (!updatedExp.name || isNaN(cost) || cost <= 0 || !updatedExp.expense_date) return;
 
+    const previousExpenses = [...expenses];
     const catName = categories.find(c => c.id === updatedExp.category_id)?.name;
-    const { error } = await supabase.from('expenses').update({
-        name: updatedExp.name, cost: cost, category_id: updatedExp.category_id, category: catName, expense_date: updatedExp.expense_date
-    }).eq('id', id);
-
-    if (error) { setAlertMsg("Error: " + error.message); return; }
-
+    
     setExpenses(expenses.map(e => e.id === id ? { ...e, name: updatedExp.name, cost, category_id: updatedExp.category_id, category: catName, expense_date: updatedExp.expense_date } : e));
     setEditingExpense(null);
+
+    try {
+      const { error } = await supabase.from('expenses').update({
+          name: updatedExp.name, cost: cost, category_id: updatedExp.category_id, category: catName, expense_date: updatedExp.expense_date
+      }).eq('id', id);
+
+      if (error) throw error;
+    } catch (error) {
+      setAlertMsg("Error updating expense. Reverting.");
+      setExpenses(previousExpenses);
+    }
   };
 
   const handleDeleteExpense = async (id) => {
-    const { error } = await supabase.from('expenses').delete().eq('id', id);
-    if (error) { setAlertMsg("Database Error: " + error.message); return; }
+    const previousExpenses = [...expenses];
     setExpenses(expenses.filter(e => e.id !== id));
+
+    try {
+      const { error } = await supabase.from('expenses').delete().eq('id', id);
+      if (error) throw error;
+    } catch (error) {
+      setAlertMsg("Database Error: Failed to delete expense. Reverting.");
+      setExpenses(previousExpenses);
+    }
   };
 
   // Generate data for the Recharts Donut Chart
@@ -257,7 +340,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-4 text-white pb-12 relative">
-      <button onClick={() => supabase.auth.signOut()} className="absolute top-4 right-4 bg-gray-700 hover:bg-red-600 px-4 py-2 rounded-md text-sm font-semibold transition">Sign Out</button>
+      <button onClick={handleLogout} className="absolute top-4 right-4 bg-gray-700 hover:bg-red-600 px-4 py-2 rounded-md text-sm font-semibold transition">Sign Out</button>
       <h1 className="text-4xl font-semibold mb-6">Salary Allocator</h1>
       
       <div className="w-full max-w-md mb-6 flex justify-between items-center bg-gray-800 p-4 rounded-lg border border-gray-700 shadow-sm">
