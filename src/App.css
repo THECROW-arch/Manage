@@ -182,3 +182,74 @@
     border-right-color: var(--border);
   }
 }
+
+
+/* Premium Glassmorphism Scrollbar - ALL BROWSERS */
+.custom-scrollbar {
+  /* Firefox Support */
+  scrollbar-width: thin; 
+  scrollbar-color: rgba(255, 255, 255, 0.15) rgba(0, 0, 0, 0.1); 
+}
+
+/* Chrome, Edge, Safari Support */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* =========================================
+   NATIVE BROWSER CONTROL OVERRIDES
+   Forces dark mode on OS-level UI elements
+   ========================================= */
+
+/* 1. Force dark mode on all Date, Month, and Select popups */
+input[type="date"],
+input[type="month"],
+select {
+  color-scheme: dark;
+}
+
+/* 2. Style the Calendar Icon (Make it white/translucent to match text) */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.6;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="month"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* 3. Completely hide the clunky Up/Down arrows on Number inputs (Salary, Costs) */
+input[type="number"]::-webkit-inner-spin-button, 
+input[type="number"]::-webkit-outer-spin-button { 
+  -webkit-appearance: none; 
+  margin: 0; 
+}
+
+input[type="number"] {
+  -moz-appearance: textfield; /* Fix for Firefox */
+}
+
+/* 4. Style the Select Dropdown Options */
+select option {
+  background-color: #1f2937; /* Tailwind gray-800 */
+  color: white;
+  padding: 10px;
+}
