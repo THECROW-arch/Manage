@@ -32,7 +32,7 @@ export default function App() {
 
   // Safe Local Storage Retrievals to prevent White Screen Crashes
   const [theme, setTheme] = useState(() => {
-    try { return localStorage.getItem('theme') || 'dark'; } 
+    try { return localStorage.getItem('theme') || 'dark'; }
     catch { return 'dark'; }
   });
 
@@ -343,6 +343,12 @@ export default function App() {
   };
 
   const handleCloseMonth = async () => {
+    // NEW: Block duplicate executions
+    if (closedMonths.includes(selectedMonth)) {
+      setAlertMsg(`Error: ${selectedMonth} is already closed.`);
+      return;
+    }
+
     const previousAdj = [...assetAdjustments];
     const previousClosed = [...closedMonths];
 
@@ -646,8 +652,8 @@ export default function App() {
                 key={tab.id}
                 onClick={() => { setActiveTab(tab.id); setAlertMsg(''); }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-all ${activeTab === tab.id
-                    ? 'bg-indigo-50 dark:bg-zinc-800 text-indigo-600 dark:text-white'
-                    : 'text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800/50'
+                  ? 'bg-indigo-50 dark:bg-zinc-800 text-indigo-600 dark:text-white'
+                  : 'text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800/50'
                   }`}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
@@ -675,8 +681,19 @@ export default function App() {
       <main className="flex-1 overflow-y-auto p-4 md:p-10 relative custom-scrollbar">
         <div className="max-w-7xl mx-auto w-full">
 
-          <header className="md:hidden flex flex-col gap-4 mb-6 pb-4 border-b border-gray-200 dark:border-zinc-800">
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white">Salary Allocator</h1>
+         <header className="md:hidden flex flex-col gap-4 mb-6 pb-4 border-b border-gray-200 dark:border-zinc-800">
+            <div className="flex justify-between items-center">
+              <h1 className="text-xl font-bold text-gray-900 dark:text-white">Salary Allocator</h1>
+              <button 
+                onClick={handleLogout} 
+                className="p-2 text-gray-500 hover:text-rose-600 dark:text-zinc-400 dark:hover:text-rose-400 transition-colors"
+                aria-label="Sign Out"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
+                </svg>
+              </button>
+            </div>
             <select
               value={activeTab}
               onChange={(e) => setActiveTab(e.target.value)}
@@ -714,13 +731,14 @@ export default function App() {
                     type="month"
                     value={selectedMonth}
                     onChange={(e) => setSelectedMonth(e.target.value)}
-                    disabled={isLockedInPast}
-                    className={`w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-zinc-200 focus:outline-none focus:border-indigo-500 transition-all text-sm ${isLockedInPast ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                    // REMOVED: disabled={isLockedInPast} so they can always navigate
+                    className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-zinc-200 focus:outline-none focus:border-indigo-500 transition-all text-sm cursor-pointer"
                   />
                 </div>
               </div>
 
-              <div className={`grid grid-cols-1 lg:grid-cols-12 gap-8 items-start transition-opacity ${isLockedInPast ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>
+              {/* REPLACED: Removed pointer-events-none from the locked state */}
+              <div className={`grid grid-cols-1 lg:grid-cols-12 gap-8 items-start transition-opacity ${isLockedInPast ? 'opacity-60' : 'opacity-100'}`}>
                 <div className="lg:col-span-5 space-y-6">
 
                   <div className="w-full bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 relative overflow-hidden">
@@ -787,8 +805,8 @@ export default function App() {
                         onClick={handleUnlockAll}
                         disabled={lockedCategories.length === 0}
                         className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all flex items-center gap-2 border ${lockedCategories.length === 0
-                            ? 'border-transparent text-gray-400 dark:text-zinc-600 cursor-not-allowed'
-                            : 'border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white shadow-sm'
+                          ? 'border-transparent text-gray-400 dark:text-zinc-600 cursor-not-allowed'
+                          : 'border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white shadow-sm'
                           }`}
                       >
                         Unlock All
@@ -917,8 +935,8 @@ export default function App() {
                                 <button
                                   onClick={() => toggleIndividualLock(cat.id)}
                                   className={`p-1 rounded transition-all ${isCatLocked
-                                      ? 'text-indigo-600 bg-indigo-50 dark:text-zinc-100 dark:bg-zinc-800'
-                                      : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:text-zinc-600 dark:hover:text-zinc-300 dark:hover:bg-zinc-800'
+                                    ? 'text-indigo-600 bg-indigo-50 dark:text-zinc-100 dark:bg-zinc-800'
+                                    : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:text-zinc-600 dark:hover:text-zinc-300 dark:hover:bg-zinc-800'
                                     }`}
                                 >
                                   {isCatLocked ? (
@@ -963,6 +981,13 @@ export default function App() {
                                   setDragState({ id: null, val: 0 });
                                 }
                               }}
+                              // NEW: Support for keyboard arrow-key navigation
+                              onKeyUp={(e) => {
+                                if (!isLockedInPast && !isCatLocked && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+                                  handleSliderChange(cat.id, Number(e.target.value));
+                                  setDragState({ id: null, val: 0 });
+                                }
+                              }}
                               className={`w-full accent-indigo-600 dark:accent-zinc-400 ${isCatLocked ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
                             />
 
@@ -978,8 +1003,8 @@ export default function App() {
                       <button
                         onClick={() => setNewCategoryType('expense')}
                         className={`flex-1 py-1.5 rounded-md text-xs font-semibold transition-all ${newCategoryType === 'expense'
-                            ? 'bg-gray-800 dark:bg-zinc-700 text-white'
-                            : 'bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-500 dark:text-zinc-500'
+                          ? 'bg-gray-800 dark:bg-zinc-700 text-white'
+                          : 'bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-500 dark:text-zinc-500'
                           }`}
                       >
                         Expense
@@ -987,8 +1012,8 @@ export default function App() {
                       <button
                         onClick={() => setNewCategoryType('asset')}
                         className={`flex-1 py-1.5 rounded-md text-xs font-semibold transition-all ${newCategoryType === 'asset'
-                            ? 'bg-gray-800 dark:bg-zinc-700 text-white'
-                            : 'bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-500 dark:text-zinc-500'
+                          ? 'bg-gray-800 dark:bg-zinc-700 text-white'
+                          : 'bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-500 dark:text-zinc-500'
                           }`}
                       >
                         Wealth Asset
