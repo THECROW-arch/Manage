@@ -9,7 +9,8 @@ export default function SettingsTab({
   setSalary,
   currencyMode,
   setCurrencyMode,
-  currency,
+  customCurrency,
+  setCustomCurrency,
   setCurrency,
   exportScope,
   setExportScope,
@@ -64,7 +65,7 @@ export default function SettingsTab({
                   onChange={(e) => {
                     const m = e.target.value;
                     setCurrencyMode(m);
-                    setCurrency(m === 'none' ? '' : m === 'custom' ? currency : m);
+                    setCurrency(m === 'none' ? '' : m === 'custom' ? customCurrency : m);
                   }}
                   className="px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-indigo-500 w-40"
                 >
@@ -79,8 +80,11 @@ export default function SettingsTab({
                 {currencyMode === 'custom' && (
                   <input
                     type="text"
-                    value={currency}
-                    onChange={(e) => setCurrency(e.target.value)}
+                    value={customCurrency}
+                    onChange={(e) => {
+                      setCustomCurrency(e.target.value);
+                      setCurrency(e.target.value);
+                    }}
                     placeholder="Sym"
                     maxLength="5"
                     className="w-24 px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 text-center text-sm"

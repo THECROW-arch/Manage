@@ -328,19 +328,21 @@ export default function OccasionsSandboxTab({
                                 {sandboxSheets.map(s => (
                                     <div
                                         key={s.id}
-                                        onClick={() => setActiveSheetId(s.id)}
-                                        className={`p-3 rounded-md cursor-pointer flex justify-between items-center border transition-all ${activeSheet?.id === s.id ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-500 text-indigo-600 dark:text-indigo-300' : 'bg-gray-50 dark:bg-zinc-950 border-gray-200 dark:border-zinc-800'}`}
+                                        className={`rounded-md flex justify-between items-center border transition-all ${activeSheet?.id === s.id ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-500 text-indigo-600 dark:text-indigo-300' : 'bg-gray-50 dark:bg-zinc-950 border-gray-200 dark:border-zinc-800'}`}
                                     >
-                                        <div>
-                                            <p className="text-sm font-bold">{s.title}</p>
-                                            <p className="text-xs text-gray-500">{formatCurrencyFn(s.totalBudget)} budget</p>
-                                        </div>
                                         <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteSandboxSheet(s.id);
-                                            }}
-                                            className="text-xs text-gray-400 hover:text-rose-500 px-2"
+                                            type="button"
+                                            onClick={() => setActiveSheetId(s.id)}
+                                            className="flex-1 min-w-0 p-3 text-left rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500"
+                                        >
+                                            <span className="block text-sm font-bold">{s.title}</span>
+                                            <span className="block text-xs text-gray-500">{formatCurrencyFn(s.totalBudget)} budget</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            aria-label={`Delete ${s.title}`}
+                                            onClick={() => handleDeleteSandboxSheet(s.id)}
+                                            className="text-xs text-gray-400 hover:text-rose-500 px-2 mr-3"
                                         >
                                             ✕
                                         </button>

@@ -92,7 +92,7 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
 /**
  * Renders the mobile header navigation dropdown.
  */
-export function MobileHeader({ activeTab, setActiveTab, currentStreak }) {
+export function MobileHeader({ activeTab, setActiveTab, setAlertMsg, currentStreak }) {
   return (
     <header className="md:hidden flex flex-col gap-4 mb-6 pb-4 border-b border-gray-200 dark:border-zinc-800">
       <div className="flex items-center gap-3">
@@ -104,8 +104,9 @@ export function MobileHeader({ activeTab, setActiveTab, currentStreak }) {
         )}
       </div>
       <select
+        aria-label="Select section"
         value={activeTab}
-        onChange={(e) => setActiveTab(e.target.value)}
+        onChange={(e) => { setAlertMsg(''); setActiveTab(e.target.value); }}
         className="w-full p-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm"
       >
         {NAV_TABS.map(tab => (

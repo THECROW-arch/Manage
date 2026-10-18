@@ -3,7 +3,7 @@ import './App.css';
 import { supabase } from './supabaseClient';
 import Auth from './Auth';
 import { PieChart, Pie, Tooltip, ResponsiveContainer } from 'recharts';
-import { hexColorMap, progressiveTaxBrackets, getToday, getCurrentMonth } from './utils/constants';
+import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth } from './utils/constants';
 import HistoryTab from './components/HistoryTab';
 import TaxCenterTab from './components/TaxCenterTab';
 import SettingsTab from './components/SettingsTab';
@@ -76,7 +76,8 @@ export default function App() {
   const [editingAdj, setEditingAdj] = useState(null);
 
   const [currency, setCurrency] = useState('$');
-  const [currencyMode, setCurrencyMode] = useState('preset');
+  const [currencyMode, setCurrencyMode] = useState('$');
+  const [customCurrency, setCustomCurrency] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState('All');
   const [editingCategory, setEditingCategory] = useState(null);
@@ -140,12 +141,15 @@ export default function App() {
       setSalary(profile.salary > 0 ? profile.salary.toString() : '');
       if (profile.currency !== undefined) {
         setCurrency(profile.currency);
-        if (!['$', '€', '£', 'MAD', ''].includes(profile.currency)) setCurrencyMode('custom');
+        if (!['$', '€', '£', 'MAD', ''].includes(profile.currency)) {
+          setCurrencyMode('custom');
+          setCustomCurrency(profile.currency);
+        }
         else if (profile.currency === '') setCurrencyMode('none');
         else setCurrencyMode(profile.currency);
       }
       if (profile.tax_country) setTaxCountry(profile.tax_country);
-      if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_filing_status);
+      if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_country === 'US' ? profile.tax_filing_status : 'single');
       setCurrentStreak(profile.current_streak || 0);
       setLongestStreak(profile.longest_streak || 0);
     }
@@ -248,12 +252,6 @@ export default function App() {
     return () => clearTimeout(delayDebounceFn);
   }, [salary, categories, sandboxSheets, session, loadingData, currency, taxCountry, taxFilingStatus]);
 
-
-  useEffect(() => {
-    if (salary && !taxIncomeInput) {
-      setTaxIncomeInput((parseFloat(salary) * 12).toFixed(2));
-    }
-  }, [salary, taxIncomeInput]);
 
   const handleLogout = async () => {
     try {
@@ -1122,12 +1120,25 @@ export default function App() {
       setAlertMsg("Cannot delete calculation sheets while the ledger is locked.");
       return;
     }
+    const previousIndex = sandboxSheets.findIndex(sheet => sheet.id === sheetId);
+    const deletedSheet = sandboxSheets[previousIndex];
+    if (!deletedSheet) return;
+    const previousActiveSheetId = activeSheetId;
     setSandboxSheets(current => current.filter(x => x.id !== sheetId));
     if (activeSheetId === sheetId) setActiveSheetId(null);
     try {
       const { error } = await supabase.from('sandbox_sheets').delete().eq('id', sheetId);
       if (error) throw error;
     } catch {
+      setSandboxSheets(current => {
+        if (current.some(sheet => sheet.id === sheetId)) return current;
+        const restored = [...current];
+        restored.splice(previousIndex, 0, deletedSheet);
+        return restored;
+      });
+      if (previousActiveSheetId === sheetId) {
+        setActiveSheetId(current => current === null ? previousActiveSheetId : current);
+      }
       setAlertMsg("Error deleting calculation sheet from database.");
     }
   };
@@ -1348,31 +1359,7 @@ export default function App() {
    */
   const calculateTaxEstimate = () => {
     const income = parseFloat(taxIncomeInput) || 0;
-    let totalTax = 0;
-    const breakdownArray = [];
-
-    // Dynamically fetch married vs single brackets
-    const bracketKey = taxCountry + (taxFilingStatus === 'married' ? '_married' : '');
-    const brackets = progressiveTaxBrackets[bracketKey] || progressiveTaxBrackets[taxCountry] || progressiveTaxBrackets['US'];
-
-    for (const bracket of brackets) {
-      if (income > bracket.min) {
-        const taxableAmountInBracket = Math.min(income, bracket.max) - bracket.min;
-        const taxForBracket = taxableAmountInBracket * bracket.rate;
-        totalTax += taxForBracket;
-
-        breakdownArray.push({
-          rate: Math.round(bracket.rate * 100),
-          amountTaxed: taxableAmountInBracket,
-          taxResult: taxForBracket
-        });
-      }
-    }
-
-    const effectiveRate = income > 0 ? (totalTax / income) * 100 : 0;
-    setTaxEstimateResult({
-      income, owed: totalTax, net: income - totalTax, rate: effectiveRate.toFixed(1), breakdown: breakdownArray
-    });
+    setTaxEstimateResult(calculateProgressiveTax(income, taxCountry, taxFilingStatus));
   };
 
   const totalSpent = monthlyExpenses.reduce((sum, e) => sum + parseFloat(e.cost), 0);
@@ -1470,6 +1457,7 @@ export default function App() {
           <MobileHeader
             activeTab={activeTab}
             setActiveTab={setActiveTab}
+            setAlertMsg={setAlertMsg}
             currentStreak={currentStreak}
           />
 
@@ -1619,15 +1607,18 @@ export default function App() {
           {activeTab === 'taxes' && (
             <TaxCenterTab
               taxCountry={taxCountry}
-              setTaxCountry={setTaxCountry}
+              setTaxCountry={(country) => {
+                setTaxCountry(country);
+                setTaxFilingStatus('single');
+                setTaxIncomeInput('');
+                setTaxEstimateResult(null);
+              }}
               taxFilingStatus={taxFilingStatus}
               setTaxFilingStatus={setTaxFilingStatus}
-              currency={currency}
               taxIncomeInput={taxIncomeInput}
               setTaxIncomeInput={setTaxIncomeInput}
               calculateTaxEstimate={calculateTaxEstimate}
               taxEstimateResult={taxEstimateResult}
-              formatCurrency={formatCurrency}
             />
           )}
 
@@ -1639,7 +1630,8 @@ export default function App() {
               setSalary={setSalary}
               currencyMode={currencyMode}
               setCurrencyMode={setCurrencyMode}
-              currency={currency}
+              customCurrency={customCurrency}
+              setCustomCurrency={setCustomCurrency}
               setCurrency={setCurrency}
               exportScope={exportScope}
               setExportScope={setExportScope}

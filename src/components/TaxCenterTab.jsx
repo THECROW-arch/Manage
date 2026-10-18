@@ -1,3 +1,5 @@
+import { taxCurrencies } from '../utils/constants';
+
 /**
  * Provides a multi-region progressive tax calculator for estimating annual liability.
  */
@@ -6,13 +8,16 @@ export default function TaxCenterTab({
   setTaxCountry,
   taxFilingStatus,
   setTaxFilingStatus,
-  currency,
   taxIncomeInput,
   setTaxIncomeInput,
   calculateTaxEstimate,
-  taxEstimateResult,
-  formatCurrency
+  taxEstimateResult
 }) {
+  const currency = taxCurrencies[taxCountry];
+  const formatCurrency = (amount) => new Intl.NumberFormat(undefined, {
+    style: 'currency', currency, currencyDisplay: 'code'
+  }).format(amount);
+
   return (
     <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
       <div className="w-full bg-white dark:bg-zinc-900 p-8 rounded-lg border border-gray-200 dark:border-zinc-800 shadow-sm">
@@ -22,8 +27,9 @@ export default function TaxCenterTab({
         <div className="space-y-6 mb-8">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div>
-              <label className="block text-xs font-semibold text-gray-500 dark:text-zinc-400 uppercase tracking-wider mb-2">Country</label>
+              <label htmlFor="tax-country" className="block text-xs font-semibold text-gray-500 dark:text-zinc-400 uppercase tracking-wider mb-2">Country</label>
               <select
+                id="tax-country"
                 value={taxCountry}
                 onChange={(e) => setTaxCountry(e.target.value)}
                 className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 text-sm"
@@ -34,28 +40,31 @@ export default function TaxCenterTab({
               </select>
             </div>
             <div>
-              <label className="block text-xs font-semibold text-gray-500 dark:text-zinc-400 uppercase tracking-wider mb-2">Filing Status</label>
+              <label htmlFor="tax-filing-status" className="block text-xs font-semibold text-gray-500 dark:text-zinc-400 uppercase tracking-wider mb-2">Filing Status</label>
               <select
-                value={taxFilingStatus}
+                id="tax-filing-status"
+                value={taxCountry === 'US' ? taxFilingStatus : 'single'}
                 onChange={(e) => setTaxFilingStatus(e.target.value)}
                 className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 text-sm"
               >
                 <option value="single">Single</option>
-                <option value="married">Married Filing Jointly</option>
+                {taxCountry === 'US' && <option value="married">Married Filing Jointly</option>}
               </select>
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-zinc-400 uppercase tracking-wider mb-2">
+            <label htmlFor="tax-income" className="block text-xs font-semibold text-gray-500 dark:text-zinc-400 uppercase tracking-wider mb-2">
               Est. Annual Income ({currency})
             </label>
             <input
+              id="tax-income"
               type="number"
               value={taxIncomeInput}
               onChange={(e) => setTaxIncomeInput(e.target.value)}
               className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white font-mono focus:outline-none focus:border-indigo-500"
             />
+            <p className="text-xs text-gray-500 dark:text-zinc-400 mt-2">Enter income in {currency}, the selected country’s local currency.</p>
           </div>
 
           <button

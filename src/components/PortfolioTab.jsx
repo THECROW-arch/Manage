@@ -114,7 +114,7 @@ export default function PortfolioTab({
           <h3 className="text-sm font-semibold text-gray-800 dark:text-zinc-300 tracking-tight mb-4">Net Wealth Trajectory</h3>
           {wealthHistoryData.length < 2 ? (
             <div className="h-48 flex items-center justify-center border border-gray-200 dark:border-zinc-800/50 border-dashed rounded-md">
-              <p className="text-gray-400 dark:text-zinc-500 text-sm">Close at least two months to generate trend data.</p>
+              <p className="text-gray-400 dark:text-zinc-500 text-sm">Log adjustments in at least two different months to generate trend data.</p>
             </div>
           ) : (
             <div className="h-64 w-full">

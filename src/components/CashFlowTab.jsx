@@ -66,6 +66,11 @@ export default function CashFlowTab({
   handleDeleteExpense,
   groupedExpenses
 }) {
+  const [year, month] = selectedMonth.split('-').map(Number);
+  const transactionMonth = selectedMonth
+    ? new Date(year, month - 1, 1).toLocaleString('default', { month: 'short' })
+    : '—';
+
   return (
     <>
       {isPastMonth && !closedMonths.includes(selectedMonth) && (
@@ -192,7 +197,6 @@ export default function CashFlowTab({
 
                 const isDragging = dragState.id === cat.id;
                 const currentPercent = isDragging ? dragState.val : cat.percentage;
-                const delta = (parsedSalary * (currentPercent / 100)) - categoryBase;
                 const isCatLocked = lockedCategories.includes(cat.id) || isReadOnly;
                 const catHex = hexColorMap[cat.color] || '#52525b';
 
@@ -497,7 +501,7 @@ export default function CashFlowTab({
           <div className="w-full bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 min-h-[400px]">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-5 gap-4">
               <h3 className="text-sm font-semibold text-gray-800 dark:text-zinc-200">
-                Transactions ({new Date(selectedMonth + '-01').toLocaleString('default', { month: 'short' })})
+                Transactions ({transactionMonth})
               </h3>
               {monthlyExpenses.length > 0 && (
                 <div className="flex gap-2 w-full sm:w-auto">
