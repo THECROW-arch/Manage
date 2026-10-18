@@ -6,7 +6,9 @@ const NAV_TABS = [
   { id: 'history', name: 'History Logs', icon: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z' },
   { id: 'settings', name: 'Settings', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z' },
 ];
-
+/**
+ * Renders the primary desktop sidebar navigation.
+ */
 export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentStreak, longestStreak, handleLogout }) {
   return (
     <aside className="w-64 bg-white dark:bg-zinc-900 border-r border-gray-200 dark:border-zinc-800 flex flex-col justify-between shrink-0 hidden md:flex">
@@ -51,7 +53,9 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
     </aside>
   );
 }
-
+/**
+ * Renders the mobile header navigation dropdown.
+ */
 export function MobileHeader({ activeTab, setActiveTab, currentStreak }) {
   return (
     <header className="md:hidden flex flex-col gap-4 mb-6 pb-4 border-b border-gray-200 dark:border-zinc-800">

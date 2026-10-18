@@ -12,6 +12,9 @@ import PortfolioTab from './components/PortfolioTab';
 import OccasionsSandboxTab from './components/OccasionsSandboxTab';
 import CashFlowTab from './components/CashFlowTab';
 
+/**
+ * Main application component orchestrating global state, data fetching, and tab routing.
+ */
 export default function App() {
   const [session, setSession] = useState(null);
   const [loadingData, setLoadingData] = useState(true);
@@ -908,11 +911,17 @@ export default function App() {
       setBundles(current => current.filter(b => b.id !== tempId));
     }
   };
-
+  /**
+     * Appends an itemized receipt to an open Special Occasion bundle and validates budget ceilings.
+     * @param {string} bundleId - The UUID of the target occasion bundle.
+     */
   const handleAddOccasionItem = async (bundleId) => {
     if (isReadOnly) return;
     const input = occasionItemInputs[bundleId] || { name: '', allocations: {} };
-    if (!input.name.trim()) { setAlertMsg('Item name required.'); return; }
+    if (!input.name.trim()) {
+      setAlertMsg('Item name is required.');
+      return;
+    }
 
     const targetBundle = bundles.find(b => b.id === bundleId);
     if (!targetBundle || targetBundle.status === 'locked') return;
@@ -928,10 +937,6 @@ export default function App() {
       }
     }
 
-    if (totalItemCost <= 0) {
-      setAlertMsg("Enter a cost for at least one category to fund this item.");
-      return;
-    }
 
     const currentItems = Array.isArray(targetBundle.items) ? targetBundle.items : [];
 
@@ -1107,6 +1112,25 @@ export default function App() {
 
   // --- SANDBOX / TEMPORARY CALCULATIONS LOGIC ---
   const activeSheet = sandboxSheets.find(s => s.id === activeSheetId) || sandboxSheets[0] || null;
+
+  /**
+     * Deletes a sandbox calculation sheet from both local state and the Supabase database.
+     * @param {string} sheetId - The UUID of the sandbox sheet to delete.
+     */
+  const handleDeleteSandboxSheet = async (sheetId) => {
+    if (isReadOnly) {
+      setAlertMsg("Cannot delete calculation sheets while the ledger is locked.");
+      return;
+    }
+    setSandboxSheets(current => current.filter(x => x.id !== sheetId));
+    if (activeSheetId === sheetId) setActiveSheetId(null);
+    try {
+      const { error } = await supabase.from('sandbox_sheets').delete().eq('id', sheetId);
+      if (error) throw error;
+    } catch {
+      setAlertMsg("Error deleting calculation sheet from database.");
+    }
+  };
 
   const handleCreateSandboxSheet = async (e) => {
     e.preventDefault();
@@ -1319,12 +1343,17 @@ export default function App() {
     }
   };
 
+  /**
+   * Calculates progressive annual tax liability based on regional brackets and filing status.
+   */
   const calculateTaxEstimate = () => {
     const income = parseFloat(taxIncomeInput) || 0;
     let totalTax = 0;
     const breakdownArray = [];
 
-    const brackets = progressiveTaxBrackets[taxCountry] || progressiveTaxBrackets['US'];
+    // Dynamically fetch married vs single brackets
+    const bracketKey = taxCountry + (taxFilingStatus === 'married' ? '_married' : '');
+    const brackets = progressiveTaxBrackets[bracketKey] || progressiveTaxBrackets[taxCountry] || progressiveTaxBrackets['US'];
 
     for (const bracket of brackets) {
       if (income > bracket.min) {
@@ -1340,25 +1369,9 @@ export default function App() {
       }
     }
 
-    if (taxFilingStatus === 'married') {
-      const discount = income * 0.05;
-      totalTax = Math.max(0, totalTax - discount);
-      breakdownArray.push({
-        label: "Married Filing Jointly Reduction",
-        taxResult: -discount,
-        amountTaxed: 0,
-        rate: 0
-      });
-    }
-
     const effectiveRate = income > 0 ? (totalTax / income) * 100 : 0;
-
     setTaxEstimateResult({
-      income,
-      owed: totalTax,
-      net: income - totalTax,
-      rate: effectiveRate.toFixed(1),
-      breakdown: breakdownArray
+      income, owed: totalTax, net: income - totalTax, rate: effectiveRate.toFixed(1), breakdown: breakdownArray
     });
   };
 
@@ -1461,118 +1474,119 @@ export default function App() {
           />
 
           {activeTab === 'cashflow' && (
-         <CashFlowTab
-           isPastMonth={isPastMonth}
-           closedMonths={closedMonths}
-           selectedMonth={selectedMonth}
-           handleCloseMonth={handleCloseMonth}
-           setSelectedMonth={setSelectedMonth}
-           isReadOnly={isReadOnly}
-           totalRemaining={totalRemaining}
-           parsedSalary={parsedSalary}
-           globalPercentUsed={globalPercentUsed}
-           totalSpent={totalSpent}
-           totalAutomatedAssets={totalAutomatedAssets}
-           chartData={chartData}
-           theme={theme}
-           formatCurrency={formatCurrency}
-           handleUnlockAll={handleUnlockAll}
-           lockedCategories={lockedCategories}
-           handleSmartLockAll={handleSmartLockAll}
-           categories={categories}
-           monthlyExpenses={monthlyExpenses}
-           dragState={dragState}
-           setDragState={setDragState}
-           handleSliderChange={handleSliderChange}
-           toggleIndividualLock={toggleIndividualLock}
-           setEditingCategory={setEditingCategory}
-           handleDeleteCategory={handleDeleteCategory}
-           editingCategory={editingCategory}
-           handleUpdateCategory={handleUpdateCategory}
-           setIsCategoryModalOpen={setIsCategoryModalOpen}
-           isCategoryModalOpen={isCategoryModalOpen}
-           newCategoryType={newCategoryType}
-           setNewCategoryType={setNewCategoryType}
-           newCategoryName={newCategoryName}
-           setNewCategoryName={setNewCategoryName}
-           newCategoryGoal={newCategoryGoal}
-           setNewCategoryGoal={setNewCategoryGoal}
-           handleAddCategory={handleAddCategory}
-           setActiveTab={setActiveTab}
-           setPlannerSubTab={setPlannerSubTab}
-           handleAddExpense={handleAddExpense}
-           expenseName={expenseName}
-           setExpenseName={setExpenseName}
-           expenseCost={expenseCost}
-           setExpenseCost={setExpenseCost}
-           expenseCategoryId={expenseCategoryId}
-           setExpenseCategoryId={setExpenseCategoryId}
-           expenseDate={expenseDate}
-           setExpenseDate={setExpenseDate}
-           isRecurring={isRecurring}
-           setIsRecurring={setIsRecurring}
-           isBatched={isBatched}
-           setIsBatched={setIsBatched}
-           searchQuery={searchQuery}
-           setSearchQuery={setSearchQuery}
-           filterCategory={filterCategory}
-           setFilterCategory={setFilterCategory}
-           filteredExpenses={filteredExpenses}
-           expandedTransactionId={expandedTransactionId}
-           setExpandedTransactionId={setExpandedTransactionId}
-           bundles={bundles}
-           handleDeleteExpense={handleDeleteExpense}
-           groupedExpenses={groupedExpenses}
-         />
-       )}
+            <CashFlowTab
+              isPastMonth={isPastMonth}
+              closedMonths={closedMonths}
+              selectedMonth={selectedMonth}
+              handleCloseMonth={handleCloseMonth}
+              setSelectedMonth={setSelectedMonth}
+              isReadOnly={isReadOnly}
+              totalRemaining={totalRemaining}
+              parsedSalary={parsedSalary}
+              globalPercentUsed={globalPercentUsed}
+              totalSpent={totalSpent}
+              totalAutomatedAssets={totalAutomatedAssets}
+              chartData={chartData}
+              theme={theme}
+              formatCurrency={formatCurrency}
+              handleUnlockAll={handleUnlockAll}
+              lockedCategories={lockedCategories}
+              handleSmartLockAll={handleSmartLockAll}
+              categories={categories}
+              monthlyExpenses={monthlyExpenses}
+              dragState={dragState}
+              setDragState={setDragState}
+              handleSliderChange={handleSliderChange}
+              toggleIndividualLock={toggleIndividualLock}
+              setEditingCategory={setEditingCategory}
+              handleDeleteCategory={handleDeleteCategory}
+              editingCategory={editingCategory}
+              handleUpdateCategory={handleUpdateCategory}
+              setIsCategoryModalOpen={setIsCategoryModalOpen}
+              isCategoryModalOpen={isCategoryModalOpen}
+              newCategoryType={newCategoryType}
+              setNewCategoryType={setNewCategoryType}
+              newCategoryName={newCategoryName}
+              setNewCategoryName={setNewCategoryName}
+              newCategoryGoal={newCategoryGoal}
+              setNewCategoryGoal={setNewCategoryGoal}
+              handleAddCategory={handleAddCategory}
+              setActiveTab={setActiveTab}
+              setPlannerSubTab={setPlannerSubTab}
+              handleAddExpense={handleAddExpense}
+              expenseName={expenseName}
+              setExpenseName={setExpenseName}
+              expenseCost={expenseCost}
+              setExpenseCost={setExpenseCost}
+              expenseCategoryId={expenseCategoryId}
+              setExpenseCategoryId={setExpenseCategoryId}
+              expenseDate={expenseDate}
+              setExpenseDate={setExpenseDate}
+              isRecurring={isRecurring}
+              setIsRecurring={setIsRecurring}
+              isBatched={isBatched}
+              setIsBatched={setIsBatched}
+              searchQuery={searchQuery}
+              setSearchQuery={setSearchQuery}
+              filterCategory={filterCategory}
+              setFilterCategory={setFilterCategory}
+              filteredExpenses={filteredExpenses}
+              expandedTransactionId={expandedTransactionId}
+              setExpandedTransactionId={setExpandedTransactionId}
+              bundles={bundles}
+              handleDeleteExpense={handleDeleteExpense}
+              groupedExpenses={groupedExpenses}
+            />
+          )}
 
           {activeTab === 'occasions' && (
-         <OccasionsSandboxTab
-           selectedMonth={selectedMonth}
-           plannerSubTab={plannerSubTab}
-           setPlannerSubTab={setPlannerSubTab}
-           bundleName={bundleName}
-           setBundleName={setBundleName}
-           categories={categories}
-           getCategoryAvailablePool={getCategoryAvailablePool}
-           bundleAllocations={bundleAllocations}
-           setBundleAllocations={setBundleAllocations}
-           handleCreateBundle={handleCreateBundle}
-           bundles={bundles}
-           occasionItemInputs={occasionItemInputs}
-           setOccasionItemInputs={setOccasionItemInputs}
-           handleAddOccasionItem={handleAddOccasionItem}
-           handleDeleteOccasionItem={handleDeleteOccasionItem}
-           handleLockAndFinalizeBundle={handleLockAndFinalizeBundle}
-           isReadOnly={isReadOnly}
-           handleDeleteBundle={handleDeleteBundle}
-           handleCreateSandboxSheet={handleCreateSandboxSheet}
-           newSheetTitle={newSheetTitle}
-           setNewSheetTitle={setNewSheetTitle}
-           newSheetBudget={newSheetBudget}
-           setNewSheetBudget={setNewSheetBudget}
-           sandboxSheets={sandboxSheets}
-           setSandboxSheets={setSandboxSheets}
-           activeSheetId={activeSheetId}
-           setActiveSheetId={setActiveSheetId}
-           activeSheet={activeSheet}
-           handleExportSandboxCSV={handleExportSandboxCSV}
-           handleAddSubBucket={handleAddSubBucket}
-           subBucketName={subBucketName}
-           setSubBucketName={setSubBucketName}
-           subBucketLimit={subBucketLimit}
-           setSubBucketLimit={setSubBucketLimit}
-           handleAddSandboxExpense={handleAddSandboxExpense}
-           sandboxExpName={sandboxExpName}
-           setSandboxExpName={setSandboxExpName}
-           sandboxExpCost={sandboxExpCost}
-           setSandboxExpCost={setSandboxExpCost}
-           sandboxExpBucketId={sandboxExpBucketId}
-           setSandboxExpBucketId={setSandboxExpBucketId}
-           setAlertMsg={setAlertMsg}
-           formatCurrencyFn={formatCurrency}
-         />
-       )}
+            <OccasionsSandboxTab
+              selectedMonth={selectedMonth}
+              plannerSubTab={plannerSubTab}
+              setPlannerSubTab={setPlannerSubTab}
+              bundleName={bundleName}
+              setBundleName={setBundleName}
+              categories={categories}
+              getCategoryAvailablePool={getCategoryAvailablePool}
+              bundleAllocations={bundleAllocations}
+              setBundleAllocations={setBundleAllocations}
+              handleCreateBundle={handleCreateBundle}
+              bundles={bundles}
+              occasionItemInputs={occasionItemInputs}
+              setOccasionItemInputs={setOccasionItemInputs}
+              handleAddOccasionItem={handleAddOccasionItem}
+              handleDeleteOccasionItem={handleDeleteOccasionItem}
+              handleLockAndFinalizeBundle={handleLockAndFinalizeBundle}
+              isReadOnly={isReadOnly}
+              handleDeleteBundle={handleDeleteBundle}
+              handleCreateSandboxSheet={handleCreateSandboxSheet}
+              newSheetTitle={newSheetTitle}
+              setNewSheetTitle={setNewSheetTitle}
+              newSheetBudget={newSheetBudget}
+              setNewSheetBudget={setNewSheetBudget}
+              sandboxSheets={sandboxSheets}
+              setSandboxSheets={setSandboxSheets}
+              activeSheetId={activeSheetId}
+              setActiveSheetId={setActiveSheetId}
+              activeSheet={activeSheet}
+              handleExportSandboxCSV={handleExportSandboxCSV}
+              handleAddSubBucket={handleAddSubBucket}
+              subBucketName={subBucketName}
+              setSubBucketName={setSubBucketName}
+              subBucketLimit={subBucketLimit}
+              setSubBucketLimit={setSubBucketLimit}
+              handleAddSandboxExpense={handleAddSandboxExpense}
+              sandboxExpName={sandboxExpName}
+              setSandboxExpName={setSandboxExpName}
+              sandboxExpCost={sandboxExpCost}
+              setSandboxExpCost={setSandboxExpCost}
+              sandboxExpBucketId={sandboxExpBucketId}
+              setSandboxExpBucketId={setSandboxExpBucketId}
+              setAlertMsg={setAlertMsg}
+              formatCurrencyFn={formatCurrency}
+              handleDeleteSandboxSheet={handleDeleteSandboxSheet}
+            />
+          )}
 
           {activeTab === 'portfolio' && (
             <PortfolioTab

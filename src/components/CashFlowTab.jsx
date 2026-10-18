@@ -1,6 +1,8 @@
 import { PieChart, Pie, Tooltip, ResponsiveContainer } from 'recharts';
 import { hexColorMap } from '../utils/constants';
-
+/**
+ * Renders the primary Cash Flow dashboard, handling category allocations and daily transaction logging.
+ */
 export default function CashFlowTab({
   isPastMonth,
   closedMonths,
@@ -320,6 +322,12 @@ export default function CashFlowTab({
                         onPointerUp={() => {
                           if (!isReadOnly && dragState.id === cat.id && !isCatLocked) {
                             handleSliderChange(cat.id, dragState.val);
+                            setDragState({ id: null, val: 0 });
+                          }
+                        }}
+                        onKeyUp={(e) => {
+                          if (!isReadOnly && !isCatLocked && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+                            handleSliderChange(cat.id, Number(e.target.value));
                             setDragState({ id: null, val: 0 });
                           }
                         }}

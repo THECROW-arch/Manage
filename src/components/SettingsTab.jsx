@@ -1,5 +1,7 @@
 import { getToday, getCurrentMonth } from '../utils/constants';
-
+/**
+ * Renders the Settings interface for user preferences, salary baselines, and CSV data exports.
+ */
 export default function SettingsTab({
   theme,
   setTheme,

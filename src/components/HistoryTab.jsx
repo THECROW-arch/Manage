@@ -1,3 +1,6 @@
+/**
+ * Renders the historical ledger of finalized months and portfolio adjustments.
+ */
 export default function HistoryTab({ historyFeed }) {
   return (
     <div className="max-w-3xl mx-auto space-y-6 animate-fade-in">

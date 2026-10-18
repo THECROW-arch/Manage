@@ -1,6 +1,8 @@
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { hexColorMap } from '../utils/constants';
-
+/**
+ * Displays total net wealth trajectory, asset distribution, and manual market adjustments.
+ */
 export default function PortfolioTab({
   assetCategories,
   handleAddAdjustment,

@@ -1,3 +1,6 @@
+/**
+ * Provides a multi-region progressive tax calculator for estimating annual liability.
+ */
 export default function TaxCenterTab({
   taxCountry,
   setTaxCountry,
