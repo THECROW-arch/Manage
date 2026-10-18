@@ -1,4 +1,3 @@
-import { formatCurrency } from '../utils/constants';
 
 export default function OccasionsSandboxTab({
   selectedMonth,
