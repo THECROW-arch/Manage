@@ -161,7 +161,8 @@ export default function PortfolioTab({
             const currentMonthAllocation = parsedSalary * (cat.percentage / 100);
             const manualAdjTotal = assetAdjustments.filter(a => a.category_id === cat.id).reduce((sum, a) => sum + parseFloat(a.amount), 0);
             const spentFromAssetThisMonth = monthlyExpenses.filter(e => e.category_id === cat.id).reduce((sum, e) => sum + parseFloat(e.cost), 0);
-            const previewDeposit = (selectedMonth === todayMonth && !closedMonths.includes(todayMonth))
+            const isTodayClosed = closedMonths.some(c => (typeof c === 'string' ? c : c.month) === todayMonth);
+            const previewDeposit = (selectedMonth === todayMonth && !isTodayClosed)
               ? Math.max(0, currentMonthAllocation - spentFromAssetThisMonth)
               : 0;
             const totalWealth = parseFloat((manualAdjTotal + previewDeposit).toFixed(2));

@@ -117,7 +117,7 @@ export default function SettingsTab({
               <h3 className="text-sm font-bold text-gray-900 dark:text-zinc-200 mb-1">{t('app_language')}</h3>
               <p className="text-xs text-gray-500 dark:text-zinc-500 mb-3">{t('language_desc')}</p>
               <select
-                value={i18n.language}
+                value={i18n.resolvedLanguage || 'en'}
                 onChange={(e) => i18n.changeLanguage(e.target.value)}
                 className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-indigo-500"
               >

@@ -95,7 +95,7 @@ export default function Auth() {
         {/* Language Switcher on Auth Screen */}
         <div className="flex justify-end mb-4">
           <select
-            value={i18n.language}
+            value={i18n.resolvedLanguage || 'en'}
             onChange={(e) => i18n.changeLanguage(e.target.value)}
             className="px-2.5 py-1 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-700 dark:text-zinc-300 text-xs focus:outline-none focus:border-indigo-500"
           >

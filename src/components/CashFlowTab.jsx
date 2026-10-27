@@ -67,11 +67,12 @@ export default function CashFlowTab({
     handleDeleteExpense,
     groupedExpenses
 }) {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const [year, month] = selectedMonth.split('-').map(Number);
-    const transactionMonth = selectedMonth
-        ? new Date(year, month - 1, 1).toLocaleString('default', { month: 'short' })
-        : '—';
+    const transactionMonth = new Date(`${selectedMonth}-01T00:00:00`).toLocaleString(
+        i18n.resolvedLanguage || 'en',
+        { month: 'short', year: 'numeric' }
+    );
 
     // --- Financial Conscience Engine ---
     const generateSmartInsights = () => {
@@ -109,7 +110,7 @@ export default function CashFlowTab({
     const smartInsights = generateSmartInsights();
     return (
         <>
-            {isPastMonth && !closedMonths.includes(selectedMonth) && (
+            {isPastMonth && !closedMonths.some(c => (typeof c === 'string' ? c : c.month) === selectedMonth) && (
                 <div className="w-full bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-lg p-6 mb-8 text-center">
                     <h2 className="text-xl font-bold text-amber-700 dark:text-amber-400 mb-2">Month-End Action Required</h2>
                     <p className="text-amber-600 dark:text-amber-200/80 mb-6 max-w-2xl mx-auto text-sm">
@@ -275,10 +276,13 @@ export default function CashFlowTab({
                                                     ✎
                                                 </button>
                                                 <button
+                                                    aria-label={t('delete')}
                                                     onClick={() => handleDeleteCategory(cat.id, cat.percentage)}
                                                     className="text-gray-400 dark:text-zinc-500 hover:text-rose-500 dark:hover:text-rose-400 font-bold transition-colors text-xs"
                                                 >
-
+                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
                                                 </button>
                                             </div>
                                         )}
@@ -417,7 +421,11 @@ export default function CashFlowTab({
                                         <div className="w-full max-w-md bg-white dark:bg-zinc-900 p-6 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl">
                                             <div className="flex justify-between items-center mb-5">
                                                 <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wider">{t('create_new_category')}</h3>
-                                                <button onClick={() => setIsCategoryModalOpen(false)} className="text-gray-400 hover:text-rose-500 text-lg font-bold"></button>
+                                                <button aria-label={t('delete')} onClick={() => setIsCategoryModalOpen(false)} className="text-gray-400 hover:text-rose-500 text-lg font-bold">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
+                                                </button>
                                             </div>
 
                                             <div className="flex gap-2 mb-4">
@@ -560,7 +568,7 @@ export default function CashFlowTab({
                     <div className="w-full bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 min-h-[400px]">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-5 gap-4">
                             <h3 className="text-sm font-semibold text-gray-800 dark:text-zinc-200">
-                                {t('transactions')} {selectedMonth ? `(${new Date(selectedMonth.split('-')[0], selectedMonth.split('-')[1] - 1).toLocaleString('default', { month: 'short' })})` : '—'}
+                                {t('transactions')} {selectedMonth ? `${transactionMonth}` : '—'}
                             </h3>
                             {monthlyExpenses.length > 0 && (
                                 <div className="flex gap-2 w-full sm:w-auto">
@@ -626,10 +634,13 @@ export default function CashFlowTab({
 
                                                     {!isReadOnly && !exp.bundle_id && (
                                                         <button
+                                                            aria-label={t('delete')}
                                                             onClick={(e) => { e.stopPropagation(); handleDeleteExpense(exp.id); }}
-                                                            className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-rose-500 dark:text-zinc-500 dark:hover:text-rose-400 p-1 font-bold"
+                                                            className="opacity-70 hover:opacity-100 transition-opacity text-gray-400 hover:text-rose-500 dark:text-zinc-500 dark:hover:text-rose-400 p-1 font-bold"
                                                         >
-
+                                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                            </svg>
                                                         </button>
                                                     )}
 

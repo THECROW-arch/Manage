@@ -5,7 +5,7 @@ import { getToday, getCurrentMonth } from './constants';
 export const generateFormalAudit = async (data) => {
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Salary Allocator SaaS';
-
+    const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = reportData;
     // Dynamic scope labeling (Full Month vs Month-to-Date vs Single Day)
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
@@ -16,10 +16,10 @@ export const generateFormalAudit = async (data) => {
             : `Full Month (${data.targetPeriod})`;
     // Look for a frozen snapshot if this month was already closed!
     const periodMonth = data.targetPeriod.substring(0, 7);
-    const closedRecord = data.closedMonths?.find(c => c.month === periodMonth);
-    const activeCategories = (closedRecord && closedRecord.category_snapshot && closedRecord.category_snapshot.length > 0)
-        ? closedRecord.category_snapshot
-        : activeCategories;
+    const closedMonthObj = closedMonths?.find(c => (typeof c === 'string' ? c : c.month) === periodMonth);
+    const activeCategories = (closedMonthObj && Array.isArray(closedMonthObj.category_snapshot) && closedMonthObj.category_snapshot.length > 0)
+        ? closedMonthObj.category_snapshot
+        : categories;
     // --- SHEET 1: EXECUTIVE SUMMARY & CATEGORIES ---
     const summarySheet = wb.addWorksheet('Summary & Categories');
 
@@ -174,7 +174,7 @@ export const generateVisualDashboard = async (data) => {
     const wb = new ExcelJS.Workbook();
     // Turn off gridlines to make it look like a dashboard UI
     const sheet = wb.addWorksheet('Dashboard', { views: [{ showGridLines: false }] });
-
+    const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = reportData;
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
     const scopeText = data.exportScope === 'day'
@@ -184,10 +184,10 @@ export const generateVisualDashboard = async (data) => {
             : `Full Month (${data.targetPeriod})`;
     // Look for a frozen snapshot if this month was already closed!
     const periodMonth = data.targetPeriod.substring(0, 7);
-    const closedRecord = data.closedMonths?.find(c => c.month === periodMonth);
-    const activeCategories = (closedRecord && closedRecord.category_snapshot && closedRecord.category_snapshot.length > 0)
-        ? closedRecord.category_snapshot
-        : activeCategories;
+    const closedMonthObj = closedMonths?.find(c => (typeof c === 'string' ? c : c.month) === periodMonth);
+    const activeCategories = (closedMonthObj && Array.isArray(closedMonthObj.category_snapshot) && closedMonthObj.category_snapshot.length > 0)
+        ? closedMonthObj.category_snapshot
+        : categories;
     // Paint background a soft UI gray (slate-50)
     for (let i = 1; i <= 200; i++) {
         sheet.getRow(i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
@@ -242,9 +242,9 @@ export const generateVisualDashboard = async (data) => {
     const startRow = 10;
 
     activeCategories.forEach((cat) => {
-        const c1 = String.fromCharCode(64 + startCol);     // Item Name
-        const c2 = String.fromCharCode(64 + startCol + 1); // Date
-        const c3 = String.fromCharCode(64 + startCol + 2); // Amount
+        const c1 = sheet.getColumn(startCol).letter;     // Item Name
+        const c2 = sheet.getColumn(startCol + 1).letter; // Date
+        const c3 = sheet.getColumn(startCol + 2).letter; // Amount 
 
         // Category Header Bar
         sheet.mergeCells(`${c1}${startRow}:${c3}${startRow}`);

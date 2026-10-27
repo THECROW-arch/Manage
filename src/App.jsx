@@ -20,10 +20,11 @@ import CashFlowTab from './components/CashFlowTab';
 export default function App() {
   const { t, i18n } = useTranslation();
   
-  useEffect(() => {
-    document.documentElement.dir = i18n.language === 'ar' ? 'rtl' : 'ltr';
-    document.documentElement.lang = i18n.language;
-  }, [i18n.language]);
+ useEffect(() => {
+  const lang = i18n.resolvedLanguage || i18n.language || 'en';
+  document.documentElement.dir = lang.startsWith('ar') ? 'rtl' : 'ltr';
+  document.documentElement.lang = lang;
+}, [i18n.resolvedLanguage, i18n.language]);
   
   const [session, setSession] = useState(null);
   const [loadingData, setLoadingData] = useState(true);

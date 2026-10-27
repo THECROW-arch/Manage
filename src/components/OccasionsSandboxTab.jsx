@@ -201,10 +201,13 @@ export default function OccasionsSandboxTab({
                                             </div>
                                             <button
                                                 onClick={() => handleDeleteBundle(bundle.id)}
-                                                className="text-xs text-gray-400 hover:text-rose-500"
+                                                aria-label={t('delete_occasion_title')}
+                                                className="text-xs text-gray-400 hover:text-rose-500 p-1"
                                                 title={t('delete_occasion_title')}
                                             >
-                                                
+                                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                </svg>
                                             </button>
                                         </div>
 
@@ -287,8 +290,15 @@ export default function OccasionsSandboxTab({
                                                         <div className="flex items-center gap-3 self-end sm:self-auto">
                                                             <span className="font-mono font-bold text-gray-700 dark:text-zinc-300">{formatCurrencyFn(item.cost)}</span>
                                                             {!isLocked && !isReadOnly && (
-                                                                <button onClick={() => handleDeleteOccasionItem(bundle.id, item.id)} className="text-gray-400 hover:text-rose-500"></button>
-                                                            )}
+                                                                <button
+                                                                    onClick={() => handleDeleteOccasionItem(bundle.id, item.id)}
+                                                                    aria-label={t('delete')}
+                                                                    className="text-gray-400 hover:text-rose-500 p-1"
+                                                                >
+                                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                                    </svg>
+                                                                </button>)}
                                                         </div>
                                                     </li>
                                                 ))}
@@ -357,7 +367,9 @@ export default function OccasionsSandboxTab({
                                             onClick={() => handleDeleteSandboxSheet(s.id)}
                                             className="text-xs text-gray-400 hover:text-rose-500 px-2 mr-3"
                                         >
-                                            
+                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                            </svg>
                                         </button>
                                     </div>
                                 ))}
@@ -475,6 +487,7 @@ export default function OccasionsSandboxTab({
                                                     <div className="flex items-center gap-3">
                                                         <span className="font-mono font-bold">{formatCurrencyFn(exp.cost)}</span>
                                                         <button
+                                                            aria-label={t('delete')}
                                                             onClick={() => {
                                                                 if (isReadOnly) {
                                                                     setAlertMsg(t('err_sandbox_locked'));
@@ -483,9 +496,11 @@ export default function OccasionsSandboxTab({
                                                                 const updated = { ...activeSheet, expenses: activeSheet.expenses.filter(x => x.id !== exp.id) };
                                                                 setSandboxSheets(sandboxSheets.map(s => s.id === activeSheet.id ? updated : s));
                                                             }}
-                                                            className="text-gray-400 hover:text-rose-500"
+                                                            className="text-gray-400 hover:text-rose-500 p-1"
                                                         >
-                                                             
+                                                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                                            </svg>
                                                         </button>
                                                     </div>
                                                 </li>
