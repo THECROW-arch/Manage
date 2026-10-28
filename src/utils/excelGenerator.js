@@ -5,21 +5,26 @@ import { getToday, getCurrentMonth } from './constants';
 export const generateFormalAudit = async (data) => {
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Salary Allocator SaaS';
-    const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = reportData;
+    
+    // FIX: Changed "reportData" to "data" to match the function argument!
+    const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = data;
+    
     // Dynamic scope labeling (Full Month vs Month-to-Date vs Single Day)
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
-    const scopeText = data.exportScope === 'day'
-        ? `Single Day (${data.targetPeriod})`
-        : (data.targetPeriod === currentMonthStr)
-            ? `Month-to-Date (${data.targetPeriod}-01 to ${todayStr})`
-            : `Full Month (${data.targetPeriod})`;
+    const scopeText = exportScope === 'day'
+        ? `Single Day (${targetPeriod})`
+        : (targetPeriod === currentMonthStr)
+            ? `Month-to-Date (${targetPeriod}-01 to ${todayStr})`
+            : `Full Month (${targetPeriod})`;
+            
     // Look for a frozen snapshot if this month was already closed!
-    const periodMonth = data.targetPeriod.substring(0, 7);
+    const periodMonth = targetPeriod.substring(0, 7);
     const closedMonthObj = closedMonths?.find(c => (typeof c === 'string' ? c : c.month) === periodMonth);
     const activeCategories = (closedMonthObj && Array.isArray(closedMonthObj.category_snapshot) && closedMonthObj.category_snapshot.length > 0)
         ? closedMonthObj.category_snapshot
         : categories;
+        
     // --- SHEET 1: EXECUTIVE SUMMARY & CATEGORIES ---
     const summarySheet = wb.addWorksheet('Summary & Categories');
 
@@ -48,28 +53,28 @@ export const generateFormalAudit = async (data) => {
 
     // Helper to format the currency column in the summary block
     const formatAmt = (row) => {
-        row.getCell(2).numFmt = `"${data.currency}" #,##0.00;[Red]-"${data.currency}" #,##0.00`;
+        row.getCell(2).numFmt = `"${currency}" #,##0.00;[Red]-"${currency}" #,##0.00`;
     };
 
-    const row1 = summarySheet.addRow(['Monthly Net Salary Baseline', data.parsedSalary, '100% Allocation Base']);
+    const row1 = summarySheet.addRow(['Monthly Net Salary Baseline', parsedSalary, '100% Allocation Base']);
     formatAmt(row1);
 
-    const periodLabel = data.exportScope === 'day' ? `Spent on ${data.targetPeriod}` : `Total Period Expenses`;
-    const row2 = summarySheet.addRow([periodLabel, -data.periodSpent, `${data.groupedScopedExps.length} ledger entries`]);
+    const periodLabel = exportScope === 'day' ? `Spent on ${targetPeriod}` : `Total Period Expenses`;
+    const row2 = summarySheet.addRow([periodLabel, -periodSpent, `${groupedScopedExps.length} ledger entries`]);
     formatAmt(row2);
 
     // Dynamically insert Cumulative MTD row if looking at a single day
-    if (data.exportScope === 'day') {
-        const row2b = summarySheet.addRow([`Cumulative Month-to-Date Spent (Up to ${data.targetPeriod})`, -data.cumulativeMonthSpent, "Includes prior days in this month"]);
+    if (exportScope === 'day') {
+        const row2b = summarySheet.addRow([`Cumulative Month-to-Date Spent (Up to ${targetPeriod})`, -cumulativeMonthSpent, "Includes prior days in this month"]);
         formatAmt(row2b);
     }
 
     const totalAssetPerc = activeCategories.filter(c => c.type === 'asset').reduce((s, c) => s + c.percentage, 0);
-    const row3 = summarySheet.addRow(['Automated Monthly Savings Allocation', data.monthlyAssetsAllocated, `${Math.round(totalAssetPerc)}% of salary`]);
+    const row3 = summarySheet.addRow(['Automated Monthly Savings Allocation', monthlyAssetsAllocated, `${Math.round(totalAssetPerc)}% of salary`]);
     formatAmt(row3);
 
-    const remPerc = data.parsedSalary > 0 ? ((data.trueMonthRemaining / data.parsedSalary) * 100).toFixed(1) : 0;
-    const row4 = summarySheet.addRow(['True Remaining Monthly Cash', data.trueMonthRemaining, `${remPerc}% of salary left`]);
+    const remPerc = parsedSalary > 0 ? ((trueMonthRemaining / parsedSalary) * 100).toFixed(1) : 0;
+    const row4 = summarySheet.addRow(['True Remaining Monthly Cash', trueMonthRemaining, `${remPerc}% of salary left`]);
     formatAmt(row4);
 
     summarySheet.addRow([]);
@@ -81,9 +86,9 @@ export const generateFormalAudit = async (data) => {
     catHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF374151' } };
 
     activeCategories.forEach(cat => {
-        const catBudget = data.parsedSalary * (cat.percentage / 100);
-        const spentInScope = data.scopedExps.filter(e => e.category_id === cat.id).reduce((s, e) => s + parseFloat(e.cost), 0);
-        const spentMtd = data.cumulativeMonthExps.filter(e => e.category_id === cat.id).reduce((s, e) => s + parseFloat(e.cost), 0);
+        const catBudget = parsedSalary * (cat.percentage / 100);
+        const spentInScope = scopedExps.filter(e => e.category_id === cat.id).reduce((s, e) => s + parseFloat(e.cost), 0);
+        const spentMtd = cumulativeMonthExps.filter(e => e.category_id === cat.id).reduce((s, e) => s + parseFloat(e.cost), 0);
         const rem = Math.max(0, catBudget - spentMtd);
         const util = catBudget > 0 ? (spentMtd / catBudget) : 0;
 
@@ -101,7 +106,7 @@ export const generateFormalAudit = async (data) => {
         row.getCell(3).numFmt = '0.0%';
         row.getCell(8).numFmt = '0.0%';
         [4, 5, 6, 7].forEach(colIndex => {
-            row.getCell(colIndex).numFmt = `"${data.currency}" #,##0.00`;
+            row.getCell(colIndex).numFmt = `"${currency}" #,##0.00`;
         });
     });
 
@@ -119,10 +124,10 @@ export const generateFormalAudit = async (data) => {
     ledgerSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     ledgerSheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF111827' } };
 
-    // Apply Auto-Filter to the Ledger Header Row!
+    // Apply Auto-Filter to the Ledger Header Row
     ledgerSheet.autoFilter = 'A1:F1';
 
-    const sortedGrouped = [...data.groupedScopedExps].sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
+    const sortedGrouped = [...groupedScopedExps].sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
 
     sortedGrouped.forEach(entry => {
         if (entry.bundle_id) {
@@ -164,30 +169,35 @@ export const generateFormalAudit = async (data) => {
     });
 
     // Red minus formatting for negative numbers
-    ledgerSheet.getColumn('amount').numFmt = `"${data.currency}" #,##0.00;[Red]-"${data.currency}" #,##0.00`;
+    ledgerSheet.getColumn('amount').numFmt = `"${currency}" #,##0.00;[Red]-"${currency}" #,##0.00`;
 
     const buffer = await wb.xlsx.writeBuffer();
-    saveAs(new Blob([buffer]), `Audit_Ledger_${data.targetPeriod}.xlsx`);
+    saveAs(new Blob([buffer]), `Audit_Ledger_${targetPeriod}.xlsx`);
 };
 
 export const generateVisualDashboard = async (data) => {
     const wb = new ExcelJS.Workbook();
     // Turn off gridlines to make it look like a dashboard UI
     const sheet = wb.addWorksheet('Dashboard', { views: [{ showGridLines: false }] });
-    const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = reportData;
+    
+    // FIX: Changed "reportData" to "data" to match the function argument!
+    const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = data;
+    
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
-    const scopeText = data.exportScope === 'day'
-        ? `Single Day (${data.targetPeriod})`
-        : (data.targetPeriod === currentMonthStr)
-            ? `Month-to-Date (${data.targetPeriod}-01 to ${todayStr})`
-            : `Full Month (${data.targetPeriod})`;
+    const scopeText = exportScope === 'day'
+        ? `Single Day (${targetPeriod})`
+        : (targetPeriod === currentMonthStr)
+            ? `Month-to-Date (${targetPeriod}-01 to ${todayStr})`
+            : `Full Month (${targetPeriod})`;
+            
     // Look for a frozen snapshot if this month was already closed!
-    const periodMonth = data.targetPeriod.substring(0, 7);
+    const periodMonth = targetPeriod.substring(0, 7);
     const closedMonthObj = closedMonths?.find(c => (typeof c === 'string' ? c : c.month) === periodMonth);
     const activeCategories = (closedMonthObj && Array.isArray(closedMonthObj.category_snapshot) && closedMonthObj.category_snapshot.length > 0)
         ? closedMonthObj.category_snapshot
         : categories;
+        
     // Paint background a soft UI gray (slate-50)
     for (let i = 1; i <= 200; i++) {
         sheet.getRow(i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
@@ -200,15 +210,15 @@ export const generateVisualDashboard = async (data) => {
     title.font = { size: 22, bold: true, color: { argb: 'FF0F172A' } };
     title.alignment = { vertical: 'middle' };
 
-    sheet.getCell('B4').value = `Period: ${scopeText}   |   Currency: ${data.currency}`;
+    sheet.getCell('B4').value = `Period: ${scopeText}   |   Currency: ${currency}`;
     sheet.getCell('B4').font = { size: 12, italic: true, color: { argb: 'FF64748B' } };
 
     // --- 2. EXECUTIVE METRIC BLOCKS ---
     const summaries = [
-        { label: 'NET INCOME', value: data.parsedSalary, color: 'FF3B82F6' }, // Blue
-        { label: 'TOTAL SPENT', value: data.cumulativeMonthSpent, color: 'FFEF4444' }, // Red
-        { label: 'SAVED / ASSETS', value: data.monthlyAssetsAllocated, color: 'FF10B981' }, // Green
-        { label: 'REMAINING CASH', value: data.trueMonthRemaining, color: 'FF8B5CF6' }, // Purple
+        { label: 'NET INCOME', value: parsedSalary, color: 'FF3B82F6' }, // Blue
+        { label: 'TOTAL SPENT', value: cumulativeMonthSpent, color: 'FFEF4444' }, // Red
+        { label: 'SAVED / ASSETS', value: monthlyAssetsAllocated, color: 'FF10B981' }, // Green
+        { label: 'REMAINING CASH', value: trueMonthRemaining, color: 'FF8B5CF6' }, // Purple
     ];
 
     summaries.forEach((sum, idx) => {
@@ -227,7 +237,7 @@ export const generateVisualDashboard = async (data) => {
 
         const valCell = sheet.getCell(`${colLetter}7`);
         valCell.value = sum.value;
-        valCell.numFmt = `"${data.currency}" #,##0.00`;
+        valCell.numFmt = `"${currency}" #,##0.00`;
         valCell.font = { size: 16, bold: true, color: { argb: 'FF0F172A' } };
         valCell.alignment = { horizontal: 'center', vertical: 'middle', shrinkToFit: true };
         valCell.border = {
@@ -271,18 +281,18 @@ export const generateVisualDashboard = async (data) => {
         });
 
         let currentRow = startRow + 2;
-        const catBudget = data.parsedSalary * (cat.percentage / 100);
-        const catExps = data.scopedExps.filter(e => e.category_id === cat.id);
+        const catBudget = parsedSalary * (cat.percentage / 100);
+        const catExps = scopedExps.filter(e => e.category_id === cat.id);
 
         // Calculate money spent prior to this export scope for accurate running totals!
-        const priorMtdExps = data.cumulativeMonthExps.filter(e => e.category_id === cat.id && !catExps.includes(e));
+        const priorMtdExps = cumulativeMonthExps.filter(e => e.category_id === cat.id && !catExps.includes(e));
         let runningSpent = priorMtdExps.reduce((s, e) => s + parseFloat(e.cost), 0);
 
         catExps.forEach(exp => {
             let itemName = exp.name;
             if (exp.bundle_id) {
-                const bundle = data.groupedScopedExps.find(b => b.bundle_id === exp.bundle_id);
-                if (bundle) itemName = `✨ ${bundle.name.replace('✨ ', '')} (Split)`;
+                const bundle = groupedScopedExps.find(b => b.bundle_id === exp.bundle_id);
+                if (bundle) itemName = `${bundle.name.replace('✨ ', '')} (Split)`;
             }
 
             const itemCost = parseFloat(exp.cost);
@@ -291,14 +301,14 @@ export const generateVisualDashboard = async (data) => {
 
             sheet.getCell(`${c1}${currentRow}`).value = itemName;
             sheet.getCell(`${c1}${currentRow}`).font = { size: 10, color: { argb: isOverBudget ? 'FFDC2626' : 'FF334155' } };
-            sheet.getCell(`${c1}${currentRow}`).alignment = { wrapText: true, vertical: 'top' }; // <--- ADD THIS LINE
+            sheet.getCell(`${c1}${currentRow}`).alignment = { wrapText: true, vertical: 'top' };
 
             sheet.getCell(`${c2}${currentRow}`).value = exp.expense_date.slice(5);
             sheet.getCell(`${c2}${currentRow}`).font = { size: 10, color: { argb: isOverBudget ? 'FFEF4444' : 'FF94A3B8' } };
 
             const amtCell = sheet.getCell(`${c3}${currentRow}`);
             amtCell.value = itemCost;
-            amtCell.numFmt = `"${data.currency}" #,##0.00`;
+            amtCell.numFmt = `"${currency}" #,##0.00`;
             amtCell.font = { size: 10, color: { argb: isOverBudget ? 'FFDC2626' : 'FF0F172A' }, bold: isOverBudget };
 
             // Highlight the entire row soft red if it breaks the budget ceiling
@@ -313,17 +323,17 @@ export const generateVisualDashboard = async (data) => {
 
         currentRow++; // Blank spacing row
 
-        const catSpent = data.cumulativeMonthExps.filter(e => e.category_id === cat.id).reduce((s, e) => s + parseFloat(e.cost), 0);
+        const catSpent = cumulativeMonthExps.filter(e => e.category_id === cat.id).reduce((s, e) => s + parseFloat(e.cost), 0);
         const catRem = Math.max(0, catBudget - catSpent);
 
-        const writeTotal = (row, label, val, isRed, isGreen, isSpentRow) => {
+        const writeTotal = (row, label, val, isRed, isGreen) => {
             sheet.getCell(`${c1}${row}`).value = label;
             sheet.getCell(`${c1}${row}`).font = { bold: true, size: 10, color: { argb: 'FF64748B' } };
 
             sheet.mergeCells(`${c2}${row}:${c3}${row}`);
             const vCell = sheet.getCell(`${c2}${row}`);
             vCell.value = val;
-            vCell.numFmt = `"${data.currency}" #,##0.00`;
+            vCell.numFmt = `"${currency}" #,##0.00`;
 
             let color = 'FF0F172A';
             if (isRed) color = 'FFEF4444';
@@ -332,9 +342,9 @@ export const generateVisualDashboard = async (data) => {
             vCell.alignment = { horizontal: 'right' };
         };
 
-        writeTotal(currentRow, 'BUDGET:', catBudget, false, false, false);
-        writeTotal(currentRow + 1, 'SPENT (MTD):', catSpent, true, false, true);
-        writeTotal(currentRow + 2, 'REMAINING:', catRem, false, true, false);
+        writeTotal(currentRow, 'BUDGET:', catBudget, false, false);
+        writeTotal(currentRow + 1, 'SPENT (MTD):', catSpent, true, false);
+        writeTotal(currentRow + 2, 'REMAINING:', catRem, false, true);
 
         // Set strict column widths so the side-by-side tables look identical
         sheet.getColumn(startCol).width = 32;
@@ -347,5 +357,5 @@ export const generateVisualDashboard = async (data) => {
     });
 
     const buffer = await wb.xlsx.writeBuffer();
-    saveAs(new Blob([buffer]), `Visual_Dashboard_${data.targetPeriod}.xlsx`);
+    saveAs(new Blob([buffer]), `Visual_Dashboard_${targetPeriod}.xlsx`);
 };

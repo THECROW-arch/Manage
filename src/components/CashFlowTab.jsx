@@ -68,7 +68,8 @@ export default function CashFlowTab({
     groupedExpenses
 }) {
     const { t, i18n } = useTranslation();
-    const [year, month] = selectedMonth.split('-').map(Number);
+    
+    // FIX: Removed unused `year` and `month` array to fix ESLint!
     const transactionMonth = new Date(`${selectedMonth}-01T00:00:00`).toLocaleString(
         i18n.resolvedLanguage || 'en',
         { month: 'short', year: 'numeric' }
@@ -568,7 +569,7 @@ export default function CashFlowTab({
                     <div className="w-full bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 min-h-[400px]">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-5 gap-4">
                             <h3 className="text-sm font-semibold text-gray-800 dark:text-zinc-200">
-                                {t('transactions')} {selectedMonth ? `${transactionMonth}` : '—'}
+                                {t('transactions')} {selectedMonth ? transactionMonth : '—'}
                             </h3>
                             {monthlyExpenses.length > 0 && (
                                 <div className="flex gap-2 w-full sm:w-auto">
