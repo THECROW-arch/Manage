@@ -5,10 +5,10 @@ import { getToday, getCurrentMonth } from './constants';
 export const generateFormalAudit = async (data) => {
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Salary Allocator SaaS';
-    
+
     // FIX: Changed "reportData" to "data" to match the function argument!
     const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = data;
-    
+
     // Dynamic scope labeling (Full Month vs Month-to-Date vs Single Day)
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
@@ -17,14 +17,14 @@ export const generateFormalAudit = async (data) => {
         : (targetPeriod === currentMonthStr)
             ? `Month-to-Date (${targetPeriod}-01 to ${todayStr})`
             : `Full Month (${targetPeriod})`;
-            
+
     // Look for a frozen snapshot if this month was already closed!
     const periodMonth = targetPeriod.substring(0, 7);
     const closedMonthObj = closedMonths?.find(c => (typeof c === 'string' ? c : c.month) === periodMonth);
     const activeCategories = (closedMonthObj && Array.isArray(closedMonthObj.category_snapshot) && closedMonthObj.category_snapshot.length > 0)
         ? closedMonthObj.category_snapshot
         : categories;
-        
+
     // --- SHEET 1: EXECUTIVE SUMMARY & CATEGORIES ---
     const summarySheet = wb.addWorksheet('Summary & Categories');
 
@@ -127,10 +127,27 @@ export const generateFormalAudit = async (data) => {
     // Apply Auto-Filter to the Ledger Header Row
     ledgerSheet.autoFilter = 'A1:F1';
 
-    const sortedGrouped = [...groupedScopedExps].sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
+    const formattedAdjs = scopedAdjs.map(adj => ({
+        is_adjustment: true,
+        expense_date: adj.adjustment_date,
+        category: activeCategories.find(c => c.id === adj.category_id)?.name || 'Asset',
+        name: adj.note || 'Manual Adjustment',
+        amount: adj.amount
+    }));
+
+    const sortedGrouped = [...groupedScopedExps, ...formattedAdjs].sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
 
     sortedGrouped.forEach(entry => {
-        if (entry.bundle_id) {
+        if (entry.is_adjustment) {
+            ledgerSheet.addRow({
+                date: entry.expense_date,
+                type: 'Asset Adjustment',
+                category: entry.category,
+                description: entry.name,
+                amount: entry.amount,
+                breakdown: `${entry.category}: ${parseFloat(entry.amount).toFixed(2)}`
+            });
+        } else if (entry.bundle_id) {
             ledgerSheet.addRow({
                 date: entry.expense_date,
                 type: 'Special Occasion (Master)',
@@ -179,10 +196,9 @@ export const generateVisualDashboard = async (data) => {
     const wb = new ExcelJS.Workbook();
     // Turn off gridlines to make it look like a dashboard UI
     const sheet = wb.addWorksheet('Dashboard', { views: [{ showGridLines: false }] });
-    
+
     // FIX: Changed "reportData" to "data" to match the function argument!
-    const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = data;
-    
+    const { targetPeriod, exportScope, currency, parsedSalary, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, closedMonths = [] } = data;
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
     const scopeText = exportScope === 'day'
@@ -190,14 +206,14 @@ export const generateVisualDashboard = async (data) => {
         : (targetPeriod === currentMonthStr)
             ? `Month-to-Date (${targetPeriod}-01 to ${todayStr})`
             : `Full Month (${targetPeriod})`;
-            
+
     // Look for a frozen snapshot if this month was already closed!
     const periodMonth = targetPeriod.substring(0, 7);
     const closedMonthObj = closedMonths?.find(c => (typeof c === 'string' ? c : c.month) === periodMonth);
     const activeCategories = (closedMonthObj && Array.isArray(closedMonthObj.category_snapshot) && closedMonthObj.category_snapshot.length > 0)
         ? closedMonthObj.category_snapshot
         : categories;
-        
+
     // Paint background a soft UI gray (slate-50)
     for (let i = 1; i <= 200; i++) {
         sheet.getRow(i).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
