@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import './App.css';
+import './i18n';
+import { useTranslation } from 'react-i18next';
 import { supabase } from './supabaseClient';
 import Auth from './Auth';
-import { PieChart, Pie, Tooltip, ResponsiveContainer } from 'recharts';
 import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth } from './utils/constants';
+import { generateFormalAudit, generateVisualDashboard } from './utils/excelGenerator';
 import HistoryTab from './components/HistoryTab';
 import TaxCenterTab from './components/TaxCenterTab';
 import SettingsTab from './components/SettingsTab';
@@ -16,6 +18,14 @@ import CashFlowTab from './components/CashFlowTab';
  * Main application component orchestrating global state, data fetching, and tab routing.
  */
 export default function App() {
+  const { t, i18n } = useTranslation();
+  
+ useEffect(() => {
+  const lang = i18n.resolvedLanguage || i18n.language || 'en';
+  document.documentElement.dir = lang.startsWith('ar') ? 'rtl' : 'ltr';
+  document.documentElement.lang = lang;
+}, [i18n.resolvedLanguage, i18n.language]);
+  
   const [session, setSession] = useState(null);
   const [loadingData, setLoadingData] = useState(true);
 
@@ -54,6 +64,7 @@ export default function App() {
   const [plannerSubTab, setPlannerSubTab] = useState('occasions'); // 'occasions' | 'sandbox'
 
   const [salary, setSalary] = useState('');
+  const [username, setUsername] = useState('');
   const [categories, setCategories] = useState([]);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryType, setNewCategoryType] = useState('expense');
@@ -95,11 +106,12 @@ export default function App() {
   const [isRecurring, setIsRecurring] = useState(false);
   const [isBatched, setIsBatched] = useState(false);
   const [expandedTransactionId, setExpandedTransactionId] = useState(null);
+
   // Special Occasions (Bundles) States
   const [bundles, setBundles] = useState([]);
   const [bundleName, setBundleName] = useState('');
   const [bundleAllocations, setBundleAllocations] = useState({});
-  const [occasionItemInputs, setOccasionItemInputs] = useState({}); // { [bundleId]: { name: '', cost: '' } }
+  const [occasionItemInputs, setOccasionItemInputs] = useState({});
 
   // Temporary Calculations (Sandbox) States
   const [sandboxSheets, setSandboxSheets] = useState([]);
@@ -115,7 +127,7 @@ export default function App() {
   // Read-Only Locking Logic
   const todayMonth = getCurrentMonth();
   const isPastMonth = selectedMonth < todayMonth;
-  const isCurrentMonthClosed = closedMonths.includes(todayMonth);
+  const isCurrentMonthClosed = closedMonths.some(c => c.month === todayMonth);
   const isReadOnly = isPastMonth || (selectedMonth === todayMonth && isCurrentMonthClosed);
 
   useEffect(() => { localStorage.setItem('selectedMonth', selectedMonth); }, [selectedMonth]);
@@ -133,7 +145,15 @@ export default function App() {
     let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
 
     if (!profile) {
-      const { data: newProfile } = await supabase.from('profiles').insert([{ user_id: userId }]).select().single();
+      const { data: authData } = await supabase.auth.getUser();
+      const registeredUsername = authData?.user?.user_metadata?.username || `user_${Date.now()}`;
+
+      const { data: newProfile } = await supabase.from('profiles').insert([{ 
+        user_id: userId,
+        username: registeredUsername,
+        role: 'customer'
+      }]).select().single();
+      
       profile = newProfile;
     }
 
@@ -149,6 +169,7 @@ export default function App() {
         else setCurrencyMode(profile.currency);
       }
       if (profile.tax_country) setTaxCountry(profile.tax_country);
+      if (profile.username) setUsername(profile.username);
       if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_country === 'US' ? profile.tax_filing_status : 'single');
       setCurrentStreak(profile.current_streak || 0);
       setLongestStreak(profile.longest_streak || 0);
@@ -200,7 +221,7 @@ export default function App() {
     setAssetAdjustments(adjData || []);
 
     let { data: closedData } = await supabase.from('closed_months').select('*').eq('user_id', userId);
-    setClosedMonths(closedData ? closedData.map(c => c.month) : []);
+    setClosedMonths(closedData || []);
 
     setLoadingData(false);
   };
@@ -245,12 +266,12 @@ export default function App() {
           }
         }
       } catch {
-        setAlertMsg("Warning: Auto-save failed.");
+        setAlertMsg(t('warn_autosave_failed'));
       }
     }, 1000);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [salary, categories, sandboxSheets, session, loadingData, currency, taxCountry, taxFilingStatus]);
+  }, [salary, categories, sandboxSheets, session, loadingData, currency, taxCountry, taxFilingStatus, t]);
 
 
   const handleLogout = async () => {
@@ -267,58 +288,33 @@ export default function App() {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportData = async (exportFormat) => {
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
     const targetPeriod = exportScope === 'month' ? exportMonth : exportDate;
 
     if ((exportScope === 'month' && exportMonth > currentMonthStr) || (exportScope === 'day' && exportDate > todayStr)) {
-      setAlertMsg("Error: Cannot export data for future dates that haven't occurred yet.");
+      setAlertMsg(t('err_export_future'));
       return;
     }
 
     const periodMonth = targetPeriod.substring(0, 7);
-    const isClosed = closedMonths.includes(periodMonth);
-
-    // 1. Expenses strictly within the selected scope (That Day OR That Month)
-    const scopedExps = expenses.filter(e =>
-      e.expense_date && (exportScope === 'month' ? e.expense_date.startsWith(exportMonth) : e.expense_date === exportDate)
-    );
-    const scopedAdjs = assetAdjustments.filter(a =>
-      a.adjustment_date && (exportScope === 'month' ? a.adjustment_date.startsWith(exportMonth) : a.adjustment_date === exportDate)
-    );
-
-    // 2. Cumulative Month-To-Date expenses (up through the selected day, or the whole month) for accurate Remaining Balance & Utilization!
-    const cumulativeMonthExps = expenses.filter(e =>
-      e.expense_date &&
-      e.expense_date.startsWith(periodMonth) &&
-      (exportScope === 'month' ? true : e.expense_date <= exportDate)
-    );
+    const scopedExps = expenses.filter(e => e.expense_date && (exportScope === 'month' ? e.expense_date.startsWith(exportMonth) : e.expense_date === exportDate));
+    const scopedAdjs = assetAdjustments.filter(a => a.adjustment_date && (exportScope === 'month' ? a.adjustment_date.startsWith(exportMonth) : a.adjustment_date === exportDate));
+    const cumulativeMonthExps = expenses.filter(e => e.expense_date && e.expense_date.startsWith(periodMonth) && (exportScope === 'month' ? true : e.expense_date <= exportDate));
 
     if (scopedExps.length === 0 && scopedAdjs.length === 0) {
-      setAlertMsg(`No transactions or adjustments found for ${targetPeriod}.`);
+      setAlertMsg(t('err_export_empty', { period: targetPeriod }));
       return;
     }
 
-    const cleanCSV = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
-
-    // Squash split occasion rows in scopedExps into 1 master entry per occasion
     const groupedScopedExps = [];
     const bundleMap = {};
-
     scopedExps.forEach(e => {
       if (e.bundle_id) {
         if (!bundleMap[e.bundle_id]) {
           const parentBundle = bundles.find(b => b.id === e.bundle_id);
-          bundleMap[e.bundle_id] = {
-            id: `bundle_${e.bundle_id}`,
-            bundle_id: e.bundle_id,
-            name: parentBundle ? `✨ ${parentBundle.name}` : e.name,
-            expense_date: e.expense_date,
-            cost: 0,
-            categorySplits: [],
-            items: parentBundle?.items || []
-          };
+          bundleMap[e.bundle_id] = { id: `bundle_${e.bundle_id}`, bundle_id: e.bundle_id, name: parentBundle ? ` ${parentBundle.name}` : e.name, expense_date: e.expense_date, cost: 0, categorySplits: [], items: parentBundle?.items || [] };
           groupedScopedExps.push(bundleMap[e.bundle_id]);
         }
         bundleMap[e.bundle_id].cost += parseFloat(e.cost);
@@ -328,157 +324,34 @@ export default function App() {
       }
     });
 
-    const periodSpent = scopedExps.reduce((s, e) => s + parseFloat(e.cost), 0);
-    const cumulativeMonthSpent = cumulativeMonthExps.reduce((s, e) => s + parseFloat(e.cost), 0);
-    const monthlyAssetsAllocated = assetCategories.reduce((s, c) => s + (parsedSalary * (c.percentage / 100)), 0);
+    const assetCategoriesList = categories.filter(c => c.type === 'asset');
+    const expenseCategoryIds = categories.filter(c => c.type !== 'asset').map(c => c.id);
+    const periodSpent = scopedExps.filter(e => expenseCategoryIds.includes(e.category_id)).reduce((s, e) => s + parseFloat(e.cost), 0);
+    const cumulativeMonthSpent = cumulativeMonthExps
+      .filter(e => expenseCategoryIds.includes(e.category_id))
+      .reduce((s, e) => s + parseFloat(e.cost), 0);
+    const monthlyAssetsAllocated = assetCategoriesList.reduce((s, c) => s + (parsedSalary * (c.percentage / 100)), 0);
+    const cumulativeExpenseCatSpent = cumulativeMonthExps.filter(e => categories.find(c => c.id === e.category_id)?.type !== 'asset').reduce((s, e) => s + parseFloat(e.cost), 0);
+    const trueMonthRemaining = Math.max(0, parsedSalary - cumulativeExpenseCatSpent - monthlyAssetsAllocated);
 
-    // Cumulative spending (including wealth withdrawals) + automated asset allocation determines true remaining cash
-    const trueMonthRemaining = Math.max(0, parsedSalary - cumulativeMonthSpent - monthlyAssetsAllocated);
+    const reportData = {
+      targetPeriod, exportScope, currency: currency === 'none' ? '' : currency,
+      parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining,
+      categories, groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths
+    };
 
-    const rows = [
-      ["=================================================================="],
-      ["SALARY ALLOCATOR - OFFICIAL FINANCIAL LEDGER & AUDIT REPORT"],
-      ["=================================================================="],
-      ["Report Scope", exportScope === 'month' ? `Full Month (${exportMonth})` : `Single Day (${exportDate})`],
-      ["Ledger Status", isClosed ? "CLOSED & FINALIZED" : (periodMonth === currentMonthStr ? "ACTIVE (IN PROGRESS)" : "OPEN PAST LEDGER")],
-      ["Generated On", todayStr],
-      ["Currency", currency || "N/A"],
-      [],
-      ["--- 1. EXECUTIVE CASH FLOW SUMMARY ---"],
-      ["Metric", "Amount", "Notes"],
-      ["Monthly Net Salary Baseline", parsedSalary.toFixed(2), "100% Allocation Base"],
-      [
-        exportScope === 'day' ? `Spent on ${exportDate}` : `Total Month Expenses`,
-        `-${periodSpent.toFixed(2)}`,
-        `${groupedScopedExps.length} ledger entries`
-      ],
-      ...(exportScope === 'day' ? [[
-        `Cumulative Month-to-Date Spent (Up to ${exportDate})`,
-        `-${cumulativeMonthSpent.toFixed(2)}`,
-        "Includes prior days in this month"
-      ]] : []),
-      ["Automated Monthly Savings Allocation", monthlyAssetsAllocated.toFixed(2), `${assetCategories.reduce((s, c) => s + c.percentage, 0)}% of salary`],
-      ["True Remaining Monthly Cash", trueMonthRemaining.toFixed(2), `${parsedSalary > 0 ? ((trueMonthRemaining / parsedSalary) * 100).toFixed(1) : 0}% of salary left`],
-      [],
-      ["--- 2. CATEGORY ALLOCATION & PERFORMANCE BREAKDOWN ---"],
-      exportScope === 'day'
-        ? ["Category Name", "Type", "Allocation %", "Monthly Budget", `Spent on ${exportDate}`, "Total Spent Month-to-Date", "True Remaining Balance", "True Utilization %"]
-        : ["Category Name", "Type", "Allocation %", "Monthly Budget", "Spent in Month", "True Remaining Balance", "True Utilization %"],
-      ...categories.map(cat => {
-        const catBudget = parsedSalary * (cat.percentage / 100);
-        const spentInScope = scopedExps.filter(e => e.category_id === cat.id).reduce((s, e) => s + parseFloat(e.cost), 0);
-        const spentMonthToDate = cumulativeMonthExps.filter(e => e.category_id === cat.id).reduce((s, e) => s + parseFloat(e.cost), 0);
-        const catRem = Math.max(0, catBudget - spentMonthToDate);
-        const util = catBudget > 0 ? ((spentMonthToDate / catBudget) * 100).toFixed(1) + '%' : '0.0%';
-
-        return exportScope === 'day'
-          ? [
-            cleanCSV(cat.name),
-            cat.type === 'asset' ? "Wealth Asset" : "Expense",
-            `${parseFloat(cat.percentage).toFixed(1)}%`,
-            catBudget.toFixed(2),
-            spentInScope.toFixed(2),
-            spentMonthToDate.toFixed(2),
-            catRem.toFixed(2),
-            util
-          ]
-          : [
-            cleanCSV(cat.name),
-            cat.type === 'asset' ? "Wealth Asset" : "Expense",
-            `${parseFloat(cat.percentage).toFixed(1)}%`,
-            catBudget.toFixed(2),
-            spentMonthToDate.toFixed(2),
-            catRem.toFixed(2),
-            util
-          ];
-      }),
-      [],
-      ["--- 3. TRANSACTIONS & SPECIAL OCCASIONS LEDGER ---"],
-      ["Date", "Entry Type", "Description / Receipt Item", "Total Amount", "Category Funding Breakdown"]
-    ];
-
-    const sortedGrouped = [...groupedScopedExps].sort((a, b) => new Date(b.expense_date) - new Date(a.expense_date));
-
-    sortedGrouped.forEach(entry => {
-      if (entry.bundle_id) {
-        // 1. Master Occasion Row (Only 1 row per Special Occasion!)
-        rows.push([
-          entry.expense_date,
-          "Special Occasion (Master)",
-          cleanCSV(`${entry.name} (${entry.items.length} items)`),
-          `-${entry.cost.toFixed(2)}`,
-          cleanCSV(entry.categorySplits.join(" | "))
-        ]);
-
-        // 2. Clean Sub-Rows for each Itemized Receipt inside the Occasion
-        entry.items.forEach(item => {
-          const itemCategoryBreakdown = Object.entries(item.allocations || {})
-            .filter(([, amt]) => parseFloat(amt) > 0)
-            .map(([cId, amt]) => `${categories.find(c => c.id === cId)?.name || 'Category'}: ${parseFloat(amt).toFixed(2)}`)
-            .join(" | ");
-
-          rows.push([
-            entry.expense_date,
-            "  ↳ Occasion Receipt Item",
-            cleanCSV(`   • ${item.name}`),
-            `-${parseFloat(item.cost).toFixed(2)}`,
-            cleanCSV(itemCategoryBreakdown)
-          ]);
-        });
+    try {
+      if (exportFormat === 'formal') {
+        await generateFormalAudit(reportData);
+        setAlertMsg(t('succ_export_formal', { period: targetPeriod }));
       } else {
-        const tags = [
-          entry.is_recurring ? "Recurring" : null,
-          entry.is_batched ? "Batched" : null
-        ].filter(Boolean).join(", ");
-
-        rows.push([
-          entry.expense_date,
-          tags ? `Expense (${tags})` : "Standard Expense",
-          cleanCSV(entry.name),
-          `-${parseFloat(entry.cost).toFixed(2)}`,
-          cleanCSV(`${entry.category}: ${parseFloat(entry.cost).toFixed(2)}`)
-        ]);
+        await generateVisualDashboard(reportData);
+        setAlertMsg(t('succ_export_visual', { period: targetPeriod }));
       }
-    });
-
-    rows.push(
-      [],
-      ["--- 4. PORTFOLIO & WEALTH ADJUSTMENTS ---"],
-      ["Date", "Asset Category", "Adjustment Type / Note", "Amount"]
-    );
-
-    if (scopedAdjs.length === 0) {
-      rows.push(["None", "N/A", "No wealth adjustments recorded in this period", "0.00"]);
-    } else {
-      [...scopedAdjs]
-        .sort((a, b) => new Date(b.adjustment_date) - new Date(a.adjustment_date))
-        .forEach(a => {
-          const catName = categories.find(c => c.id === a.category_id)?.name || 'Asset';
-          rows.push([
-            a.adjustment_date,
-            cleanCSV(catName),
-            cleanCSV(a.note || 'Manual Adjustment'),
-            `${parseFloat(a.amount) >= 0 ? '+' : ''}${parseFloat(a.amount).toFixed(2)}`
-          ]);
-        });
+    } catch (error) {
+      console.error(error);
+      setAlertMsg(t('err_export_failed'));
     }
-
-    const csvContent = rows.map(r => r.join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-
-    const fileNameDate = exportScope === 'day'
-      ? `day_${exportDate}_exported_${todayStr}`
-      : `month_${exportMonth}_exported_${todayStr}`;
-
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", `salary_allocator_${fileNameDate}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    setAlertMsg(`Success: Detailed CSV report for ${targetPeriod} exported.`);
   };
 
   const formatCurrency = (amount) => {
@@ -492,19 +365,24 @@ export default function App() {
   const assetCategories = categories.filter(c => c.type === 'asset');
 
   const historyFeed = [
-    ...closedMonths.map(m => ({
-      id: `cm-${m}`,
-      type: 'ledger',
-      date: `${m}-28`,
-      title: `Ledger Closed`,
-      desc: `Finalized budget and executed wealth sweep for ${m}`
-    })),
+    ...closedMonths.map(record => {
+      const [year, month] = record.month.split('-');
+      const nextDate = new Date(year, parseInt(month), 1);
+      const nextMonthStr = nextDate.getFullYear() + '-' + String(nextDate.getMonth() + 1).padStart(2, '0') + '-01';
+      return {
+        id: `cm-${record.month}`,
+        type: 'ledger',
+        date: nextMonthStr,
+        title: `Ledger Closed`,
+        desc: `Finalized budget and executed wealth sweep for ${record.month}`
+      };
+    }),
     ...assetAdjustments.map(a => ({
       id: a.id,
       type: 'adjustment',
       date: a.adjustment_date,
-      title: a.note || 'Manual Adjustment',
-      desc: `${a.amount > 0 ? '+' : ''}${formatCurrency(a.amount)} logged to ${categories.find(c => c.id === a.category_id)?.name || 'Asset'}`
+      title: a.note || t('manual_adjustment'),
+      desc: `${a.amount > 0 ? '+' : ''}${formatCurrency(a.amount)} logged to ${categories.find(c => c.id === a.category_id)?.name || t('asset_fallback')}`
     }))
   ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -518,7 +396,7 @@ export default function App() {
     } else {
       const total = categories.reduce((sum, c) => sum + c.percentage, 0);
       if (categories.length - lockedCategories.length === 1 && Math.abs(100 - total) > 0.5) {
-        setAlertMsg(`Error: Cannot lock final category. Adjust by ${Math.round(Math.abs(100 - total))}% to hit 100%.`);
+        setAlertMsg(t('err_lock_final_cat', { diff: Math.round(Math.abs(100 - total)) }));
         return;
       }
       setLockedCategories([...lockedCategories, id]);
@@ -528,7 +406,7 @@ export default function App() {
   const handleUnlockAll = () => {
     if (isReadOnly) return;
     setLockedCategories([]);
-    setAlertMsg("All categories unlocked.");
+    setAlertMsg(t('msg_all_unlocked'));
   };
 
   const handleSmartLockAll = () => {
@@ -540,13 +418,13 @@ export default function App() {
     if (Math.abs(diff) < 0.1) {
       if (lockedCategories.length === categories.length) return;
       setLockedCategories(categories.map(c => c.id));
-      setAlertMsg("Perfect Balance: All categories locked at 100%.");
+      setAlertMsg(t('msg_perfect_balance'));
       return;
     }
 
     const unlocked = categories.filter(c => !lockedCategories.includes(c.id));
     if (unlocked.length === 0) {
-      setAlertMsg(`Error: Cannot auto-balance. Board total is ${Math.round(total)}%. Unlock a category to adjust.`);
+      setAlertMsg(t('err_cannot_autobalance', { total: Math.round(total) }));
       return;
     }
 
@@ -561,13 +439,17 @@ export default function App() {
 
       const adjRounded = Math.round(adjustment);
       if (adjRounded !== 0) {
-        auditLog.push(`${adjRounded > 0 ? 'Added' : 'Decreased'} ${Math.abs(adjRounded)}% ${adjRounded > 0 ? 'to' : 'from'} '${u.name}'`);
+        auditLog.push(
+          adjRounded > 0
+            ? t('smart_lock_added', { pct: Math.abs(adjRounded), name: u.name })
+            : t('smart_lock_decreased', { pct: Math.abs(adjRounded), name: u.name })
+        );
       }
     });
 
     setCategories(newCats);
     setLockedCategories(newCats.map(c => c.id));
-    setAlertMsg(auditLog.length > 0 ? `Smart Lock: ${auditLog.join(', ')} to balance board.` : "Smart Lock Applied.");
+    setAlertMsg(auditLog.length > 0 ? t('msg_smart_lock_summary', { details: auditLog.join(', ') }) : t('msg_smart_lock_applied'));
   };
 
   const handleSliderChange = (changedId, newValue) => {
@@ -601,17 +483,21 @@ export default function App() {
   };
 
   const handleCloseMonth = async () => {
-    if (closedMonths.includes(selectedMonth)) {
-      setAlertMsg(`Error: ${selectedMonth} is already closed.`);
+    if (closedMonths.some(c => c.month === selectedMonth)) {
+      setAlertMsg(t('err_month_already_closed', { month: selectedMonth }));
       return;
     }
+
+    const [year, month] = selectedMonth.split('-');
+    const nextDate = new Date(year, parseInt(month), 1);
+    const nextMonthStamp = nextDate.getFullYear() + '-' + String(nextDate.getMonth() + 1).padStart(2, '0') + '-01';
 
     const previousAdj = [...assetAdjustments];
     const previousClosed = [...closedMonths];
     const previousExpenses = [...expenses];
 
     try {
-      // 1. AGGREGATE BATCHED EXPENSES (Grouped by Name)
+      // 1. AGGREGATE BATCHED EXPENSES
       const batchedExpenses = monthlyExpenses.filter(e => e.is_batched);
       let newlyAggregated = [];
       let idsToDelete = [];
@@ -620,7 +506,6 @@ export default function App() {
         const grouped = batchedExpenses.reduce((acc, curr) => {
           const normalizedName = curr.name.trim().toLowerCase();
           const groupKey = `${normalizedName}_${curr.category_id}`;
-
           acc[groupKey] = acc[groupKey] || [];
           acc[groupKey].push(curr);
           return acc;
@@ -628,17 +513,11 @@ export default function App() {
 
         for (const [, exps] of Object.entries(grouped)) {
           const sum = exps.reduce((total, e) => total + parseFloat(e.cost), 0);
-          const originalName = exps[0].name.trim();
-
           newlyAggregated.push({
-            user_id: session.user.id,
-            name: `${originalName} (Batched x${exps.length})`,
-            cost: sum,
-            category_id: exps[0].category_id,
-            category: exps[0].category,
-            expense_date: `${selectedMonth}-28`,
-            is_recurring: false,
-            is_batched: false
+            user_id: session.user.id, name: `${exps[0].name.trim()} (Batched x${exps.length})`, cost: sum,
+            category_id: exps[0].category_id, category: exps[0].category,
+            expense_date: nextMonthStamp,
+            is_recurring: false, is_batched: false
           });
           idsToDelete.push(...exps.map(e => e.id));
         }
@@ -652,29 +531,21 @@ export default function App() {
       }
 
       // 2. FORWARD RECURRING EXPENSES TO NEXT MONTH
-      const [year, month] = selectedMonth.split('-');
-      let nextDate = new Date(year, parseInt(month), 1);
-      const nextMonthStr = nextDate.getFullYear() + '-' + String(nextDate.getMonth() + 1).padStart(2, '0');
-
       const recurringExpenses = monthlyExpenses.filter(e => e.is_recurring);
       let newRecurring = [];
       if (recurringExpenses.length > 0) {
         newRecurring = recurringExpenses.map(e => ({
-          user_id: session.user.id,
-          name: e.name,
-          cost: e.cost,
-          category_id: e.category_id,
-          category: e.category,
-          expense_date: `${nextMonthStr}-01`,
-          is_recurring: true,
-          is_batched: false
+          user_id: session.user.id, name: e.name, cost: e.cost,
+          category_id: e.category_id, category: e.category,
+          expense_date: nextMonthStamp,
+          is_recurring: true, is_batched: false
         }));
         const { data, error } = await supabase.from('expenses').insert(newRecurring).select();
         if (error) throw error;
         newRecurring = data;
       }
 
-      // 3. WEALTH SWEEP (Sweeps remaining unspent asset allocation)
+      // 3. WEALTH SWEEP
       const newAdjustments = [];
       assetCategories.forEach(cat => {
         const allocated = parsedSalary * (cat.percentage / 100);
@@ -684,7 +555,8 @@ export default function App() {
         if (amountToSweep > 0) {
           newAdjustments.push({
             user_id: session.user.id, category_id: cat.id, amount: amountToSweep,
-            adjustment_date: `${selectedMonth}-28`, note: `Month-End Auto-Sweep (${selectedMonth})`
+            adjustment_date: nextMonthStamp,
+            note: `Month-End Auto-Sweep (${selectedMonth})` 
           });
         }
       });
@@ -695,42 +567,35 @@ export default function App() {
         setAssetAdjustments([...data, ...assetAdjustments]);
       }
 
-      // 4. GAMIFICATION: CHECK FOR PERFECT BUDGET MONTH
+      // 4. GAMIFICATION
       let isPerfectMonth = true;
       const expenseCategoriesForCheck = categories.filter(c => c.type !== 'asset');
-
       expenseCategoriesForCheck.forEach(cat => {
         const categoryBase = parsedSalary * (cat.percentage / 100);
         const spent = monthlyExpenses.filter(e => e.category_id === cat.id).reduce((sum, e) => sum + parseFloat(e.cost), 0);
-        if (categoryBase > 0 && spent > categoryBase) {
-          isPerfectMonth = false;
-        }
+        if (categoryBase > 0 && spent > categoryBase) isPerfectMonth = false;
       });
 
       const newStreak = isPerfectMonth ? currentStreak + 1 : 0;
       const newLongest = Math.max(newStreak, longestStreak);
-
-      await supabase.from('profiles').update({
-        current_streak: newStreak,
-        longest_streak: newLongest
-      }).eq('user_id', session.user.id);
-
+      await supabase.from('profiles').update({ current_streak: newStreak, longest_streak: newLongest }).eq('user_id', session.user.id);
       setCurrentStreak(newStreak);
       setLongestStreak(newLongest);
 
-      // 5. FINALIZE MONTH CLOSURE
-      const { error: closeError } = await supabase.from('closed_months').insert([{ user_id: session.user.id, month: selectedMonth }]);
+      // 5. FINALIZE MONTH CLOSURE & SAVE SNAPSHOT
+      const newClosedRecord = { user_id: session.user.id, month: selectedMonth, category_snapshot: categories };
+      const { data: closedData, error: closeError } = await supabase.from('closed_months').insert([newClosedRecord]).select();
       if (closeError) throw closeError;
 
-      setClosedMonths([...closedMonths, selectedMonth]);
+      setClosedMonths([...closedMonths, closedData[0]]);
       const updatedExpenses = expenses.filter(e => !idsToDelete.includes(e.id));
       setExpenses([...newRecurring, ...newlyAggregated, ...updatedExpenses]);
 
-      setAlertMsg(`Success: Aggregated logs, forwarded bills, and closed ${selectedMonth}.`);
+      setAlertMsg(t('succ_month_closed', { month: selectedMonth }));
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
     } catch (error) {
-      setAlertMsg("Database Error closing month: " + (error.message || error.details));
+      setAlertMsg(t('err_db_closing_month', { error: error.message || error.details }));
       setAssetAdjustments(previousAdj);
       setClosedMonths(previousClosed);
       setExpenses(previousExpenses);
@@ -765,7 +630,7 @@ export default function App() {
       if (newCategoryType === 'asset' && !adjCatId) setAdjCatId(data[0].id);
 
     } catch {
-      setAlertMsg("Database Error: Failed to add category.");
+      setAlertMsg(t('err_db_add_cat'));
       setCategories(previousCategories);
     }
   };
@@ -782,7 +647,7 @@ export default function App() {
       const { error } = await supabase.from('categories').update({ name: newName.trim(), target_goal: safeGoal }).eq('id', id);
       if (error) throw error;
     } catch {
-      setAlertMsg("Error updating category.");
+      setAlertMsg(t('err_update_cat'));
       setCategories(previousCategories);
     }
   };
@@ -804,17 +669,16 @@ export default function App() {
       const { error } = await supabase.from('categories').delete().eq('id', id);
       if (error) throw error;
     } catch {
-      setAlertMsg("Database Error: Failed to delete category.");
+      setAlertMsg(t('err_db_delete_cat'));
       setCategories(previousCategories);
       setExpenses(previousExpenses);
     }
   };
-  // Helper: Get true available balance (Monthly for Expenses, Lifetime Portfolio for Assets)
+
   const getCategoryAvailablePool = (catId) => {
     const cat = categories.find(c => c.id === catId);
     if (!cat) return 0;
 
-    // Subtract amounts already promised to OTHER open bundles this month
     const reservedInOpenBundles = bundles
       .filter(b => b.month === selectedMonth && b.status !== 'locked')
       .reduce((sum, b) => sum + (parseFloat(b.target_budget?.[catId]) || 0), 0);
@@ -827,7 +691,7 @@ export default function App() {
       const spentThisMonth = monthlyExpenses
         .filter(e => e.category_id === cat.id)
         .reduce((sum, e) => sum + parseFloat(e.cost), 0);
-      const previewDeposit = (selectedMonth === todayMonth && !closedMonths.includes(todayMonth))
+      const previewDeposit = (selectedMonth === todayMonth && !closedMonths.some(c => c.month === todayMonth))
         ? Math.max(0, currentMonthAllocation - spentThisMonth)
         : 0;
 
@@ -841,13 +705,14 @@ export default function App() {
       return Math.max(0, parseFloat((categoryBase - spentThisMonth - reservedInOpenBundles).toFixed(2)));
     }
   };
+
   // --- SPECIAL OCCASION (BUNDLE) WORKFLOW ---
   const handleCreateBundle = async (e) => {
     e.preventDefault();
     if (isReadOnly) return;
 
     if (!bundleName.trim()) {
-      setAlertMsg("Please enter a name for the Special Occasion.");
+      setAlertMsg(t('err_enter_occasion_name'));
       return;
     }
 
@@ -861,7 +726,11 @@ export default function App() {
       const catObj = categories.find(c => c.id === catEl.value);
 
       if (proposedTotal > maxAvailable) {
-        setAlertMsg(`Error: Cannot pull ${formatCurrency(proposedTotal)} from ${catObj?.name}. Max available is ${formatCurrency(maxAvailable)}.`);
+        setAlertMsg(t('err_pull_exceeds', {
+          requested: formatCurrency(proposedTotal),
+          category: catObj?.name || t('category_fallback'),
+          available: formatCurrency(maxAvailable)
+        }));
         return;
       }
       finalAllocations[catEl.value] = proposedTotal;
@@ -869,16 +738,18 @@ export default function App() {
     }
 
     if (Object.keys(finalAllocations).length === 0) {
-      setAlertMsg("Please allocate a budget from at least one category.");
+      setAlertMsg(t('err_allocate_at_least_one'));
       return;
     }
 
-    // Final validation check across all staged categories
     for (const [catId, amt] of Object.entries(finalAllocations)) {
       const maxAvailable = getCategoryAvailablePool(catId);
       const catObj = categories.find(c => c.id === catId);
       if (amt > maxAvailable) {
-        setAlertMsg(`Error: ${catObj?.name} only has ${formatCurrency(maxAvailable)} available.`);
+        setAlertMsg(t('err_cat_only_has', {
+          category: catObj?.name || t('category_fallback'),
+          available: formatCurrency(maxAvailable)
+        }));
         return;
       }
     }
@@ -902,22 +773,23 @@ export default function App() {
       const { data, error } = await supabase.from('bundles').insert([newBundle]).select();
       if (error) throw error;
       setBundles(current => current.map(b => b.id === tempId ? data[0] : b));
-      setAlertMsg(`Success: '${newBundle.name}' occasion created. Add your expenses below!`);
+      setAlertMsg(t('succ_occasion_created', { name: newBundle.name }));
     } catch (error) {
       console.error("Supabase Bundle Error:", error);
-      setAlertMsg("Database Error: " + (error.message || "Failed to save bundle."));
+      setAlertMsg(t('err_db_save_bundle', { error: error.message || "Failed to save bundle." }));
       setBundles(current => current.filter(b => b.id !== tempId));
     }
   };
+
   /**
-     * Appends an itemized receipt to an open Special Occasion bundle and validates budget ceilings.
-     * @param {string} bundleId - The UUID of the target occasion bundle.
-     */
+   * Appends an itemized receipt to an open Special Occasion bundle and validates budget ceilings.
+   * @param {string} bundleId - The UUID of the target occasion bundle.
+   */
   const handleAddOccasionItem = async (bundleId) => {
     if (isReadOnly) return;
     const input = occasionItemInputs[bundleId] || { name: '', allocations: {} };
     if (!input.name.trim()) {
-      setAlertMsg('Item name is required.');
+      setAlertMsg(t('err_item_name_req'));
       return;
     }
 
@@ -935,16 +807,17 @@ export default function App() {
       }
     }
 
-
     const currentItems = Array.isArray(targetBundle.items) ? targetBundle.items : [];
 
-    // Validate against the bundle's strict category ceilings
     for (const [cId, amt] of Object.entries(cleanAllocations)) {
       const spentSoFar = currentItems.reduce((s, item) => s + (item.allocations?.[cId] || 0), 0);
       const ceiling = parseFloat(targetBundle.target_budget[cId]) || 0;
       if (spentSoFar + amt > ceiling) {
-        const catName = categories.find(c => c.id === cId)?.name || 'Category';
-        setAlertMsg(`Exceeds budget! Only ${formatCurrency(ceiling - spentSoFar)} left in ${catName} for this trip.`);
+        const catName = categories.find(c => c.id === cId)?.name || t('category_fallback');
+        setAlertMsg(t('err_exceeds_trip_budget', {
+          remaining: formatCurrency(ceiling - spentSoFar),
+          category: catName
+        }));
         return;
       }
     }
@@ -965,7 +838,7 @@ export default function App() {
       const { error } = await supabase.from('bundles').update({ items: updatedItems }).eq('id', bundleId);
       if (error) throw error;
     } catch {
-      setAlertMsg("Database Error: Failed to save item to occasion.");
+      setAlertMsg(t('err_db_save_occasion_item'));
     }
   };
 
@@ -981,7 +854,7 @@ export default function App() {
       const { error } = await supabase.from('bundles').update({ items: updatedItems }).eq('id', bundleId);
       if (error) throw error;
     } catch {
-      setAlertMsg("Error removing item.");
+      setAlertMsg(t('err_remove_item'));
     }
   };
 
@@ -991,11 +864,10 @@ export default function App() {
     const totalSpent = items.reduce((s, i) => s + parseFloat(i.cost), 0);
 
     if (totalSpent <= 0) {
-      setAlertMsg("Add at least one expense to this occasion before locking it into Transactions.");
+      setAlertMsg(t('err_add_one_expense_before_lock'));
       return;
     }
 
-    // New Math: Sum up the exact item-level category splits
     const finalCategoryTotals = {};
     items.forEach(item => {
       if (item.allocations) {
@@ -1008,7 +880,6 @@ export default function App() {
     const newBundleTransactions = [];
     const newPortfolioWithdrawals = [];
 
-    // Loop through the exact totals we just calculated, NOT the old allocations map
     Object.entries(finalCategoryTotals).forEach(([catId, deductedCost]) => {
       if (deductedCost <= 0) return;
 
@@ -1016,22 +887,19 @@ export default function App() {
       const isAsset = catObj?.type === 'asset';
 
       if (isAsset) {
-        // Check how much of this asset's current month allocation is still unspent
         const monthlyAssetBase = parsedSalary * ((catObj.percentage || 0) / 100);
         const alreadySpentThisMonth = monthlyExpenses
           .filter(e => e.category_id === catId)
           .reduce((s, e) => s + parseFloat(e.cost), 0);
         const unspentMonthlyAsset = Math.max(0, monthlyAssetBase - alreadySpentThisMonth);
 
-        // Part 1: Absorb what we can from this month's savings allocation
         const absorbedByCurrentMonth = Math.min(deductedCost, unspentMonthlyAsset);
-        // Part 2: Any excess comes directly out of lifetime Portfolio wealth!
         const pulledFromLifetimeVault = parseFloat((deductedCost - absorbedByCurrentMonth).toFixed(2));
 
         if (absorbedByCurrentMonth > 0) {
           newBundleTransactions.push({
             user_id: session.user.id,
-            name: `✨ ${bundle.name} (${items.length} items • Monthly ${catObj.name})`,
+            name: ` ${bundle.name} (${items.length} items • Monthly ${catObj.name})`,
             cost: absorbedByCurrentMonth,
             category_id: catId,
             category: catObj.name,
@@ -1048,16 +916,15 @@ export default function App() {
             category_id: catId,
             amount: -pulledFromLifetimeVault,
             adjustment_date: `${bundle.month}-${getToday().slice(8, 10)}`,
-            note: `✨ ${bundle.name} (Lifetime ${catObj.name} Pull)`
+            note: ` ${bundle.name} (Lifetime ${catObj.name} Pull)`
           });
         }
       } else {
         newBundleTransactions.push({
           user_id: session.user.id,
-          // We check the keys of finalCategoryTotals to see if it was a split funding
           name: Object.keys(finalCategoryTotals).length > 1
-            ? `✨ ${bundle.name} (${items.length} items • ${catObj?.name || 'Split'})`
-            : `✨ ${bundle.name} (${items.length} items)`,
+            ? ` ${bundle.name} (${items.length} items • ${catObj?.name || 'Split'})`
+            : ` ${bundle.name} (${items.length} items)`,
           cost: deductedCost,
           category_id: catId,
           category: catObj?.name || 'Special Occasion',
@@ -1090,9 +957,9 @@ export default function App() {
       if (insertedExps.length > 0) setExpenses([...insertedExps, ...expenses]);
       if (insertedAdjs.length > 0) setAssetAdjustments([...insertedAdjs, ...assetAdjustments]);
       setBundles(bundles.map(b => b.id === bundle.id ? { ...b, status: 'locked' } : b));
-      setAlertMsg(`Locked! '${bundle.name}' finalized across Cash Flow & Portfolio.`);
+      setAlertMsg(t('succ_bundle_locked', { name: bundle.name }));
     } catch (error) {
-      setAlertMsg("Error locking occasion: " + (error.message || "Database error"));
+      setAlertMsg(t('err_locking_occasion', { error: error.message || "Database error" }));
     }
   };
 
@@ -1104,7 +971,7 @@ export default function App() {
       await supabase.from('expenses').delete().eq('bundle_id', bundleId);
       await supabase.from('bundles').delete().eq('id', bundleId);
     } catch {
-      setAlertMsg("Error deleting occasion.");
+      setAlertMsg(t('err_deleting_occasion'));
     }
   };
 
@@ -1112,12 +979,12 @@ export default function App() {
   const activeSheet = sandboxSheets.find(s => s.id === activeSheetId) || sandboxSheets[0] || null;
 
   /**
-     * Deletes a sandbox calculation sheet from both local state and the Supabase database.
-     * @param {string} sheetId - The UUID of the sandbox sheet to delete.
-     */
+   * Deletes a sandbox calculation sheet from both local state and the Supabase database.
+   * @param {string} sheetId - The UUID of the sandbox sheet to delete.
+   */
   const handleDeleteSandboxSheet = async (sheetId) => {
     if (isReadOnly) {
-      setAlertMsg("Cannot delete calculation sheets while the ledger is locked.");
+      setAlertMsg(t('err_delete_sandbox_locked'));
       return;
     }
     const previousIndex = sandboxSheets.findIndex(sheet => sheet.id === sheetId);
@@ -1139,7 +1006,7 @@ export default function App() {
       if (previousActiveSheetId === sheetId) {
         setActiveSheetId(current => current === null ? previousActiveSheetId : current);
       }
-      setAlertMsg("Error deleting calculation sheet from database.");
+      setAlertMsg(t('err_delete_sandbox_db'));
     }
   };
 
@@ -1166,8 +1033,8 @@ export default function App() {
         total_budget: newSheet.totalBudget, buckets: newSheet.buckets, expenses: newSheet.expenses
       }]);
       if (error) throw error;
-    } catch (error) {
-      setAlertMsg("Database Error: Failed to save calculation sheet.");
+    } catch {
+      setAlertMsg(t('err_save_sandbox_db'));
       setSandboxSheets(current => current.filter(s => s.id !== tempId));
       setActiveSheetId(null);
     }
@@ -1181,7 +1048,7 @@ export default function App() {
 
     const existingBucketsTotal = activeSheet.buckets.reduce((s, b) => s + b.limit, 0);
     if (existingBucketsTotal + limit > activeSheet.totalBudget) {
-      setAlertMsg(`Sub-budget exceeds remaining unallocated budget (${formatCurrency(activeSheet.totalBudget - existingBucketsTotal)}).`);
+      setAlertMsg(t('err_sub_budget_exceeds', { remaining: formatCurrency(activeSheet.totalBudget - existingBucketsTotal) }));
       return;
     }
 
@@ -1218,20 +1085,20 @@ export default function App() {
     if (!sheet) return;
     const totalSpent = sheet.expenses.reduce((s, e) => s + e.cost, 0);
     const rows = [
-      ["Calculation Title", sheet.title],
-      ["Total Master Budget", sheet.totalBudget],
-      ["Total Imaginary Spent", totalSpent],
-      ["Remaining Balance", sheet.totalBudget - totalSpent],
+      [t('csv_calc_title'), sheet.title],
+      [t('csv_total_master_budget'), sheet.totalBudget],
+      [t('csv_total_imaginary_spent'), totalSpent],
+      [t('csv_remaining_balance'), sheet.totalBudget - totalSpent],
       [],
-      ["Sub-Budget / Bucket", "Allocated Limit", "Spent", "Remaining"],
+      [t('csv_sub_budget_bucket'), t('csv_allocated_limit'), t('spent'), t('remaining')],
       ...sheet.buckets.map(b => {
         const bSpent = sheet.expenses.filter(e => e.bucketId === b.id).reduce((s, e) => s + e.cost, 0);
         return [b.name.replace(/,/g, ''), b.limit, bSpent, b.limit - bSpent];
       }),
       [],
-      ["Item Description", "Assigned Bucket", "Cost"],
+      [t('csv_item_desc'), t('csv_assigned_bucket'), t('cost_simple_placeholder')],
       ...sheet.expenses.map(e => {
-        const bName = e.bucketId === 'MAIN' ? 'General Pool' : (sheet.buckets.find(b => b.id === e.bucketId)?.name || 'General Pool');
+        const bName = e.bucketId === 'MAIN' ? t('general_pool_short') : (sheet.buckets.find(b => b.id === e.bucketId)?.name || t('general_pool_short'));
         return [e.name.replace(/,/g, ''), bName.replace(/,/g, ''), e.cost];
       })
     ];
@@ -1261,7 +1128,7 @@ export default function App() {
       const availableBalance = Math.max(0, (parsedSalary * (category.percentage / 100)) - spentSoFar);
 
       if (cost > availableBalance) {
-        setAlertMsg(`Expense exceeds available balance for ${category.name}.`);
+        setAlertMsg(t('err_exp_exceeds_avail', { category: category.name }));
         return;
       }
     }
@@ -1291,7 +1158,7 @@ export default function App() {
       if (error) throw error;
       setExpenses(current => current.map(exp => exp.id === tempId ? data[0] : exp));
     } catch {
-      setAlertMsg("Database Error: Failed to save expense.");
+      setAlertMsg(t('err_db_save_exp'));
     }
   };
 
@@ -1315,7 +1182,7 @@ export default function App() {
       }).eq('id', id);
       if (error) throw error;
     } catch {
-      setAlertMsg("Error updating expense.");
+      setAlertMsg(t('err_update_exp'));
     }
   };
 
@@ -1326,7 +1193,7 @@ export default function App() {
       const { error } = await supabase.from('expenses').delete().eq('id', id);
       if (error) throw error;
     } catch {
-      setAlertMsg("Database Error: Failed to delete expense.");
+      setAlertMsg(t('err_db_delete_exp'));
     }
   };
 
@@ -1350,7 +1217,7 @@ export default function App() {
       if (error) throw error;
       setAssetAdjustments(current => current.map(a => a.id === tempId ? data[0] : a));
     } catch {
-      setAlertMsg("Database Error: Failed to save adjustment.");
+      setAlertMsg(t('err_db_save_adj'));
     }
   };
 
@@ -1362,7 +1229,11 @@ export default function App() {
     setTaxEstimateResult(calculateProgressiveTax(income, taxCountry, taxFilingStatus));
   };
 
-  const totalSpent = monthlyExpenses.reduce((sum, e) => sum + parseFloat(e.cost), 0);
+  const expenseCategoryIds = categories.filter(c => c.type !== 'asset').map(c => c.id);
+  const totalSpent = monthlyExpenses
+    .filter(e => expenseCategoryIds.includes(e.category_id))
+    .reduce((sum, e) => sum + parseFloat(e.cost), 0);
+
   const totalAutomatedAssets = assetCategories.reduce((sum, cat) => sum + (parsedSalary * (cat.percentage / 100)), 0);
   const totalAllocated = totalSpent + totalAutomatedAssets;
   const totalRemaining = Math.max(0, parsedSalary - totalAllocated);
@@ -1373,7 +1244,6 @@ export default function App() {
     (filterCategory === 'All' || exp.category_id === filterCategory)
   );
 
-  // --- SQUASH MULTIPLE OCCASION ROWS INTO ONE VISUAL BUNDLE ---
   const groupedExpenses = [];
   const bundleGroupMap = {};
 
@@ -1383,7 +1253,7 @@ export default function App() {
         bundleGroupMap[exp.bundle_id] = {
           id: `bundle_${exp.bundle_id}`,
           bundle_id: exp.bundle_id,
-          name: bundles.find(b => b.id === exp.bundle_id)?.name || '✨ Special Occasion',
+          name: bundles.find(b => b.id === exp.bundle_id)?.name || t('special_occasion_fallback'),
           cost: 0,
           expense_date: exp.expense_date,
           categories_involved: new Set(),
@@ -1419,7 +1289,7 @@ export default function App() {
   const wealthHistoryData = Object.keys(wealthHistoryMap).sort().map(month => {
     runningWealth += wealthHistoryMap[month];
     return {
-      month: new Date(month + '-01').toLocaleString('default', { month: 'short', year: '2-digit' }),
+      month: new Date(month + '-01').toLocaleString(i18n.language || 'default', { month: 'short', year: '2-digit' }),
       wealth: runningWealth
     };
   });
@@ -1428,7 +1298,7 @@ export default function App() {
   if (loadingData) {
     return (
       <div className={`min-h-screen flex flex-col items-center justify-center ${theme === 'dark' ? 'bg-zinc-950 text-zinc-100' : 'bg-gray-50 text-gray-900'}`}>
-        <p className="animate-pulse font-semibold">Loading data...</p>
+        <p className="animate-pulse font-semibold">{t('loading_data')}</p>
       </div>
     );
   }
@@ -1443,6 +1313,7 @@ export default function App() {
         currentStreak={currentStreak}
         longestStreak={longestStreak}
         handleLogout={handleLogout}
+        username={username}
       />
 
       <main className="flex-1 overflow-y-auto p-4 md:p-10 relative custom-scrollbar">
@@ -1639,7 +1510,7 @@ export default function App() {
               setExportMonth={setExportMonth}
               exportDate={exportDate}
               setExportDate={setExportDate}
-              handleExportCSV={handleExportCSV}
+              handleExportData={handleExportData}
             />
           )}
 
