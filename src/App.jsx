@@ -13,19 +13,21 @@ import Sidebar, { MobileHeader } from './components/Sidebar';
 import PortfolioTab from './components/PortfolioTab';
 import OccasionsSandboxTab from './components/OccasionsSandboxTab';
 import CashFlowTab from './components/CashFlowTab';
-
+import SupportTab from './components/SupportTab';
+import DevDashboard from './components/DevDashboard';
+import OwnerDashboard from './components/OwnerDashboard';
 /**
  * Main application component orchestrating global state, data fetching, and tab routing.
  */
 export default function App() {
   const { t, i18n } = useTranslation();
-  
- useEffect(() => {
-  const lang = i18n.resolvedLanguage || i18n.language || 'en';
-  document.documentElement.dir = lang.startsWith('ar') ? 'rtl' : 'ltr';
-  document.documentElement.lang = lang;
-}, [i18n.resolvedLanguage, i18n.language]);
-  
+
+  useEffect(() => {
+    const lang = i18n.resolvedLanguage || i18n.language || 'en';
+    document.documentElement.dir = lang.startsWith('ar') ? 'rtl' : 'ltr';
+    document.documentElement.lang = lang;
+  }, [i18n.resolvedLanguage, i18n.language]);
+
   const [session, setSession] = useState(null);
   const [loadingData, setLoadingData] = useState(true);
 
@@ -65,6 +67,7 @@ export default function App() {
 
   const [salary, setSalary] = useState('');
   const [username, setUsername] = useState('');
+  const [userRole, setUserRole] = useState('customer');
   const [categories, setCategories] = useState([]);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryType, setNewCategoryType] = useState('expense');
@@ -148,16 +151,18 @@ export default function App() {
       const { data: authData } = await supabase.auth.getUser();
       const registeredUsername = authData?.user?.user_metadata?.username || `user_${Date.now()}`;
 
-      const { data: newProfile } = await supabase.from('profiles').insert([{ 
+      const { data: newProfile } = await supabase.from('profiles').insert([{
         user_id: userId,
         username: registeredUsername,
-        role: 'customer'
+        role: 'user',
+        subscription_tier: 'free'
       }]).select().single();
-      
+
       profile = newProfile;
     }
 
     if (profile) {
+      setUserRole(profile.role || 'user');
       setSalary(profile.salary > 0 ? profile.salary.toString() : '');
       if (profile.currency !== undefined) {
         setCurrency(profile.currency);
@@ -556,7 +561,7 @@ export default function App() {
           newAdjustments.push({
             user_id: session.user.id, category_id: cat.id, amount: amountToSweep,
             adjustment_date: nextMonthStamp,
-            note: `Month-End Auto-Sweep (${selectedMonth})` 
+            note: `Month-End Auto-Sweep (${selectedMonth})`
           });
         }
       });
@@ -1314,8 +1319,8 @@ export default function App() {
         longestStreak={longestStreak}
         handleLogout={handleLogout}
         username={username}
+        userRole={userRole}
       />
-
       <main className="flex-1 overflow-y-auto p-4 md:p-10 relative custom-scrollbar">
         <div className="max-w-7xl mx-auto w-full">
 
@@ -1330,6 +1335,7 @@ export default function App() {
             setActiveTab={setActiveTab}
             setAlertMsg={setAlertMsg}
             currentStreak={currentStreak}
+            userRole={userRole}
           />
 
           {activeTab === 'cashflow' && (
@@ -1513,7 +1519,18 @@ export default function App() {
               handleExportData={handleExportData}
             />
           )}
+          {activeTab === 'support' && (
+            <SupportTab
+              session={session}
+            />
+          )}
+          {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (
+            <DevDashboard />
+          )}
 
+          {activeTab === 'owner_dashboard' && userRole === 'owner' && (
+            <OwnerDashboard />
+          )}
         </div>
       </main>
     </div>
