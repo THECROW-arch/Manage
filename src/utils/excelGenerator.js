@@ -2,11 +2,22 @@ import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { getToday, getCurrentMonth } from './constants';
 
+/**
+ * Phase 9 Security: Prevents Excel Formula Injection (CSV Injection).
+ * Prepends a single quote to strings starting with formula triggers (=, +, -, @)
+ * to force Excel to render them as safe, plain text.
+ */
+const sanitizeForExcel = (value) => {
+    if (typeof value === 'string' && /^[=+\-@]/.test(value.trim())) {
+        return "'" + value.trim();
+    }
+    return value;
+};
+
 export const generateFormalAudit = async (data) => {
     const wb = new ExcelJS.Workbook();
     wb.creator = 'Salary Allocator SaaS';
 
-    // FIX: Changed "reportData" to "data" to match the function argument!
     const { targetPeriod, exportScope, currency, parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths = [] } = data;
 
     // Dynamic scope labeling (Full Month vs Month-to-Date vs Single Day)
@@ -93,7 +104,7 @@ export const generateFormalAudit = async (data) => {
         const util = catBudget > 0 ? (spentMtd / catBudget) : 0;
 
         const row = summarySheet.addRow([
-            cat.name,
+            sanitizeForExcel(cat.name), // Phase 9 Security
             cat.type === 'asset' ? 'Wealth Asset' : 'Expense',
             (cat.percentage / 100),
             catBudget,
@@ -130,8 +141,8 @@ export const generateFormalAudit = async (data) => {
     const formattedAdjs = scopedAdjs.map(adj => ({
         is_adjustment: true,
         expense_date: adj.adjustment_date,
-        category: activeCategories.find(c => c.id === adj.category_id)?.name || 'Asset',
-        name: adj.note || 'Manual Adjustment',
+        category: sanitizeForExcel(activeCategories.find(c => c.id === adj.category_id)?.name || 'Asset'),
+        name: sanitizeForExcel(adj.note || 'Manual Adjustment'),
         amount: adj.amount
     }));
 
@@ -152,7 +163,7 @@ export const generateFormalAudit = async (data) => {
                 date: entry.expense_date,
                 type: 'Special Occasion (Master)',
                 category: 'Multiple',
-                description: `${entry.name} (${entry.items.length} items)`,
+                description: `${sanitizeForExcel(entry.name)} (${entry.items.length} items)`, // Phase 9 Security
                 amount: -entry.cost,
                 breakdown: entry.categorySplits.join(" | ")
             }).font = { bold: true };
@@ -160,14 +171,14 @@ export const generateFormalAudit = async (data) => {
             entry.items.forEach(item => {
                 const itemCategoryBreakdown = Object.entries(item.allocations || {})
                     .filter(([, amt]) => parseFloat(amt) > 0)
-                    .map(([cId, amt]) => `${activeCategories.find(c => c.id === cId)?.name || 'Category'}: ${parseFloat(amt).toFixed(2)}`)
+                    .map(([cId, amt]) => `${sanitizeForExcel(activeCategories.find(c => c.id === cId)?.name || 'Category')}: ${parseFloat(amt).toFixed(2)}`)
                     .join(" | ");
 
                 const itemRow = ledgerSheet.addRow({
                     date: entry.expense_date,
                     type: '  ↳ Occasion Receipt Item',
                     category: '-',
-                    description: `   • ${item.name}`,
+                    description: `   • ${sanitizeForExcel(item.name)}`, // Phase 9 Security
                     amount: -item.cost,
                     breakdown: itemCategoryBreakdown
                 });
@@ -177,10 +188,10 @@ export const generateFormalAudit = async (data) => {
             ledgerSheet.addRow({
                 date: entry.expense_date,
                 type: 'Standard Expense',
-                category: entry.category,
-                description: entry.name,
+                category: sanitizeForExcel(entry.category),
+                description: sanitizeForExcel(entry.name),
                 amount: -entry.cost,
-                breakdown: `${entry.category}: ${parseFloat(entry.cost).toFixed(2)}`
+                breakdown: `${sanitizeForExcel(entry.category)}: ${parseFloat(entry.cost).toFixed(2)}`
             });
         }
     });
@@ -197,7 +208,6 @@ export const generateVisualDashboard = async (data) => {
     // Turn off gridlines to make it look like a dashboard UI
     const sheet = wb.addWorksheet('Dashboard', { views: [{ showGridLines: false }] });
 
-    // FIX: Changed "reportData" to "data" to match the function argument!
     const { targetPeriod, exportScope, currency, parsedSalary, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining, categories = [], groupedScopedExps, scopedExps, cumulativeMonthExps, closedMonths = [] } = data;
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
@@ -275,7 +285,7 @@ export const generateVisualDashboard = async (data) => {
         // Category Header Bar
         sheet.mergeCells(`${c1}${startRow}:${c3}${startRow}`);
         const header = sheet.getCell(`${c1}${startRow}`);
-        header.value = cat.name.toUpperCase();
+        header.value = sanitizeForExcel(cat.name.toUpperCase()); // Phase 9 Security
         header.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
 
         // Emerald for Assets, Indigo for Expenses
@@ -315,7 +325,7 @@ export const generateVisualDashboard = async (data) => {
             runningSpent += itemCost;
             const isOverBudget = catBudget > 0 && runningSpent > catBudget;
 
-            sheet.getCell(`${c1}${currentRow}`).value = itemName;
+            sheet.getCell(`${c1}${currentRow}`).value = sanitizeForExcel(itemName); // Phase 9 Security
             sheet.getCell(`${c1}${currentRow}`).font = { size: 10, color: { argb: isOverBudget ? 'FFDC2626' : 'FF334155' } };
             sheet.getCell(`${c1}${currentRow}`).alignment = { wrapText: true, vertical: 'top' };
 

@@ -328,6 +328,13 @@ const resources = {
       "err_ticket_submit": "Failed to submit ticket. Please try again.",
       "succ_ticket_submit": "Ticket submitted successfully!",
       "owner_dashboard": "Command Center",
+
+      "auth_subtitle_recovery": "Reset your password",
+      "auth_forgot_pwd": "Forgot password?",
+      "auth_err_email_req": "Email is required for password recovery.",
+      "auth_succ_recovery": "If an account exists, a password reset link has been sent.",
+      "auth_send_reset_btn": "Send Reset Link",
+      "auth_back_to_signin": "← Back to Sign In",
     }
   },
   fr: {
@@ -656,6 +663,13 @@ const resources = {
       "err_ticket_submit": "Échec de l'envoi du ticket. Veuillez réessayer.",
       "succ_ticket_submit": "Ticket soumis avec succès !",
       "owner_dashboard": "Centre de Commandement",
+
+      "auth_subtitle_recovery": "Réinitialiser votre mot de passe",
+      "auth_forgot_pwd": "Mot de passe oublié ?",
+      "auth_err_email_req": "L'email est requis pour la récupération du mot de passe.",
+      "auth_succ_recovery": "Si un compte existe, un lien de réinitialisation a été envoyé.",
+      "auth_send_reset_btn": "Envoyer le lien",
+      "auth_back_to_signin": "← Retour à la connexion",
     }
   },
   es: {
@@ -984,6 +998,13 @@ const resources = {
       "err_ticket_submit": "Error al enviar el ticket. Por favor, inténtalo de nuevo.",
       "succ_ticket_submit": "¡Ticket enviado con éxito!",
       "owner_dashboard": "Centro de Mando",
+
+      "auth_subtitle_recovery": "Restablecer tu contraseña",
+      "auth_forgot_pwd": "¿Olvidaste tu contraseña?",
+      "auth_err_email_req": "El correo es obligatorio para recuperar la contraseña.",
+      "auth_succ_recovery": "Si la cuenta existe, se ha enviado un enlace de restablecimiento.",
+      "auth_send_reset_btn": "Enviar enlace",
+      "auth_back_to_signin": "← Volver a iniciar sesión",
     }
   },
   ar: {
@@ -1312,6 +1333,13 @@ const resources = {
       "err_ticket_submit": "فشل في إرسال التذكرة. يرجى المحاولة مرة أخرى.",
       "succ_ticket_submit": "تم إرسال التذكرة بنجاح!",
       "owner_dashboard": "مركز القيادة",
+
+      "auth_subtitle_recovery": "إعادة تعيين كلمة المرور",
+      "auth_forgot_pwd": "هل نسيت كلمة المرور؟",
+      "auth_err_email_req": "البريد الإلكتروني مطلوب لاستعادة كلمة المرور.",
+      "auth_succ_recovery": "إذا كان الحساب موجودًا، فقد تم إرسال رابط إعادة التعيين.",
+      "auth_send_reset_btn": "إرسال رابط الإعادة",
+      "auth_back_to_signin": "← العودة إلى تسجيل الدخول",
     }
   }
 };
