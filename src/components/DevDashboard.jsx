@@ -1,15 +1,23 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
 
+/**
+ * DevDashboard component for internal staff (devs/owners) to manage support tickets.
+ * Allows filtering, reading, and replying to user-submitted tickets.
+ */
 export default function DevDashboard() {
     const [tickets, setTickets] = useState([]);
     const [filter, setFilter] = useState('open'); // 'all', 'open', 'in_progress', 'resolved'
     const [replyDrafts, setReplyDrafts] = useState({});
+    const [alertMsg, setAlertMsg] = useState('');
 
     useEffect(() => {
         fetchTickets();
     }, []);
 
+    /**
+     * Fetches all support tickets from the database, ordered by newest first.
+     */
     const fetchTickets = async () => {
         const { data, error } = await supabase
             .from('support_tickets')
@@ -18,11 +26,22 @@ export default function DevDashboard() {
         if (!error && data) setTickets(data);
     };
 
+    /**
+     * Updates local state with the staff member's drafted reply for a specific ticket.
+     * @param {string} ticketId - UUID of the ticket being replied to.
+     * @param {string} text - The drafted response text.
+     */
     const handleReplyChange = (ticketId, text) => {
         setReplyDrafts(prev => ({ ...prev, [ticketId]: text }));
     };
 
+    /**
+     * Submits an admin reply and/or status change to the database.
+     * @param {string} ticketId - UUID of the ticket to update.
+     * @param {string} newStatus - The new status ('open', 'in_progress', 'resolved').
+     */
     const submitReply = async (ticketId, newStatus) => {
+        setAlertMsg('');
         const replyText = replyDrafts[ticketId];
         if (replyText === undefined && newStatus === 'open') return;
 
@@ -34,20 +53,30 @@ export default function DevDashboard() {
             .update(updateData)
             .eq('id', ticketId);
 
-        if (!error) {
-            setReplyDrafts(prev => {
-                const updated = { ...prev };
-                delete updated[ticketId];
-                return updated;
-            });
-            fetchTickets();
+        if (error) {
+            console.error(error);
+            setAlertMsg(`Failed to update ticket ${ticketId.substring(0, 8)}`);
+            return;
         }
+
+        setReplyDrafts(prev => {
+            const updated = { ...prev };
+            delete updated[ticketId];
+            return updated;
+        });
+        setAlertMsg(`Ticket updated successfully.`);
+        fetchTickets();
     };
 
     const filteredTickets = filter === 'all' ? tickets : tickets.filter(t => t.status === filter);
 
     return (
         <div className="max-w-6xl mx-auto space-y-6 pb-12">
+            {alertMsg && (
+                <div className="p-3 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-md text-sm font-bold">
+                    {alertMsg}
+                </div>
+            )}
             <div className="flex justify-between items-center">
                 <div>
                     <h1 className="text-2xl font-black text-gray-900 dark:text-white">Dev Operations</h1>
@@ -80,7 +109,7 @@ export default function DevDashboard() {
                             </div>
                             <h3 className="text-lg font-bold text-gray-900 dark:text-white">{ticket.subject}</h3>
                             <p className="text-sm text-gray-700 dark:text-zinc-300 bg-gray-50 dark:bg-zinc-950 p-3 rounded border border-gray-100 dark:border-zinc-800">{ticket.message}</p>
-                            <p className="text-xs text-gray-400 font-mono">User: {ticket.username} | {new Date(ticket.created_at).toLocaleString()}</p>
+                            <p className="text-xs text-gray-400 font-mono">User: {ticket.username || 'Unknown'} | {new Date(ticket.created_at).toLocaleString()}</p>
                         </div>
 
                         {/* Dev Reply Column */}

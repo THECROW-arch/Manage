@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
 
+/**
+ * OwnerDashboard component for high-level SaaS metrics.
+ * Calculates user segmentations, subscription distributions, and estimated MRR/ARR.
+ * Note: Revenue figures are currently theoretical estimates based on user tiers.
+ */
 export default function OwnerDashboard() {
     const [metrics, setMetrics] = useState({
         totalUsers: 0,
@@ -11,16 +16,20 @@ export default function OwnerDashboard() {
     });
     const [loading, setLoading] = useState(true);
 
-    // Mock pricing for calculations (Update these to match your eventual Stripe pricing)
+    // Mock pricing for theoretical calculations
     const PRICING = {
-        pro_monthly: 9.99, // $9.99/mo
-        pro_yearly: 99.99  // $99.99/yr
+        pro_monthly: 9.99,
+        pro_yearly: 99.99  
     };
 
     useEffect(() => {
         fetchMetrics();
     }, []);
 
+    /**
+     * Fetches all user profiles via a secure RPC and computes aggregations.
+     * Calculates user roles, subscription tiers, and theoretical revenue.
+     */
     const fetchMetrics = async () => {
         setLoading(true);
         const { data, error } = await supabase.rpc('get_saas_metrics_for_owner');
@@ -72,16 +81,20 @@ export default function OwnerDashboard() {
             <div>
                 <h1 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">Owner Command Center</h1>
                 <p className="text-sm text-gray-500 dark:text-zinc-400 mt-1">Real-time SaaS metrics, revenue, and user segmentation.</p>
+                <p className="text-xs text-amber-600 font-bold bg-amber-50 p-2 mt-2 rounded border border-amber-200">
+                    NOTE: Revenue figures shown are theoretical estimates based on mock subscription tiers. 
+                    Actual transaction data (Stripe/Payment Gateway) is not yet integrated.
+                </p>
             </div>
 
             {/* Revenue Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-emerald-50 dark:bg-emerald-900/20 p-6 rounded-xl border border-emerald-200 dark:border-emerald-800/30">
-                    <h3 className="text-sm font-bold text-emerald-800 dark:text-emerald-400 uppercase tracking-wider mb-2">Monthly Recurring Revenue</h3>
+                    <h3 className="text-sm font-bold text-emerald-800 dark:text-emerald-400 uppercase tracking-wider mb-2">Estimated Monthly Revenue</h3>
                     <p className="text-4xl font-black text-emerald-600 dark:text-emerald-500">${metrics.mrr.toFixed(2)} <span className="text-lg font-bold text-emerald-800/50 dark:text-emerald-500/50">/mo</span></p>
                 </div>
                 <div className="bg-indigo-50 dark:bg-indigo-900/20 p-6 rounded-xl border border-indigo-200 dark:border-indigo-800/30">
-                    <h3 className="text-sm font-bold text-indigo-800 dark:text-indigo-400 uppercase tracking-wider mb-2">Annual Run Rate</h3>
+                    <h3 className="text-sm font-bold text-indigo-800 dark:text-indigo-400 uppercase tracking-wider mb-2">Estimated Annual Run Rate</h3>
                     <p className="text-4xl font-black text-indigo-600 dark:text-indigo-500">${metrics.arr.toFixed(2)} <span className="text-lg font-bold text-indigo-800/50 dark:text-indigo-500/50">/yr</span></p>
                 </div>
             </div>

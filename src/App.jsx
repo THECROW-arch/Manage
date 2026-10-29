@@ -1520,8 +1520,9 @@ export default function App() {
             />
           )}
           {activeTab === 'support' && (
-            <SupportTab
-              session={session}
+            <SupportTab 
+               session={session} 
+               username={username} 
             />
           )}
           {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient';
-
+/** Renders the customer support hub... */
 export default function SupportTab({ session, username }) {
     const { t } = useTranslation();
     const [tickets, setTickets] = useState([]);
@@ -25,12 +25,20 @@ export default function SupportTab({ session, username }) {
         if (!error && data) setTickets(data);
     };
 
+    /**
+     * Submits a new customer support ticket to the database.
+     * Captures the user's session ID, username, and selected priority.
+     * Displays a success message on completion or an error if the insert fails.
+     * 
+     * @param {Event} e - The form submission event.
+     */
     const handleCreateTicket = async (e) => {
         e.preventDefault();
         if (!subject.trim() || !message.trim()) return;
         setLoading(true);
         setSuccessMsg('');
-
+        // NOTE: Assuming setAlertMsg is passed as a prop, or use an internal error state if you have one.
+        
         const newTicket = {
             user_id: session.user.id,
             username: username || 'User',
@@ -46,7 +54,14 @@ export default function SupportTab({ session, username }) {
         const { data, error } = await supabase.from('support_tickets').insert([newTicket]).select();
         setLoading(false);
 
-        if (!error && data) {
+        if (error) {
+            console.error(error);
+            // If you have setAlertMsg passed as a prop, use it here. Otherwise, use a local error state.
+            alert("Failed to submit ticket. Please try again."); 
+            return;
+        }
+
+        if (data) {
             setTickets([data[0], ...tickets]);
             setSubject('');
             setMessage('');
