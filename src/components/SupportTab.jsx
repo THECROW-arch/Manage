@@ -56,8 +56,7 @@ export default function SupportTab({ session, username }) {
 
         if (error) {
             console.error(error);
-            // If you have setAlertMsg passed as a prop, use it here. Otherwise, use a local error state.
-            alert("Failed to submit ticket. Please try again."); 
+            alert(t('err_ticket_submit')); // <-- Uses i18n instead of hardcoded English
             return;
         }
 
@@ -65,7 +64,7 @@ export default function SupportTab({ session, username }) {
             setTickets([data[0], ...tickets]);
             setSubject('');
             setMessage('');
-            setSuccessMsg('Ticket submitted successfully!');
+            setSuccessMsg(t('succ_ticket_submit')); // <-- Uses i18n
         }
     };
 

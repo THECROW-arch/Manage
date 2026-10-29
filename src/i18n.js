@@ -300,7 +300,7 @@ const resources = {
       "faq_q5": "What is the Portfolio Tab for?",
       "faq_a5": "The Portfolio tracks your lifetime wealth accumulation. While the Cash Flow tab resets every month, the Portfolio holds your long-term assets and updates automatically when you close a month.",
       "faq_q6": "Can I export my financial data?",
-      "faq_a6": "Yes! In the Settings tab, you can export a specific day or a full month as a Formal CSV Audit Report or a stylized Visual Excel Dashboard.",
+      "faq_a6": "Yes! In the Settings tab, you can export a specific day or a full month as a Formal Excel (.xlsx) Audit Report or a stylized Visual Excel Dashboard.",
       "faq_q7": "How does the Tax Center work?",
       "faq_a7": "It provides a progressive tax estimation based on regional brackets. It is purely advisory and does not deduct from your standard monthly cash flow.",
       "faq_q8": "Can I delete or edit a logged expense?",
@@ -324,6 +324,10 @@ const resources = {
       "admin_response": "Admin Response:",
       "no_tickets": "You have no active support tickets.",
       "dev_dashboard": "Dev Ops",
+
+      "err_ticket_submit": "Failed to submit ticket. Please try again.",
+      "succ_ticket_submit": "Ticket submitted successfully!",
+      "owner_dashboard": "Command Center",
     }
   },
   fr: {
@@ -647,7 +651,11 @@ const resources = {
       "faq_q7": "Comment fonctionne le Centre des Impôts ?",
       "faq_a7": "Il fournit une estimation fiscale progressive basée sur les tranches régionales. C'est purement consultatif et ne déduit rien de votre flux de trésorerie mensuel standard.",
       "faq_q8": "Puis-je supprimer ou modifier une dépense enregistrée ?",
-      "faq_a8": "Si un mois est toujours 'Actif', vous pouvez modifier les dépenses. Une fois qu'un mois est 'Clôturé' et transféré dans votre portefeuille, le journal est verrouillé en permanence pour l'intégrité des données."
+      "faq_a8": "Si un mois est toujours 'Actif', vous pouvez modifier les dépenses. Une fois qu'un mois est 'Clôturé' et transféré dans votre portefeuille, le journal est verrouillé en permanence pour l'intégrité des données.",
+
+      "err_ticket_submit": "Échec de l'envoi du ticket. Veuillez réessayer.",
+      "succ_ticket_submit": "Ticket soumis avec succès !",
+      "owner_dashboard": "Centre de Commandement",
     }
   },
   es: {
@@ -971,7 +979,11 @@ const resources = {
       "faq_q7": "¿Cómo funciona el Centro de Impuestos?",
       "faq_a7": "Proporciona una estimación de impuestos progresiva basada en los tramos regionales. Es puramente consultivo y no se deduce de tu flujo de caja mensual estándar.",
       "faq_q8": "¿Puedo eliminar o editar un gasto registrado?",
-      "faq_a8": "Si un mes sigue 'Activo', puedes modificar los gastos. Una vez que un mes está 'Cerrado' y transferido a tu portafolio, el libro mayor se bloquea permanentemente por la integridad de los datos."
+      "faq_a8": "Si un mes sigue 'Activo', puedes modificar los gastos. Una vez que un mes está 'Cerrado' y transferido a tu portafolio, el libro mayor se bloquea permanentemente por la integridad de los datos.",
+
+      "err_ticket_submit": "Error al enviar el ticket. Por favor, inténtalo de nuevo.",
+      "succ_ticket_submit": "¡Ticket enviado con éxito!",
+      "owner_dashboard": "Centro de Mando",
     }
   },
   ar: {
@@ -1295,7 +1307,11 @@ const resources = {
       "faq_q7": "كيف يعمل مركز الضرائب؟",
       "faq_a7": "يوفر تقديرًا ضريبيًا تصاعديًا بناءً على الشرائح الإقليمية. هو استشاري بحت ولا يخصم من تدفقك النقدي الشهري القياسي.",
       "faq_q8": "هل يمكنني حذف أو تعديل مصروف مسجل؟",
-      "faq_a8": "إذا كان الشهر لا يزال 'نشطًا'، يمكنك تعديل المصروفات. بمجرد إغلاق الشهر وتحويل بياناته إلى محفظتك، يتم قفل السجل نهائيًا لضمان سلامة البيانات."
+      "faq_a8": "إذا كان الشهر لا يزال 'نشطًا'، يمكنك تعديل المصروفات. بمجرد إغلاق الشهر وتحويل بياناته إلى محفظتك، يتم قفل السجل نهائيًا لضمان سلامة البيانات.",
+
+      "err_ticket_submit": "فشل في إرسال التذكرة. يرجى المحاولة مرة أخرى.",
+      "succ_ticket_submit": "تم إرسال التذكرة بنجاح!",
+      "owner_dashboard": "مركز القيادة",
     }
   }
 };

@@ -15,11 +15,12 @@ export default function OwnerDashboard() {
         arr: 0
     });
     const [loading, setLoading] = useState(true);
+    const [errorMsg, setErrorMsg] = useState('');
 
     // Mock pricing for theoretical calculations
     const PRICING = {
         pro_monthly: 9.99,
-        pro_yearly: 99.99  
+        pro_yearly: 99.99
     };
 
     useEffect(() => {
@@ -32,9 +33,17 @@ export default function OwnerDashboard() {
      */
     const fetchMetrics = async () => {
         setLoading(true);
+        setErrorMsg('');
         const { data, error } = await supabase.rpc('get_saas_metrics_for_owner');
-        
-        if (!error && data) {
+
+        if (error) {
+            console.error("RPC Error:", error);
+            setErrorMsg(error.message || 'Access denied or database query failed.');
+            setLoading(false);
+            return;
+        }
+
+        if (data) {
             const breakdown = {
                 roles: { user: 0, test_user: 0, special_user: 0, owner: 0, dev: 0 },
                 tiers: { free: 0, pro_monthly: 0, pro_yearly: 0 },
@@ -43,15 +52,12 @@ export default function OwnerDashboard() {
             };
 
             data.forEach(user => {
-                // Tally Roles
                 const role = user.role || 'user';
                 breakdown.roles[role] = (breakdown.roles[role] || 0) + 1;
 
-                // Tally Subscription Tiers
                 const tier = user.subscription_tier || 'free';
                 breakdown.tiers[tier] = (breakdown.tiers[tier] || 0) + 1;
 
-                // Calculate Revenue (Only real users generate revenue, not devs or special users)
                 if (role === 'user') {
                     if (tier === 'pro_monthly') {
                         breakdown.calculatedMRR += PRICING.pro_monthly;
@@ -75,14 +81,20 @@ export default function OwnerDashboard() {
     };
 
     if (loading) return <div className="p-10 text-center animate-pulse">Loading SaaS metrics...</div>;
-
+    if (errorMsg) return (
+        <div className="max-w-6xl mx-auto p-6">
+            <div className="bg-rose-50 border border-rose-200 text-rose-700 p-4 rounded-lg font-bold">
+                Failed to load Command Center: {errorMsg}
+            </div>
+        </div>
+    );
     return (
         <div className="max-w-6xl mx-auto space-y-8 pb-12">
             <div>
                 <h1 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">Owner Command Center</h1>
                 <p className="text-sm text-gray-500 dark:text-zinc-400 mt-1">Real-time SaaS metrics, revenue, and user segmentation.</p>
                 <p className="text-xs text-amber-600 font-bold bg-amber-50 p-2 mt-2 rounded border border-amber-200">
-                    NOTE: Revenue figures shown are theoretical estimates based on mock subscription tiers. 
+                    NOTE: Revenue figures shown are theoretical estimates based on mock subscription tiers.
                     Actual transaction data (Stripe/Payment Gateway) is not yet integrated.
                 </p>
             </div>
