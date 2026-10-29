@@ -2,9 +2,8 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
 
 /**
- * OwnerDashboard component for high-level SaaS metrics.
- * Calculates user segmentations, subscription distributions, and estimated MRR/ARR.
- * Note: Revenue figures are currently theoretical estimates based on user tiers.
+ * OwnerDashboard component for high-level SaaS metrics and user management.
+ * Calculates user segmentations, estimated revenue, and allows owners to instantly mutate user roles and tiers.
  */
 export default function OwnerDashboard() {
     const [metrics, setMetrics] = useState({
@@ -14,13 +13,15 @@ export default function OwnerDashboard() {
         mrr: 0,
         arr: 0
     });
+    const [userList, setUserList] = useState([]);
     const [loading, setLoading] = useState(true);
     const [errorMsg, setErrorMsg] = useState('');
+    const [updatingId, setUpdatingId] = useState(null);
 
     // Mock pricing for theoretical calculations
     const PRICING = {
         pro_monthly: 9.99,
-        pro_yearly: 99.99
+        pro_yearly: 99.99  
     };
 
     useEffect(() => {
@@ -29,21 +30,21 @@ export default function OwnerDashboard() {
 
     /**
      * Fetches all user profiles via a secure RPC and computes aggregations.
-     * Calculates user roles, subscription tiers, and theoretical revenue.
      */
     const fetchMetrics = async () => {
         setLoading(true);
         setErrorMsg('');
         const { data, error } = await supabase.rpc('get_saas_metrics_for_owner');
-
+        
         if (error) {
             console.error("RPC Error:", error);
             setErrorMsg(error.message || 'Access denied or database query failed.');
             setLoading(false);
             return;
         }
-
+        
         if (data) {
+            setUserList(data);
             const breakdown = {
                 roles: { user: 0, test_user: 0, special_user: 0, owner: 0, dev: 0 },
                 tiers: { free: 0, pro_monthly: 0, pro_yearly: 0 },
@@ -80,6 +81,29 @@ export default function OwnerDashboard() {
         setLoading(false);
     };
 
+    /**
+     * Instantly mutates a user's role or subscription tier via secure RPC.
+     * @param {string} targetId - UUID of the target user profile.
+     * @param {string} newRole - The assigned system role.
+     * @param {string} newTier - The assigned subscription tier.
+     */
+    const handleUpdateUser = async (targetId, newRole, newTier) => {
+        setUpdatingId(targetId);
+        const { error } = await supabase.rpc('update_user_role_tier', {
+            target_user_id: targetId,
+            new_role: newRole,
+            new_tier: newTier
+        });
+        
+        if (error) {
+            alert('Failed to update user: ' + error.message);
+            setUpdatingId(null);
+        } else {
+            await fetchMetrics(); 
+            setUpdatingId(null);
+        }
+    };
+
     if (loading) return <div className="p-10 text-center animate-pulse">Loading SaaS metrics...</div>;
     if (errorMsg) return (
         <div className="max-w-6xl mx-auto p-6">
@@ -88,13 +112,14 @@ export default function OwnerDashboard() {
             </div>
         </div>
     );
+
     return (
         <div className="max-w-6xl mx-auto space-y-8 pb-12">
             <div>
                 <h1 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">Owner Command Center</h1>
                 <p className="text-sm text-gray-500 dark:text-zinc-400 mt-1">Real-time SaaS metrics, revenue, and user segmentation.</p>
                 <p className="text-xs text-amber-600 font-bold bg-amber-50 p-2 mt-2 rounded border border-amber-200">
-                    NOTE: Revenue figures shown are theoretical estimates based on mock subscription tiers.
+                    NOTE: Revenue figures shown are theoretical estimates based on mock subscription tiers. 
                     Actual transaction data (Stripe/Payment Gateway) is not yet integrated.
                 </p>
             </div>
@@ -134,6 +159,65 @@ export default function OwnerDashboard() {
                         <div className="flex justify-between items-center text-sm"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-emerald-500"></div>Pro (Monthly)</span> <span className="font-bold text-gray-900 dark:text-white">{metrics.tierBreakdown.pro_monthly || 0}</span></div>
                         <div className="flex justify-between items-center text-sm"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-indigo-500"></div>Pro (Yearly)</span> <span className="font-bold text-gray-900 dark:text-white">{metrics.tierBreakdown.pro_yearly || 0}</span></div>
                     </div>
+                </div>
+            </div>
+
+            {/* Interactive User Manager */}
+            <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-gray-200 dark:border-zinc-800">
+                <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4">Interactive User Manager</h2>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                        <thead>
+                            <tr className="border-b border-gray-200 dark:border-zinc-800 text-xs uppercase text-gray-500 dark:text-zinc-500">
+                                <th className="py-3 px-4 font-bold">User</th>
+                                <th className="py-3 px-4 font-bold">Role</th>
+                                <th className="py-3 px-4 font-bold">Subscription Tier</th>
+                                <th className="py-3 px-4 font-bold">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {userList.map(user => {
+                                const targetId = user.user_id || user.id;
+                                return (
+                                    <tr key={targetId} className="border-b border-gray-100 dark:border-zinc-800/50 hover:bg-gray-50 dark:hover:bg-zinc-800/50 transition-colors">
+                                        <td className="py-3 px-4 text-sm font-medium text-gray-900 dark:text-white">
+                                            {user.username || 'Unknown User'}
+                                            <div className="text-[10px] text-gray-400 font-mono mt-0.5">{targetId}</div>
+                                        </td>
+                                        <td className="py-3 px-4">
+                                            <select
+                                                className="px-2 py-1 rounded bg-gray-100 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-semibold focus:outline-none"
+                                                value={user.role || 'user'}
+                                                onChange={(e) => handleUpdateUser(targetId, e.target.value, user.subscription_tier || 'free')}
+                                                disabled={updatingId !== null}
+                                            >
+                                                <option value="user">User</option>
+                                                <option value="test_user">Test User</option>
+                                                <option value="special_user">Special User</option>
+                                                <option value="dev">Dev</option>
+                                                <option value="owner">Owner</option>
+                                            </select>
+                                        </td>
+                                        <td className="py-3 px-4">
+                                            <select
+                                                className="px-2 py-1 rounded bg-gray-100 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-semibold focus:outline-none"
+                                                value={user.subscription_tier || 'free'}
+                                                onChange={(e) => handleUpdateUser(targetId, user.role || 'user', e.target.value)}
+                                                disabled={updatingId !== null}
+                                            >
+                                                <option value="free">Free</option>
+                                                <option value="pro_monthly">Pro Monthly</option>
+                                                <option value="pro_yearly">Pro Yearly</option>
+                                            </select>
+                                        </td>
+                                        <td className="py-3 px-4 w-24">
+                                            {updatingId === targetId && <span className="text-[10px] text-indigo-500 font-black uppercase tracking-wider animate-pulse">Saving...</span>}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>

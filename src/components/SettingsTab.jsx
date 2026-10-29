@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { getToday, getCurrentMonth } from '../utils/constants';
 import { useTranslation } from 'react-i18next';
+import { supabase } from '../supabaseClient'; // Ensure supabase client is imported
 
 /**
  * Renders the user account preferences, theme toggle, baseline salary configuration,
- * global currency/language selectors, and custom-scoped Excel data export controls.
+ * global currency/language selectors, custom-scoped Excel data export controls,
+ * and advanced security settings (Password Update, Data Wipe, Account Deletion).
  * @param {Object} props - Component properties
  */
 export default function SettingsTab({
@@ -27,9 +29,115 @@ export default function SettingsTab({
   handleExportData
 }) {
   const { t, i18n } = useTranslation();
+  const [isProcessingDanger, setIsProcessingDanger] = useState(false);
+  // --- Phase 9: Security State ---
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordMsg, setPasswordMsg] = useState({ text: '', type: '' });
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+
+  /**
+   * Handles updating the user's password via Supabase Auth.
+   */
+  const handleUpdatePassword = async (e) => {
+    e.preventDefault();
+    setPasswordMsg({ text: '', type: '' });
+
+    if (newPassword.length < 6) {
+      setPasswordMsg({ text: t('err_password_short', 'Password must be at least 6 characters.'), type: 'error' });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordMsg({ text: t('err_password_mismatch', 'Passwords do not match.'), type: 'error' });
+      return;
+    }
+
+    setIsUpdatingPassword(true);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    setIsUpdatingPassword(false);
+
+    if (error) {
+      setPasswordMsg({ text: error.message, type: 'error' });
+    } else {
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordMsg({ text: t('succ_password_update', 'Password updated successfully.'), type: 'success' });
+      setTimeout(() => setPasswordMsg({ text: '', type: '' }), 4000);
+    }
+  };
+
+  /**
+   * Triggers a hard deletion of all user financial data.
+   * Checks for partial failures to prevent false success messages.
+   */
+  const handleWipeData = async () => {
+    if (!window.confirm(t('confirm_wipe_data', 'WARNING: This will permanently delete all your financial data, expenses, and history. This action cannot be undone. Are you absolutely sure?'))) {
+      return;
+    }
+    
+    setIsProcessingDanger(true); // 1. Lock the buttons
+
+    try { // 2. Start the protected block
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const results = await Promise.all([
+        supabase.from('expenses').delete().eq('user_id', session.user.id),
+        supabase.from('asset_adjustments').delete().eq('user_id', session.user.id),
+        supabase.from('bundles').delete().eq('user_id', session.user.id),
+        supabase.from('sandbox_sheets').delete().eq('user_id', session.user.id),
+        supabase.from('closed_months').delete().eq('user_id', session.user.id),
+      ]);
+
+      // Explicitly check if any of the delete operations returned an error
+      const hasError = results.some(res => res.error !== null);
+      if (hasError) {
+        console.error("Partial wipe failure:", results.filter(r => r.error));
+        alert(t('err_data_wipe_partial', 'Failed to completely wipe data. Some records may remain. Please try again.'));
+        return;
+      }
+
+      alert(t('succ_data_wiped', 'All financial data has been successfully wiped.'));
+      window.location.reload();
+    } catch (error) {
+      console.error(error);
+      alert(t('err_data_wipe', 'An error occurred while wiping data.'));
+    } finally {
+      setIsProcessingDanger(false); // 3. Unlock the buttons ALWAYS, even if it failed
+    }
+  };
+
+  /**
+   * Triggers permanent account deletion via Supabase RPC (Requires custom RPC setup in DB).
+   */
+  const handleDeleteAccount = async () => {
+    if (!window.confirm(t('confirm_delete_account', 'DANGER: This will permanently delete your entire account, profile, and all associated data. You will be logged out immediately. Are you sure?'))) {
+      return;
+    }
+    
+    setIsProcessingDanger(true); // 1. Lock the buttons
+
+    try { // 2. Start the protected block
+      // NOTE: Supabase client-side JS cannot delete users directly for security reasons.
+      // You must create a SECURITY DEFINER function in the database to handle this.
+      const { error } = await supabase.rpc('delete_user_account');
+
+      if (error) {
+        console.error(error);
+        alert(t('err_account_delete', 'Failed to delete account. Ensure the database RPC is configured.'));
+      } else {
+        await supabase.auth.signOut();
+        window.location.reload();
+      }
+    } finally {
+      setIsProcessingDanger(false); // 3. Unlock the buttons ALWAYS
+    }
+  };
+
 
   return (
-    <div className="max-w-2xl mx-auto">
+    <div className="max-w-2xl mx-auto space-y-8 pb-12">
+      {/* --- Existing Account Preferences --- */}
       <div className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-gray-200 dark:border-zinc-800 shadow-sm space-y-6">
         <h2 className="text-lg font-bold text-gray-900 dark:text-white border-b border-gray-100 dark:border-zinc-800 pb-3">
           {t('account_preferences')}
@@ -142,21 +250,19 @@ export default function SettingsTab({
             <div className="flex gap-2">
               <button
                 onClick={() => setExportScope('month')}
-                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
-                  exportScope === 'month'
+                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${exportScope === 'month'
                     ? 'bg-indigo-600 text-white shadow'
                     : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
-                }`}
+                  }`}
               >
                 {t('whole_month_report')}
               </button>
               <button
                 onClick={() => setExportScope('day')}
-                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
-                  exportScope === 'day'
+                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${exportScope === 'day'
                     ? 'bg-indigo-600 text-white shadow'
                     : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
-                }`}
+                  }`}
               >
                 {t('specific_day_report')}
               </button>
@@ -213,6 +319,93 @@ export default function SettingsTab({
           </div>
         </div>
       </div>
+
+      {/* --- Phase 9: Security & Authentication --- */}
+      <div className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-gray-200 dark:border-zinc-800 shadow-sm space-y-6">
+        <h2 className="text-lg font-bold text-gray-900 dark:text-white border-b border-gray-100 dark:border-zinc-800 pb-3">
+          {t('security_auth', 'Security & Authentication')}
+        </h2>
+
+        <form onSubmit={handleUpdatePassword} className="space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-gray-900 dark:text-zinc-200 mb-1">{t('update_password', 'Update Password')}</h3>
+            <p className="text-xs text-gray-500 dark:text-zinc-500 mb-4">{t('password_desc', 'Ensure your account stays secure by using a strong password.')}</p>
+
+            {passwordMsg.text && (
+              <div className={`mb-4 p-3 rounded-md text-xs font-semibold ${passwordMsg.type === 'error' ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
+                {passwordMsg.text}
+              </div>
+            )}
+
+            <div className="space-y-3 max-w-sm">
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder={t('new_password', 'New Password')}
+                className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                required
+              />
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder={t('confirm_password', 'Confirm New Password')}
+                className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                required
+              />
+              <button
+                type="submit"
+                disabled={isUpdatingPassword}
+                className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-sm font-bold transition-all shadow-md disabled:opacity-50"
+              >
+                {isUpdatingPassword ? t('updating', 'Updating...') : t('save_password', 'Save Password')}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      {/* --- Phase 9: Danger Zone --- */}
+      <div className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-rose-200 dark:border-rose-900/50 shadow-sm space-y-6 relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-1 h-full bg-rose-500"></div>
+        <h2 className="text-lg font-bold text-rose-600 dark:text-rose-500 border-b border-gray-100 dark:border-zinc-800 pb-3">
+          {t('danger_zone', 'Danger Zone')}
+        </h2>
+
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-gray-100 dark:border-zinc-800">
+          <div>
+            <h3 className="text-sm font-bold text-gray-900 dark:text-zinc-200">{t('wipe_financial_data', 'Wipe Financial Data')}</h3>
+            <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1 max-w-sm">
+              {t('wipe_data_desc', 'Permanently delete all expenses, assets, bundles, and history. Your categories and profile will remain.')}
+            </p>
+          </div>
+          <button
+            onClick={handleWipeData}
+            disabled={isProcessingDanger}
+            className="px-4 py-2 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-md text-sm font-bold transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isProcessingDanger ? t('processing', 'Processing...') : t('wipe_data_btn', 'Wipe Data')}
+          </button>
+        </div>
+
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-bold text-gray-900 dark:text-zinc-200">{t('delete_account', 'Delete Account')}</h3>
+            <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1 max-w-sm">
+              {t('delete_account_desc', 'Permanently delete your profile and all associated data. This action cannot be reversed.')}
+            </p>
+          </div>
+          <button
+            onClick={handleDeleteAccount}
+            disabled={isProcessingDanger}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-sm font-bold transition-colors shadow-md whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isProcessingDanger ? t('processing', 'Processing...') : t('delete_account_btn', 'Delete Account')}
+          </button>
+        </div>
+      </div>
+
     </div>
   );
 }
