@@ -189,7 +189,7 @@ export default function OwnerDashboard() {
                                                 className="px-2 py-1 rounded bg-gray-100 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-semibold focus:outline-none"
                                                 value={user.role || 'user'}
                                                 onChange={(e) => handleUpdateUser(targetId, e.target.value, user.subscription_tier || 'free')}
-                                                disabled={updatingId === targetId}
+                                                disabled={updatingId !== null}
                                             >
                                                 <option value="user">User</option>
                                                 <option value="test_user">Test User</option>
@@ -203,7 +203,7 @@ export default function OwnerDashboard() {
                                                 className="px-2 py-1 rounded bg-gray-100 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-semibold focus:outline-none"
                                                 value={user.subscription_tier || 'free'}
                                                 onChange={(e) => handleUpdateUser(targetId, user.role || 'user', e.target.value)}
-                                                disabled={updatingId === targetId}
+                                                disabled={updatingId !== null}
                                             >
                                                 <option value="free">Free</option>
                                                 <option value="pro_monthly">Pro Monthly</option>

@@ -163,9 +163,9 @@ export const generateFormalAudit = async (data) => {
                 date: entry.expense_date,
                 type: 'Special Occasion (Master)',
                 category: 'Multiple',
-                description: `${sanitizeForExcel(entry.name)} (${entry.items.length} items)`, // Phase 9 Security
+                description: `${sanitizeForExcel(entry.name)} (${entry.items.length} items)`, 
                 amount: -entry.cost,
-                breakdown: entry.categorySplits.join(" | ")
+                breakdown: sanitizeForExcel(entry.categorySplits.join(" | ")) // <-- Added Sanitizer Here!
             }).font = { bold: true };
 
             entry.items.forEach(item => {

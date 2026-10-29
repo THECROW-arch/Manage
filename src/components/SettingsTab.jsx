@@ -70,6 +70,10 @@ export default function SettingsTab({
    * Triggers a hard deletion of all user financial data (Expenses, Assets, Bundles, Sandbox).
    * Irreversible action requiring strict confirmation.
    */
+  /**
+   * Triggers a hard deletion of all user financial data.
+   * Checks for partial failures to prevent false success messages.
+   */
   const handleWipeData = async () => {
     if (!window.confirm(t('confirm_wipe_data', 'WARNING: This will permanently delete all your financial data, expenses, and history. This action cannot be undone. Are you absolutely sure?'))) {
       return;
@@ -79,20 +83,24 @@ export default function SettingsTab({
     if (!session) return;
 
     try {
-      // Delete from all tables where user_id matches. Order matters slightly if FK constraints exist,
-      // but ON DELETE CASCADE usually handles this if configured. Explicit deletion ensures clean slate.
-      await Promise.all([
+      const results = await Promise.all([
         supabase.from('expenses').delete().eq('user_id', session.user.id),
         supabase.from('asset_adjustments').delete().eq('user_id', session.user.id),
         supabase.from('bundles').delete().eq('user_id', session.user.id),
         supabase.from('sandbox_sheets').delete().eq('user_id', session.user.id),
         supabase.from('closed_months').delete().eq('user_id', session.user.id),
-        // We leave profiles and categories intact for a "reset" experience, 
-        // or add them here for a total scorched-earth wipe.
       ]);
+
+      // Explicitly check if any of the delete operations returned an error
+      const hasError = results.some(res => res.error !== null);
+      if (hasError) {
+        console.error("Partial wipe failure:", results.filter(r => r.error));
+        alert(t('err_data_wipe_partial', 'Failed to completely wipe data. Some records may remain. Please try again.'));
+        return;
+      }
+
       alert(t('succ_data_wiped', 'All financial data has been successfully wiped.'));
-      // Force a reload to clear React state
-      window.location.reload(); 
+      window.location.reload();
     } catch (error) {
       console.error(error);
       alert(t('err_data_wipe', 'An error occurred while wiping data.'));
@@ -103,21 +111,21 @@ export default function SettingsTab({
    * Triggers permanent account deletion via Supabase RPC (Requires custom RPC setup in DB).
    */
   const handleDeleteAccount = async () => {
-       if (!window.confirm(t('confirm_delete_account', 'DANGER: This will permanently delete your entire account, profile, and all associated data. You will be logged out immediately. Are you sure?'))) {
-        return;
-       }
-       
-       // NOTE: Supabase client-side JS cannot delete users directly for security reasons.
-       // You must create a SECURITY DEFINER function in the database to handle this.
-       const { error } = await supabase.rpc('delete_user_account');
-       
-       if (error) {
-           console.error(error);
-           alert(t('err_account_delete', 'Failed to delete account. Ensure the database RPC is configured.'));
-       } else {
-           await supabase.auth.signOut();
-           window.location.reload();
-       }
+    if (!window.confirm(t('confirm_delete_account', 'DANGER: This will permanently delete your entire account, profile, and all associated data. You will be logged out immediately. Are you sure?'))) {
+      return;
+    }
+
+    // NOTE: Supabase client-side JS cannot delete users directly for security reasons.
+    // You must create a SECURITY DEFINER function in the database to handle this.
+    const { error } = await supabase.rpc('delete_user_account');
+
+    if (error) {
+      console.error(error);
+      alert(t('err_account_delete', 'Failed to delete account. Ensure the database RPC is configured.'));
+    } else {
+      await supabase.auth.signOut();
+      window.location.reload();
+    }
   };
 
 
@@ -236,21 +244,19 @@ export default function SettingsTab({
             <div className="flex gap-2">
               <button
                 onClick={() => setExportScope('month')}
-                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
-                  exportScope === 'month'
+                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${exportScope === 'month'
                     ? 'bg-indigo-600 text-white shadow'
                     : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
-                }`}
+                  }`}
               >
                 {t('whole_month_report')}
               </button>
               <button
                 onClick={() => setExportScope('day')}
-                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${
-                  exportScope === 'day'
+                className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${exportScope === 'day'
                     ? 'bg-indigo-600 text-white shadow'
                     : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
-                }`}
+                  }`}
               >
                 {t('specific_day_report')}
               </button>
@@ -313,12 +319,12 @@ export default function SettingsTab({
         <h2 className="text-lg font-bold text-gray-900 dark:text-white border-b border-gray-100 dark:border-zinc-800 pb-3">
           {t('security_auth', 'Security & Authentication')}
         </h2>
-        
+
         <form onSubmit={handleUpdatePassword} className="space-y-4">
           <div>
             <h3 className="text-sm font-bold text-gray-900 dark:text-zinc-200 mb-1">{t('update_password', 'Update Password')}</h3>
             <p className="text-xs text-gray-500 dark:text-zinc-500 mb-4">{t('password_desc', 'Ensure your account stays secure by using a strong password.')}</p>
-            
+
             {passwordMsg.text && (
               <div className={`mb-4 p-3 rounded-md text-xs font-semibold ${passwordMsg.type === 'error' ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
                 {passwordMsg.text}
@@ -360,7 +366,7 @@ export default function SettingsTab({
         <h2 className="text-lg font-bold text-rose-600 dark:text-rose-500 border-b border-gray-100 dark:border-zinc-800 pb-3">
           {t('danger_zone', 'Danger Zone')}
         </h2>
-        
+
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-gray-100 dark:border-zinc-800">
           <div>
             <h3 className="text-sm font-bold text-gray-900 dark:text-zinc-200">{t('wipe_financial_data', 'Wipe Financial Data')}</h3>

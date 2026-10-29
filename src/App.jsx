@@ -16,12 +16,14 @@ import CashFlowTab from './components/CashFlowTab';
 import SupportTab from './components/SupportTab';
 import DevDashboard from './components/DevDashboard';
 import OwnerDashboard from './components/OwnerDashboard';
+
 /**
  * Main application component orchestrating global state, data fetching, and tab routing.
  */
 export default function App() {
   const { t, i18n } = useTranslation();
-
+  const [showRecoveryModal, setShowRecoveryModal] = useState(false);
+  const [recoveryPassword, setRecoveryPassword] = useState('');
   useEffect(() => {
     const lang = i18n.resolvedLanguage || i18n.language || 'en';
     document.documentElement.dir = lang.startsWith('ar') ? 'rtl' : 'ltr';
@@ -237,7 +239,10 @@ export default function App() {
       if (session) fetchUserData(session.user.id);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setShowRecoveryModal(true);
+      }
       setSession(session);
       if (session) fetchUserData(session.user.id);
     });
@@ -1311,6 +1316,38 @@ export default function App() {
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-zinc-950 text-gray-900 dark:text-zinc-300 font-sans overflow-hidden transition-colors duration-300">
 
+      {/* Password Recovery Forced Modal */}
+      {showRecoveryModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6">
+            <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">Reset Your Password</h2>
+            <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">Please enter a new, secure password to complete your recovery.</p>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
+              if (error) {
+                alert("Failed to update password: " + error.message);
+              } else {
+                alert("Password updated successfully!");
+                setShowRecoveryModal(false);
+              }
+            }}>
+              <input
+                type="password"
+                value={recoveryPassword}
+                onChange={(e) => setRecoveryPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                placeholder="New Password (min 6 characters)"
+                required minLength={6}
+              />
+              <button type="submit" className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md">
+                Secure My Account
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+      
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -1520,9 +1557,9 @@ export default function App() {
             />
           )}
           {activeTab === 'support' && (
-            <SupportTab 
-               session={session} 
-               username={username} 
+            <SupportTab
+              session={session}
+              username={username}
             />
           )}
           {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (
