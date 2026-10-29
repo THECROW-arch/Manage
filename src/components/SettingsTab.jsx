@@ -29,7 +29,7 @@ export default function SettingsTab({
   handleExportData
 }) {
   const { t, i18n } = useTranslation();
-
+  const [isProcessingDanger, setIsProcessingDanger] = useState(false);
   // --- Phase 9: Security State ---
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -67,10 +67,6 @@ export default function SettingsTab({
   };
 
   /**
-   * Triggers a hard deletion of all user financial data (Expenses, Assets, Bundles, Sandbox).
-   * Irreversible action requiring strict confirmation.
-   */
-  /**
    * Triggers a hard deletion of all user financial data.
    * Checks for partial failures to prevent false success messages.
    */
@@ -78,11 +74,13 @@ export default function SettingsTab({
     if (!window.confirm(t('confirm_wipe_data', 'WARNING: This will permanently delete all your financial data, expenses, and history. This action cannot be undone. Are you absolutely sure?'))) {
       return;
     }
+    
+    setIsProcessingDanger(true); // 1. Lock the buttons
 
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
+    try { // 2. Start the protected block
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
 
-    try {
       const results = await Promise.all([
         supabase.from('expenses').delete().eq('user_id', session.user.id),
         supabase.from('asset_adjustments').delete().eq('user_id', session.user.id),
@@ -104,6 +102,8 @@ export default function SettingsTab({
     } catch (error) {
       console.error(error);
       alert(t('err_data_wipe', 'An error occurred while wiping data.'));
+    } finally {
+      setIsProcessingDanger(false); // 3. Unlock the buttons ALWAYS, even if it failed
     }
   };
 
@@ -114,17 +114,23 @@ export default function SettingsTab({
     if (!window.confirm(t('confirm_delete_account', 'DANGER: This will permanently delete your entire account, profile, and all associated data. You will be logged out immediately. Are you sure?'))) {
       return;
     }
+    
+    setIsProcessingDanger(true); // 1. Lock the buttons
 
-    // NOTE: Supabase client-side JS cannot delete users directly for security reasons.
-    // You must create a SECURITY DEFINER function in the database to handle this.
-    const { error } = await supabase.rpc('delete_user_account');
+    try { // 2. Start the protected block
+      // NOTE: Supabase client-side JS cannot delete users directly for security reasons.
+      // You must create a SECURITY DEFINER function in the database to handle this.
+      const { error } = await supabase.rpc('delete_user_account');
 
-    if (error) {
-      console.error(error);
-      alert(t('err_account_delete', 'Failed to delete account. Ensure the database RPC is configured.'));
-    } else {
-      await supabase.auth.signOut();
-      window.location.reload();
+      if (error) {
+        console.error(error);
+        alert(t('err_account_delete', 'Failed to delete account. Ensure the database RPC is configured.'));
+      } else {
+        await supabase.auth.signOut();
+        window.location.reload();
+      }
+    } finally {
+      setIsProcessingDanger(false); // 3. Unlock the buttons ALWAYS
     }
   };
 
@@ -376,9 +382,10 @@ export default function SettingsTab({
           </div>
           <button
             onClick={handleWipeData}
-            className="px-4 py-2 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-md text-sm font-bold transition-colors whitespace-nowrap"
+            disabled={isProcessingDanger}
+            className="px-4 py-2 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-md text-sm font-bold transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {t('wipe_data_btn', 'Wipe Data')}
+            {isProcessingDanger ? t('processing', 'Processing...') : t('wipe_data_btn', 'Wipe Data')}
           </button>
         </div>
 
@@ -391,9 +398,10 @@ export default function SettingsTab({
           </div>
           <button
             onClick={handleDeleteAccount}
-            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-sm font-bold transition-colors shadow-md whitespace-nowrap"
+            disabled={isProcessingDanger}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-sm font-bold transition-colors shadow-md whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {t('delete_account_btn', 'Delete Account')}
+            {isProcessingDanger ? t('processing', 'Processing...') : t('delete_account_btn', 'Delete Account')}
           </button>
         </div>
       </div>

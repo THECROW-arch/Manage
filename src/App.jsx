@@ -247,7 +247,9 @@ export default function App() {
       if (session) fetchUserData(session.user.id);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -1318,33 +1320,42 @@ export default function App() {
 
       {/* Password Recovery Forced Modal */}
       {showRecoveryModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-          <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6">
-            <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">Reset Your Password</h2>
-            <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">Please enter a new, secure password to complete your recovery.</p>
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
-              if (error) {
-                alert("Failed to update password: " + error.message);
-              } else {
-                alert("Password updated successfully!");
-                setShowRecoveryModal(false);
-              }
-            }}>
-              <input
-                type="password"
-                value={recoveryPassword}
-                onChange={(e) => setRecoveryPassword(e.target.value)}
-                className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
-                placeholder="New Password (min 6 characters)"
-                required minLength={6}
-              />
-              <button type="submit" className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md">
-                Secure My Account
-              </button>
-            </form>
-          </div>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in" role="dialog" aria-modal="true">
+            <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6">
+               <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">
+                   {t('auth_subtitle_recovery', 'Reset Your Password')}
+               </h2>
+               <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">
+                   {t('auth_recovery_prompt', 'Please enter a new, secure password to complete your recovery.')}
+               </p>
+               <form onSubmit={async (e) => {
+                   e.preventDefault();
+                   // Add a basic loading state check here if you want to use a local state variable
+                   const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
+                   if (error) {
+                       alert(t('err_password_update', 'Failed to update password: ') + error.message);
+                   } else {
+                       alert(t('succ_password_update', 'Password updated successfully!'));
+                       setShowRecoveryModal(false);
+                   }
+               }}>
+                   <input 
+                       type="password" 
+                       value={recoveryPassword}
+                       onChange={(e) => setRecoveryPassword(e.target.value)}
+                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                       placeholder={t('new_password', 'New Password')}
+                       aria-label={t('new_password', 'New Password')}
+                       required minLength={6}
+                   />
+                   <button 
+                       type="submit" 
+                       className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md"
+                   >
+                      {t('save_password', 'Save Password')}
+                   </button>
+               </form>
+            </div>
         </div>
       )}
       
