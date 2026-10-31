@@ -86,19 +86,6 @@ export default function App() {
   const [supportDraft, setSupportDraft] = useState({ subject: '', category: 'general', message: '' });
 
   useEffect(() => {
-    if (!session?.user?.id) {
-      setSupportDraft({ subject: '', category: 'general', message: '' });
-      return;
-    }
-    try {
-      const saved = localStorage.getItem(`supportDraft_${session.user.id}`);
-      setSupportDraft(saved ? JSON.parse(saved) : { subject: '', category: 'general', message: '' });
-    } catch {
-      setSupportDraft({ subject: '', category: 'general', message: '' });
-    }
-  }, [session?.user?.id]);
-
-  useEffect(() => {
     if (!session?.user?.id) return;
     try {
       localStorage.setItem(`supportDraft_${session.user.id}`, JSON.stringify(supportDraft));
@@ -185,15 +172,7 @@ export default function App() {
     catch (e) { console.warn('Failed to save lockedCats:', e); }
   }, [lockedCategories]);
 
-  // Reset saved activeTab if the current user's role cannot access it
-  useEffect(() => {
-    if (loadingData) return;
-    if (activeTab === 'dev_dashboard' && userRole !== 'dev' && userRole !== 'owner') {
-      setActiveTab('cashflow');
-    } else if (activeTab === 'owner_dashboard' && userRole !== 'owner') {
-      setActiveTab('cashflow');
-    }
-  }, [activeTab, userRole, loadingData]);
+  
 
   useEffect(() => {
     if (alertMsg) {
@@ -221,7 +200,22 @@ export default function App() {
     }
 
     if (profile) {
-      setUserRole(profile.role || 'user');
+      const loadedRole = profile.role || 'user';
+      setUserRole(loadedRole);
+      
+      // Validate saved tab access against loaded role safely
+      setActiveTab(currentTab => {
+        if (currentTab === 'dev_dashboard' && loadedRole !== 'dev' && loadedRole !== 'owner') return 'cashflow';
+        if (currentTab === 'owner_dashboard' && loadedRole !== 'owner') return 'cashflow';
+        return currentTab;
+      });
+
+      // Load isolated support draft for this user safely
+      try {
+        const savedDraft = localStorage.getItem(`supportDraft_${userId}`);
+        if (savedDraft) setSupportDraft(JSON.parse(savedDraft));
+      } catch { /* ignore */ }
+
       setSalary(profile.salary > 0 ? profile.salary.toString() : '');
       if (profile.currency !== undefined) {
         setCurrency(profile.currency);
