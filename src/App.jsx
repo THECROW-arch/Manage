@@ -24,6 +24,10 @@ export default function App() {
   const { t, i18n } = useTranslation();
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryPassword, setRecoveryPassword] = useState('');
+  
+  // Logout Confirmation State
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
   useEffect(() => {
     const lang = i18n.resolvedLanguage || i18n.language || 'en';
     document.documentElement.dir = lang.startsWith('ar') ? 'rtl' : 'ltr';
@@ -64,8 +68,32 @@ export default function App() {
   });
 
   const [closedMonths, setClosedMonths] = useState([]);
-  const [activeTab, setActiveTab] = useState('cashflow');
-  const [plannerSubTab, setPlannerSubTab] = useState('occasions'); // 'occasions' | 'sandbox'
+  
+  // Persisted Active Tab State (Survives Refreshes)
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return localStorage.getItem('activeTab') || 'cashflow'; }
+    catch { return 'cashflow'; }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('activeTab', activeTab);
+  }, [activeTab]);
+
+  const [plannerSubTab, setPlannerSubTab] = useState('occasions'); 
+
+  // Support Tab Persisted Draft State (Survives Tab Switching and Refreshes)
+  const [supportDraft, setSupportDraft] = useState(() => {
+    try {
+      const saved = localStorage.getItem('supportDraft');
+      return saved ? JSON.parse(saved) : { subject: '', category: 'general', message: '' };
+    } catch {
+      return { subject: '', category: 'general', message: '' };
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('supportDraft', JSON.stringify(supportDraft));
+  }, [supportDraft]);
 
   const [salary, setSalary] = useState('');
   const [username, setUsername] = useState('');
@@ -75,7 +103,7 @@ export default function App() {
   const [newCategoryType, setNewCategoryType] = useState('expense');
   const [newCategoryGoal, setNewCategoryGoal] = useState('');
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
-  const [exportScope, setExportScope] = useState('month'); // 'month' | 'day'
+  const [exportScope, setExportScope] = useState('month'); 
   const [exportMonth, setExportMonth] = useState(getCurrentMonth());
   const [exportDate, setExportDate] = useState(getToday());
   const [expenses, setExpenses] = useState([]);
@@ -187,7 +215,7 @@ export default function App() {
 
     if (cats.length === 0) {
       const defaultCats = [
-        { user_id: userId, name: 'Needs', percentage: 50, color: 'indigo-600', type: 'expense', target_goal: 0 },
+        { user_id: userId, name: 'Needs', percentage: 50, color: 'emerald-600', type: 'expense', target_goal: 0 },
         { user_id: userId, name: 'Wants', percentage: 30, color: 'pink-600', type: 'expense', target_goal: 0 },
         { user_id: userId, name: 'Savings', percentage: 20, color: 'green-600', type: 'asset', target_goal: 50000 }
       ];
@@ -286,7 +314,12 @@ export default function App() {
   }, [salary, categories, sandboxSheets, session, loadingData, currency, taxCountry, taxFilingStatus, t]);
 
 
-  const handleLogout = async () => {
+  // Request Confirmation before actual logout
+  const handleLogoutRequest = () => {
+    setShowLogoutConfirm(true);
+  };
+
+  const confirmLogout = async () => {
     try {
       await supabase.auth.signOut();
       setSession(null);
@@ -295,6 +328,7 @@ export default function App() {
       setAssetAdjustments([]);
       setClosedMonths([]);
       setSalary('');
+      setShowLogoutConfirm(false);
     } catch (error) {
       console.error("Logout failed:", error);
     }
@@ -1317,6 +1351,35 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-zinc-950 text-gray-900 dark:text-zinc-300 font-sans overflow-hidden transition-colors duration-300">
+      
+      {/* Logout Confirmation Modal */}
+      {showLogoutConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6 text-center">
+            <div className="w-12 h-12 rounded-full bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-4">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
+              </svg>
+            </div>
+            <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">Sign Out</h2>
+            <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">Are you sure you want to securely sign out of your account?</p>
+            <div className="flex gap-3 justify-center">
+              <button 
+                onClick={() => setShowLogoutConfirm(false)} 
+                className="px-5 py-2.5 rounded-lg font-bold text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 transition-colors w-1/2"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={confirmLogout} 
+                className="px-5 py-2.5 rounded-lg font-bold text-sm bg-rose-600 text-white hover:bg-rose-700 transition-colors w-1/2 shadow-sm"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Password Recovery Forced Modal */}
       {showRecoveryModal && (
@@ -1343,14 +1406,14 @@ export default function App() {
                        type="password" 
                        value={recoveryPassword}
                        onChange={(e) => setRecoveryPassword(e.target.value)}
-                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
                        placeholder={t('new_password', 'New Password')}
                        aria-label={t('new_password', 'New Password')}
                        required minLength={6}
                    />
                    <button 
                        type="submit" 
-                       className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md"
+                       className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold shadow-md"
                    >
                       {t('save_password', 'Save Password')}
                    </button>
@@ -1365,7 +1428,7 @@ export default function App() {
         setAlertMsg={setAlertMsg}
         currentStreak={currentStreak}
         longestStreak={longestStreak}
-        handleLogout={handleLogout}
+        handleLogout={handleLogoutRequest} 
         username={username}
         userRole={userRole}
       />
@@ -1373,7 +1436,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto w-full">
 
           {alertMsg && (
-            <div className="mb-6 p-3 rounded-md text-sm font-medium border bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-500/20 dark:border-indigo-500/40 dark:text-indigo-200 shadow-sm">
+            <div className="mb-6 p-3 rounded-md text-sm font-medium border bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/20 dark:border-emerald-500/40 dark:text-emerald-200 shadow-sm">
               {alertMsg}
             </div>
           )}
@@ -1571,6 +1634,8 @@ export default function App() {
             <SupportTab
               session={session}
               username={username}
+              supportDraft={supportDraft}
+              setSupportDraft={setSupportDraft}
             />
           )}
           {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (

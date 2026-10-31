@@ -2,11 +2,54 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link id="dynamic-favicon" rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VaultFlow</title>
+    
+    <!-- Phase 10: Brand Identity & SEO -->
+    <title>MANAGED | Financial Allocator</title>
+    <meta name="description" content="Take control of your finances. MANAGED is a premium financial allocator and expense tracker designed for modern budgeting." />
+    <meta name="theme-color" content="#10B981" />
+    
+    <!-- Open Graph for Social Previews -->
+    <meta property="og:title" content="MANAGED | Financial Allocator" />
+    <meta property="og:description" content="Take control of your finances with smart allocations and real-time tracking." />
+    <meta property="og:type" content="website" />
+
+    <!-- Automatically crops empty margins from /favicon.png and adds a high-contrast badge for the browser tab -->
+    <script>
+      window.addEventListener('DOMContentLoaded', () => {
+        const img = new Image();
+        img.src = '/favicon.png';
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 64;
+          canvas.height = 64;
+          const ctx = canvas.getContext('2d');
+
+          // Draw a sleek rounded squircle badge so the dark hand pops in dark browser tabs
+          ctx.fillStyle = '#F8FAFC';
+          ctx.strokeStyle = '#10B981';
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.roundRect(2, 2, 60, 60, 16);
+          ctx.fill();
+          ctx.stroke();
+
+          // Zoom in 2.1x on the center of favicon.png to crop out the empty transparent margins
+          const zoom = 2.1;
+          const sw = img.width / zoom;
+          const sh = img.height / zoom;
+          const sx = (img.width - sw) / 2;
+          const sy = (img.height - sh) / 2;
+          ctx.drawImage(img, sx, sy, sw, sh, 4, 4, 56, 56);
+
+          const link = document.getElementById('dynamic-favicon');
+          if (link) link.href = canvas.toDataURL('image/png');
+        };
+      });
+    </script>
   </head>
-  <body>
+  <body class="bg-gray-50 dark:bg-zinc-950 text-gray-900 dark:text-white antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

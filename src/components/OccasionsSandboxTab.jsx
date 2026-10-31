@@ -63,13 +63,13 @@ export default function OccasionsSandboxTab({
                 <div className="flex bg-gray-100 dark:bg-zinc-900 p-1 rounded-lg border border-gray-200 dark:border-zinc-800">
                     <button
                         onClick={() => setPlannerSubTab('occasions')}
-                        className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${plannerSubTab === 'occasions' ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 dark:text-zinc-400'}`}
+                        className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${plannerSubTab === 'occasions' ? 'bg-emerald-600 text-white shadow' : 'text-gray-500 dark:text-zinc-400'}`}
                     >
                         {t('special_occasions_tab')}
                     </button>
                     <button
                         onClick={() => setPlannerSubTab('sandbox')}
-                        className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${plannerSubTab === 'sandbox' ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 dark:text-zinc-400'}`}
+                        className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${plannerSubTab === 'sandbox' ? 'bg-emerald-600 text-white shadow' : 'text-gray-500 dark:text-zinc-400'}`}
                     >
                         {t('temp_calculations_tab')}
                     </button>
@@ -91,7 +91,7 @@ export default function OccasionsSandboxTab({
                             value={bundleName}
                             onChange={(e) => setBundleName(e.target.value)}
                             placeholder={t('occasion_name_placeholder')}
-                            className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-indigo-500"
+                            className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-emerald-500"
                         />
 
                         <div className="flex gap-2">
@@ -136,7 +136,7 @@ export default function OccasionsSandboxTab({
                                         amtEl.value = '';
                                     }
                                 }}
-                                className="px-4 py-2 bg-indigo-100 hover:bg-indigo-200 dark:bg-indigo-900/60 dark:hover:bg-indigo-800 text-indigo-700 dark:text-indigo-300 rounded-md font-bold text-sm"
+                                className="px-4 py-2 bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-900/60 dark:hover:bg-emerald-800 text-emerald-700 dark:text-emerald-300 rounded-md font-bold text-sm"
                             >
                                 +
                             </button>
@@ -156,7 +156,7 @@ export default function OccasionsSandboxTab({
 
                         <button
                             onClick={handleCreateBundle}
-                            className="w-full py-2.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold shadow-md transition-all"
+                            className="w-full py-2.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold shadow-md transition-all"
                         >
                             {t('create_occasion_bundle_btn')}
                         </button>
@@ -179,12 +179,12 @@ export default function OccasionsSandboxTab({
                                 const itemInput = occasionItemInputs[bundle.id] || { name: '', cost: '' };
 
                                 return (
-                                    <div key={bundle.id} className={`w-full bg-white dark:bg-zinc-900 p-6 rounded-lg border-2 shadow-sm ${isLocked ? 'border-emerald-500/40' : 'border-indigo-500/60'}`}>
+                                    <div key={bundle.id} className={`w-full bg-white dark:bg-zinc-900 p-6 rounded-lg border-2 shadow-sm ${isLocked ? 'border-emerald-500/40' : 'border-emerald-500/60'}`}>
                                         <div className="flex justify-between items-start mb-3">
                                             <div>
                                                 <div className="flex items-center gap-2">
                                                     <h3 className="text-base font-bold text-gray-900 dark:text-white"> {bundle.name}</h3>
-                                                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${isLocked ? 'bg-emerald-500/20 text-emerald-400' : 'bg-indigo-500/20 text-indigo-400'}`}>
+                                                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${isLocked ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
                                                         {isLocked ? t('locked_in_transactions') : t('open_bundle')}
                                                     </span>
                                                 </div>
@@ -221,13 +221,13 @@ export default function OccasionsSandboxTab({
 
                                         <div className="w-full bg-gray-100 dark:bg-zinc-950 rounded-full h-2 mb-4 overflow-hidden border border-gray-200 dark:border-zinc-800">
                                             <div
-                                                className={`h-2 rounded-full transition-all duration-500 ${isLocked ? 'bg-emerald-500' : percentUsed > 90 ? 'bg-rose-500' : 'bg-indigo-500'}`}
+                                                className={`h-2 rounded-full transition-all duration-500 ${isLocked ? 'bg-emerald-500' : percentUsed > 90 ? 'bg-rose-500' : 'bg-emerald-500'}`}
                                                 style={{ width: `${percentUsed}%` }}
                                             ></div>
                                         </div>
 
                                         {!isLocked && !isReadOnly && (
-                                            <div className="flex flex-col gap-2 mb-4 p-3 bg-indigo-50/50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-500/20 rounded-md">
+                                            <div className="flex flex-col gap-2 mb-4 p-3 bg-emerald-50/50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-500/20 rounded-md">
                                                 <input
                                                     type="text"
                                                     placeholder={t('item_name_placeholder')}
@@ -246,7 +246,7 @@ export default function OccasionsSandboxTab({
                                                             <div key={cId} className="flex-1 min-w-[100px]">
                                                                 <label className="text-[10px] uppercase text-gray-500 font-bold ml-1 flex justify-between">
                                                                     <span>{t('from_cat', { category: catName })}</span>
-                                                                    <span className="text-indigo-400 dark:text-indigo-500">{formatCurrencyFn(catLeft)} {t('left_label')}</span>
+                                                                    <span className="text-emerald-400 dark:text-emerald-500">{formatCurrencyFn(catLeft)} {t('left_label')}</span>
                                                                 </label>
                                                                 <input
                                                                     type="number"
@@ -267,7 +267,7 @@ export default function OccasionsSandboxTab({
                                                     <button
                                                         type="button"
                                                         onClick={() => handleAddOccasionItem(bundle.id)}
-                                                        className="px-4 py-2 h-[34px] bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-xs font-bold"
+                                                        className="px-4 py-2 h-[34px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold"
                                                     >
                                                         {t('add_item_btn')}
                                                     </button>
@@ -340,7 +340,7 @@ export default function OccasionsSandboxTab({
                                 className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm"
                                 required
                             />
-                            <button type="submit" className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-sm font-bold">
+                            <button type="submit" className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-sm font-bold">
                                 {t('create_calc_page_btn')}
                             </button>
                         </form>
@@ -351,12 +351,12 @@ export default function OccasionsSandboxTab({
                                 {sandboxSheets.map(s => (
                                     <div
                                         key={s.id}
-                                        className={`rounded-md flex justify-between items-center border transition-all ${activeSheet?.id === s.id ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-500 text-indigo-600 dark:text-indigo-300' : 'bg-gray-50 dark:bg-zinc-950 border-gray-200 dark:border-zinc-800'}`}
+                                        className={`rounded-md flex justify-between items-center border transition-all ${activeSheet?.id === s.id ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-500 text-emerald-600 dark:text-emerald-300' : 'bg-gray-50 dark:bg-zinc-950 border-gray-200 dark:border-zinc-800'}`}
                                     >
                                         <button
                                             type="button"
                                             onClick={() => setActiveSheetId(s.id)}
-                                            className="flex-1 min-w-0 p-3 text-left rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500"
+                                            className="flex-1 min-w-0 p-3 text-left rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-500"
                                         >
                                             <span className="block text-sm font-bold">{s.title}</span>
                                             <span className="block text-xs text-gray-500">{formatCurrencyFn(s.totalBudget)} {t('budget_suffix')}</span>
@@ -434,7 +434,7 @@ export default function OccasionsSandboxTab({
                                                             <span>{formatCurrencyFn(b.limit - bSpent)} {t('left_of')} {formatCurrencyFn(b.limit)}</span>
                                                         </div>
                                                         <div className="w-full bg-gray-100 dark:bg-zinc-950 h-1.5 rounded-full overflow-hidden">
-                                                            <div className="bg-indigo-500 h-1.5" style={{ width: `${Math.min(100, (bSpent / b.limit) * 100)}%` }}></div>
+                                                            <div className="bg-emerald-500 h-1.5" style={{ width: `${Math.min(100, (bSpent / b.limit) * 100)}%` }}></div>
                                                         </div>
                                                     </div>
                                                 );
@@ -469,7 +469,7 @@ export default function OccasionsSandboxTab({
                                         <option value="MAIN">{t('general_budget_pool')}</option>
                                         {activeSheet.buckets.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                                     </select>
-                                    <button type="submit" className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-bold">
+                                    <button type="submit" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold">
                                         {t('add_item_btn')}
                                     </button>
                                 </form>

@@ -157,7 +157,7 @@ export default function SettingsTab({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
               </svg>
             ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor" className="w-4 h-4 text-indigo-600">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor" className="w-4 h-4 text-emerald-600">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
               </svg>
             )}
@@ -178,7 +178,7 @@ export default function SettingsTab({
             onChange={(e) => setSalary(e.target.value)}
             onBlur={handleUpdateProfile}
             placeholder={t('enter_amount')}
-            className="w-full sm:w-64 px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 font-semibold"
+            className="w-full sm:w-64 px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500 font-semibold"
           />
         </div>
 
@@ -195,7 +195,7 @@ export default function SettingsTab({
                     setCurrencyMode(m);
                     setCurrency(m === 'none' ? '' : m === 'custom' ? customCurrency : m);
                   }}
-                  className="px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-indigo-500 w-full"
+                  className="px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-emerald-500 w-full"
                 >
                   <option value="$">$ (USD)</option>
                   <option value="€">€ (Euro)</option>
@@ -215,7 +215,7 @@ export default function SettingsTab({
                     }}
                     placeholder="Sym"
                     maxLength="5"
-                    className="w-24 px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 text-center text-sm"
+                    className="w-24 px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500 text-center text-sm"
                   />
                 )}
               </div>
@@ -227,7 +227,7 @@ export default function SettingsTab({
               <select
                 value={i18n.resolvedLanguage || 'en'}
                 onChange={(e) => i18n.changeLanguage(e.target.value)}
-                className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-indigo-500"
+                className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-emerald-500"
               >
                 <option value="en">English</option>
                 <option value="fr">Français</option>
@@ -251,7 +251,7 @@ export default function SettingsTab({
               <button
                 onClick={() => setExportScope('month')}
                 className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${exportScope === 'month'
-                    ? 'bg-indigo-600 text-white shadow'
+                    ? 'bg-emerald-600 text-white shadow'
                     : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
                   }`}
               >
@@ -260,7 +260,7 @@ export default function SettingsTab({
               <button
                 onClick={() => setExportScope('day')}
                 className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${exportScope === 'day'
-                    ? 'bg-indigo-600 text-white shadow'
+                    ? 'bg-emerald-600 text-white shadow'
                     : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
                   }`}
               >
@@ -278,7 +278,7 @@ export default function SettingsTab({
                   value={exportMonth}
                   max={getCurrentMonth()}
                   onChange={(e) => setExportMonth(e.target.value)}
-                  className="w-full sm:w-64 px-3 py-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white text-sm font-semibold focus:outline-none focus:border-indigo-500"
+                  className="w-full sm:w-64 px-3 py-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white text-sm font-semibold focus:outline-none focus:border-emerald-500"
                 />
               </div>
             ) : (
@@ -291,7 +291,7 @@ export default function SettingsTab({
                   value={exportDate}
                   max={getToday()}
                   onChange={(e) => setExportDate(e.target.value)}
-                  className="w-full sm:w-64 px-3 py-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white text-sm font-semibold focus:outline-none focus:border-indigo-500"
+                  className="w-full sm:w-64 px-3 py-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white text-sm font-semibold focus:outline-none focus:border-emerald-500"
                 />
               </div>
             )}
@@ -343,7 +343,7 @@ export default function SettingsTab({
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 placeholder={t('new_password', 'New Password')}
-                className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
                 required
               />
               <input
@@ -351,13 +351,13 @@ export default function SettingsTab({
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder={t('confirm_password', 'Confirm New Password')}
-                className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
                 required
               />
               <button
                 type="submit"
                 disabled={isUpdatingPassword}
-                className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-sm font-bold transition-all shadow-md disabled:opacity-50"
+                className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-sm font-bold transition-all shadow-md disabled:opacity-50"
               >
                 {isUpdatingPassword ? t('updating', 'Updating...') : t('save_password', 'Save Password')}
               </button>

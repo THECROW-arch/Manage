@@ -130,9 +130,9 @@ export default function OwnerDashboard() {
                     <h3 className="text-sm font-bold text-emerald-800 dark:text-emerald-400 uppercase tracking-wider mb-2">Estimated Monthly Revenue</h3>
                     <p className="text-4xl font-black text-emerald-600 dark:text-emerald-500">${metrics.mrr.toFixed(2)} <span className="text-lg font-bold text-emerald-800/50 dark:text-emerald-500/50">/mo</span></p>
                 </div>
-                <div className="bg-indigo-50 dark:bg-indigo-900/20 p-6 rounded-xl border border-indigo-200 dark:border-indigo-800/30">
-                    <h3 className="text-sm font-bold text-indigo-800 dark:text-indigo-400 uppercase tracking-wider mb-2">Estimated Annual Run Rate</h3>
-                    <p className="text-4xl font-black text-indigo-600 dark:text-indigo-500">${metrics.arr.toFixed(2)} <span className="text-lg font-bold text-indigo-800/50 dark:text-indigo-500/50">/yr</span></p>
+                <div className="bg-emerald-50 dark:bg-emerald-900/20 p-6 rounded-xl border border-emerald-200 dark:border-emerald-800/30">
+                    <h3 className="text-sm font-bold text-emerald-800 dark:text-emerald-400 uppercase tracking-wider mb-2">Estimated Annual Run Rate</h3>
+                    <p className="text-4xl font-black text-emerald-600 dark:text-emerald-500">${metrics.arr.toFixed(2)} <span className="text-lg font-bold text-emerald-800/50 dark:text-emerald-500/50">/yr</span></p>
                 </div>
             </div>
 
@@ -157,7 +157,7 @@ export default function OwnerDashboard() {
                     <div className="space-y-4">
                         <div className="flex justify-between items-center text-sm"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-gray-400"></div>Free Tier</span> <span className="font-bold text-gray-900 dark:text-white">{metrics.tierBreakdown.free || 0}</span></div>
                         <div className="flex justify-between items-center text-sm"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-emerald-500"></div>Pro (Monthly)</span> <span className="font-bold text-gray-900 dark:text-white">{metrics.tierBreakdown.pro_monthly || 0}</span></div>
-                        <div className="flex justify-between items-center text-sm"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-indigo-500"></div>Pro (Yearly)</span> <span className="font-bold text-gray-900 dark:text-white">{metrics.tierBreakdown.pro_yearly || 0}</span></div>
+                        <div className="flex justify-between items-center text-sm"><span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-emerald-500"></div>Pro (Yearly)</span> <span className="font-bold text-gray-900 dark:text-white">{metrics.tierBreakdown.pro_yearly || 0}</span></div>
                     </div>
                 </div>
             </div>
@@ -211,7 +211,7 @@ export default function OwnerDashboard() {
                                             </select>
                                         </td>
                                         <td className="py-3 px-4 w-24">
-                                            {updatingId === targetId && <span className="text-[10px] text-indigo-500 font-black uppercase tracking-wider animate-pulse">Saving...</span>}
+                                            {updatingId === targetId && <span className="text-[10px] text-emerald-500 font-black uppercase tracking-wider animate-pulse">Saving...</span>}
                                         </td>
                                     </tr>
                                 );

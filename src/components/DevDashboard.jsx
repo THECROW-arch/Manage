@@ -8,6 +8,7 @@ import { supabase } from '../supabaseClient';
 export default function DevDashboard() {
     const [tickets, setTickets] = useState([]);
     const [filter, setFilter] = useState('open'); // 'all', 'open', 'in_progress', 'resolved'
+    const [categoryFilter, setCategoryFilter] = useState('all'); // 'all', 'bug', 'general', etc.
     const [replyDrafts, setReplyDrafts] = useState({});
     const [alertMsg, setAlertMsg] = useState('');
 
@@ -68,12 +69,16 @@ export default function DevDashboard() {
         fetchTickets();
     };
 
-    const filteredTickets = filter === 'all' ? tickets : tickets.filter(t => t.status === filter);
+    const filteredTickets = tickets.filter(t => {
+        const matchesStatus = filter === 'all' || t.status === filter;
+        const matchesCategory = categoryFilter === 'all' || t.category === categoryFilter;
+        return matchesStatus && matchesCategory;
+    });
 
     return (
         <div className="max-w-6xl mx-auto space-y-6 pb-12">
             {alertMsg && (
-                <div className="p-3 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-md text-sm font-bold">
+                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-md text-sm font-bold">
                     {alertMsg}
                 </div>
             )}
@@ -82,16 +87,29 @@ export default function DevDashboard() {
                     <h1 className="text-2xl font-black text-gray-900 dark:text-white">Dev Operations</h1>
                     <p className="text-sm text-gray-500 dark:text-zinc-400">Manage user support tickets and bugs.</p>
                 </div>
-                <select 
-                    value={filter} 
-                    onChange={(e) => setFilter(e.target.value)}
-                    className="px-3 py-2 rounded-lg bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm font-bold text-gray-900 dark:text-white"
-                >
-                    <option value="all">All Tickets</option>
-                    <option value="open">Open Needs Reply</option>
-                    <option value="in_progress">In Progress</option>
-                    <option value="resolved">Resolved</option>
-                </select>
+                <div className="flex gap-2">
+                    <select 
+                        value={categoryFilter} 
+                        onChange={(e) => setCategoryFilter(e.target.value)}
+                        className="px-3 py-2 rounded-lg bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm font-bold text-gray-900 dark:text-white"
+                    >
+                        <option value="all">All Types</option>
+                        <option value="bug">Bugs</option>
+                        <option value="feature_request">Features</option>
+                        <option value="billing">Billing</option>
+                        <option value="general">General</option>
+                    </select>
+                    <select 
+                        value={filter} 
+                        onChange={(e) => setFilter(e.target.value)}
+                        className="px-3 py-2 rounded-lg bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm font-bold text-gray-900 dark:text-white"
+                    >
+                        <option value="all">All Statuses</option>
+                        <option value="open">Open / Needs Reply</option>
+                        <option value="in_progress">In Progress</option>
+                        <option value="resolved">Resolved</option>
+                    </select>
+                </div>
             </div>
 
             <div className="space-y-4">
@@ -100,12 +118,8 @@ export default function DevDashboard() {
                         {/* User Issue Column */}
                         <div className="flex-1 space-y-2">
                             <div className="flex items-center gap-3">
-                                <span className={`text-[10px] uppercase font-black px-2 py-0.5 rounded ${
-                                    ticket.priority === 'high' ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400' :
-                                    ticket.priority === 'medium' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400' :
-                                    'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400'
-                                }`}>{ticket.priority} Priority</span>
-                                <span className="text-xs font-bold text-gray-500 uppercase">{ticket.category}</span>
+                                <span className="text-xs font-black px-2 py-0.5 rounded bg-gray-100 text-gray-700 dark:bg-zinc-800 dark:text-zinc-300 uppercase tracking-widest">{ticket.category}</span>
+                                <span className="text-[10px] font-bold text-gray-400 uppercase">ID: {ticket.id.substring(0,8)}</span>
                             </div>
                             <h3 className="text-lg font-bold text-gray-900 dark:text-white">{ticket.subject}</h3>
                             <p className="text-sm text-gray-700 dark:text-zinc-300 bg-gray-50 dark:bg-zinc-950 p-3 rounded border border-gray-100 dark:border-zinc-800">{ticket.message}</p>
@@ -118,14 +132,24 @@ export default function DevDashboard() {
                                 value={replyDrafts[ticket.id] !== undefined ? replyDrafts[ticket.id] : (ticket.admin_reply || '')}
                                 onChange={(e) => handleReplyChange(ticket.id, e.target.value)}
                                 placeholder="Type your response to the user here..."
-                                className="w-full h-24 px-3 py-2 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                                className="w-full h-24 px-3 py-2 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
                             ></textarea>
                             <div className="flex gap-2">
                                 <button onClick={() => submitReply(ticket.id, 'in_progress')} className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded font-bold text-xs">
-                                    Mark In Progress
+                                    In Progress
                                 </button>
                                 <button onClick={() => submitReply(ticket.id, 'resolved')} className="flex-1 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded font-bold text-xs">
-                                    Resolve & Send
+                                    Resolve
+                                </button>
+                                <button 
+                                    onClick={async () => {
+                                        if(!window.confirm("Dismiss this ticket as junk/invalid? It will be deleted permanently.")) return;
+                                        await supabase.from('support_tickets').delete().eq('id', ticket.id);
+                                        fetchTickets();
+                                    }} 
+                                    className="px-3 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded font-bold text-xs transition-colors"
+                                >
+                                    Dismiss
                                 </button>
                             </div>
                         </div>

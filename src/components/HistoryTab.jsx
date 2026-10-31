@@ -53,7 +53,7 @@ export default function HistoryTab({ historyFeed }) {
           <div className="relative border-l-2 border-gray-200 dark:border-zinc-800 ml-3 space-y-8 pb-4">
             {historyFeed.map((event, idx) => (
               <div key={`${event.id}-${idx}`} className="relative pl-6">
-                <div className={`absolute -left-1.5 top-1.5 w-3 h-3 rounded-full border-2 border-white dark:border-zinc-900 ${event.type === 'ledger' ? 'bg-indigo-500' : 'bg-emerald-500'}`}></div>
+                <div className={`absolute -left-1.5 top-1.5 w-3 h-3 rounded-full border-2 border-white dark:border-zinc-900 ${event.type === 'ledger' ? 'bg-emerald-500' : 'bg-emerald-500'}`}></div>
                 <div className="flex flex-col">
                   <span className="text-xs font-semibold text-gray-400 dark:text-zinc-500 uppercase tracking-wider mb-1" dir="ltr">
                     {event.date}

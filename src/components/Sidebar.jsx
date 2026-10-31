@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+
 const NAV_TABS = [
   { id: 'cashflow', tKey: 'cash_flow', icon: 'M12 6v12m-3-2.818l.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 11-18 0 9 9 0 0118 0z' },
   { id: 'occasions', tKey: 'occasions_sandbox', icon: 'M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z' },
@@ -11,8 +12,67 @@ const NAV_TABS = [
   { id: 'dev_dashboard', tKey: 'dev_dashboard', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
   { id: 'owner_dashboard', label: 'Owner Cmd', icon: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z' }
 ];
+
+/**
+ * Renders the custom MANAGED artwork (/favicon.png) with a rounded, stylish container.
+ * Automatically adapts tones between Light Mode and Dark Mode.
+ * 
+ * @param {Object} props - Component properties including size classes
+ */
+export function BrandEmblem({ className = "w-12 h-12" }) {
+  return (
+    <div className={`${className} relative flex items-center justify-center shrink-0 overflow-hidden rounded-xl border border-gray-200 dark:border-zinc-700 bg-white shadow-sm`}>
+      <svg className="absolute w-0 h-0 pointer-events-none" aria-hidden="true">
+        <defs>
+          <filter id="managed-dark-adapt" colorInterpolationFilters="sRGB">
+            <feColorMatrix
+              type="matrix"
+              values="0.2 -1.2  0   1  0
+                     -1.0  0    0   1  0
+                     -0.4 -0.6  0   1  0
+                      0    0    0   1  0"
+            />
+          </filter>
+        </defs>
+      </svg>
+      <img
+        src="/favicon.png"
+        alt="MANAGED Emblem"
+        className="w-full h-full object-contain scale-[2.2] dark:[filter:url(#managed-dark-adapt)] transition-all duration-300"
+      />
+    </div>
+  );
+}
+
+/**
+ * Renders the clean, professional MANAGED typography with an emerald accent on "ED".
+ * 
+ * @param {Object} props - Component properties including size variant ('sm' | 'md' | 'lg')
+ */
+export function BrandWordmark({ size = "md" }) {
+  const dimensions = {
+    sm: "text-base",
+    md: "text-lg",
+    lg: "text-2xl"
+  }[size] || "text-lg";
+
+  return (
+    <div className="flex flex-col justify-center leading-none">
+      <span className={`${dimensions} font-black tracking-tight text-gray-900 dark:text-white`}>
+        MANAG<span className="text-emerald-500">ED</span>
+      </span>
+      <span className="text-[8.5px] font-bold tracking-[0.2em] text-gray-400 dark:text-zinc-400 uppercase mt-1">
+        Financial Allocator
+      </span>
+    </div>
+  );
+}
+
 /**
  * Renders the primary desktop sidebar navigation with a collapsible state toggle.
+ * Integrates the MANAGED brand identity, user streaks, and role-based access control.
+ * 
+ * @param {Object} props - Component properties including activeTab, userRole, and username
  */
 export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentStreak, longestStreak, handleLogout, username, userRole }) {
   const [isCollapsed, setIsCollapsed] = useState(() => {
@@ -20,6 +80,7 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
     catch { return false; }
   });
   const { t } = useTranslation();
+
   useEffect(() => {
     localStorage.setItem('sidebarCollapsed', isCollapsed);
   }, [isCollapsed]);
@@ -27,12 +88,16 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
   return (
     <aside className={`bg-white dark:bg-zinc-900 border-r border-gray-200 dark:border-zinc-800 flex flex-col justify-between shrink-0 hidden md:flex transition-all duration-300 ${isCollapsed ? 'w-20' : 'w-64'}`}>
       <div>
-        <div className={`p-6 border-b border-gray-200 dark:border-zinc-800 flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'} h-[77px]`}>
+        <div className={`px-3.5 border-b border-gray-200 dark:border-zinc-800 flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'} h-[92px]`}>
           {!isCollapsed ? (
-            <h1 className="text-xl font-bold text-gray-900 dark:text-white tracking-tight whitespace-nowrap overflow-hidden">{t('app_title')}</h1>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <BrandEmblem className="w-11 h-11" />
+              <BrandWordmark size="md" />
+            </div>
           ) : (
-            <h1 className="text-xl font-black text-indigo-600 dark:text-indigo-500 tracking-tighter">SA</h1>
+            <BrandEmblem className="w-11 h-11" />
           )}
+
           {!isCollapsed && currentStreak > 0 && (
             <div title={`Longest Streak: ${longestStreak}`} className="flex items-center gap-1 text-orange-500 bg-orange-50 dark:bg-orange-500/10 px-2 py-1 rounded-md text-xs font-bold border border-orange-200 dark:border-orange-500/20 shrink-0">
               <span>🔥</span> {currentStreak}
@@ -51,13 +116,13 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
                 setActiveTab(tab.id);
                 setAlertMsg('');
               }}
-              className={`w-full flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 rounded-md text-sm font-medium transition-all ${activeTab === tab.id
-                ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/10 dark:text-indigo-400'
-                : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-800/50'
+              className={`w-full flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2.5 rounded-md text-sm font-bold transition-all ${activeTab === tab.id
+                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 dark:shadow-[inset_2px_0_0_0_#10B981]'
+                : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-800/50 font-medium'
                 }`}
               title={isCollapsed ? t(tab.tKey) : undefined}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 min-w-[24px] min-h-[24px] shrink-0 block">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={activeTab === tab.id ? 2 : 1.5} stroke="currentColor" className="w-6 h-6 min-w-[24px] min-h-[24px] shrink-0 block">
                 <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
               </svg>
               {!isCollapsed && (
@@ -70,7 +135,7 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
         </nav>
       </div>
 
-      <div className="p-4 border-t border-gray-200 dark:border-zinc-800 flex flex-col gap-2">
+      <div className="p-4 border-t border-gray-200 dark:border-zinc-800 flex flex-col gap-4">
         <button
           onClick={() => setIsCollapsed(!isCollapsed)}
           className={`w-full flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 rounded-md text-sm font-medium text-gray-400 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white transition-all`}
@@ -87,13 +152,14 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
         </button>
 
         {!isCollapsed && username && (
-          <div className="px-3 py-2 mb-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-bold text-sm shrink-0">
+          <div className="px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-bold text-sm shrink-0">
               {username.charAt(0).toUpperCase()}
             </div>
             <div className="flex flex-col overflow-hidden">
               <span className="text-xs font-bold text-gray-900 dark:text-white truncate" dir="ltr">@{username}</span>
-              <span className="text-[10px] font-medium text-gray-500 dark:text-zinc-500 uppercase tracking-wider">{userRole}</span>            </div>
+              <span className="text-[10px] font-medium text-gray-500 dark:text-zinc-500 uppercase tracking-wider">{userRole}</span>
+            </div>
           </div>
         )}
 
@@ -113,14 +179,20 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
 }
 
 /**
- * Renders the mobile header navigation dropdown.
+ * Renders the mobile-responsive header navigation dropdown.
+ * Displays the adaptive MANAGED brand lockup and the user's current streak.
+ * 
+ * @param {Object} props - Component properties including activeTab and userRole
  */
 export function MobileHeader({ activeTab, setActiveTab, setAlertMsg, currentStreak, userRole }) {
   const { t } = useTranslation();
   return (
     <header className="md:hidden flex flex-col gap-4 mb-6 pb-4 border-b border-gray-200 dark:border-zinc-800">
-      <div className="flex items-center gap-3">
-        <h1 className="text-xl font-bold text-gray-900 dark:text-white">Salary Allocator</h1>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <BrandEmblem className="w-10 h-10" />
+          <BrandWordmark size="sm" />
+        </div>
         {currentStreak > 0 && (
           <div className="flex items-center gap-1 text-orange-500 bg-orange-50 dark:bg-orange-500/10 px-2 py-1 rounded-md text-xs font-bold border border-orange-200 dark:border-orange-500/20">
             <span>🔥</span> {currentStreak}
@@ -131,7 +203,7 @@ export function MobileHeader({ activeTab, setActiveTab, setAlertMsg, currentStre
         aria-label="Select section"
         value={activeTab}
         onChange={(e) => { setAlertMsg(''); setActiveTab(e.target.value); }}
-        className="w-full p-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm"
+        className="w-full p-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500"
       >
         {NAV_TABS.filter(tab =>
           (tab.id !== 'dev_dashboard' || userRole === 'dev' || userRole === 'owner') &&
