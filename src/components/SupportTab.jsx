@@ -62,16 +62,32 @@ export default function SupportTab({ session, username, supportDraft, setSupport
     const handleDeleteTicket = async (id) => {
         if (!window.confirm(t('confirm_delete_ticket', 'Are you sure you want to delete this ticket?'))) return;
         
-        const previousTickets = [...tickets];
-        setTickets(tickets.filter(t => t.id !== id));
+        const deletedIndex = tickets.findIndex(item => item.id === id);
+        const deletedTicket = tickets[deletedIndex];
+        if (!deletedTicket) return;
+
+        setTickets(current => current.filter(item => item.id !== id));
         
         try {
-            const { error } = await supabase.from('support_tickets').delete().eq('id', id);
+            const { data, error } = await supabase
+                .from('support_tickets')
+                .delete()
+                .eq('id', id)
+                .select('id');
+
             if (error) throw error;
+            if (!data || data.length === 0) {
+                throw new Error('No ticket was deleted.');
+            }
         } catch (error) {
             console.error(error);
             alert(t('err_delete_ticket', 'Failed to delete ticket.'));
-            setTickets(previousTickets);
+            setTickets(current => {
+                if (current.some(item => item.id === id)) return current;
+                const next = [...current];
+                next.splice(Math.min(deletedIndex, next.length), 0, deletedTicket);
+                return next;
+            });
         }
     };
 
@@ -124,7 +140,7 @@ export default function SupportTab({ session, username, supportDraft, setSupport
                             <select
                                 value={supportDraft.category}
                                 onChange={(e) => setSupportDraft({ ...supportDraft, category: e.target.value })}
-                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
+                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                             >
                                 <option value="general">{t('cat_general')}</option>
                                 <option value="bug">{t('cat_bug')}</option>
@@ -139,7 +155,7 @@ export default function SupportTab({ session, username, supportDraft, setSupport
                                 value={supportDraft.subject}
                                 onChange={(e) => setSupportDraft({ ...supportDraft, subject: e.target.value })}
                                 placeholder="Brief summary"
-                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
+                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                                 required
                             />
                         </div>
@@ -151,14 +167,14 @@ export default function SupportTab({ session, username, supportDraft, setSupport
                             value={supportDraft.message}
                             onChange={(e) => setSupportDraft({ ...supportDraft, message: e.target.value })}
                             placeholder="Describe your issue or request..."
-                            className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
+                            className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                             required
                         ></textarea>
                     </div>
                     <button
                         type="submit"
                         disabled={loading}
-                        className="py-2.5 px-5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-sm shadow transition-colors"
+                        className="py-2.5 px-5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold text-sm shadow transition-colors"
                     >
                         {loading ? 'Submitting...' : t('submit_ticket')}
                     </button>

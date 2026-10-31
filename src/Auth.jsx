@@ -155,7 +155,7 @@ export default function Auth() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-3 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 disabled:cursor-not-allowed dark:disabled:bg-zinc-700 text-white font-bold transition-all shadow-md mt-2"
+                  className="w-full py-3 px-4 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:bg-gray-400 disabled:cursor-not-allowed dark:disabled:bg-zinc-700 text-white font-bold transition-all shadow-md mt-2"
                 >
                   {loading ? t('auth_processing') : t('auth_send_reset_btn', 'Send Reset Link')}
                 </button>
@@ -238,7 +238,7 @@ export default function Auth() {
             <button
                 type="submit"
                 disabled={loading || (isSignUp && !acceptedToS)}
-                className="w-full py-3 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 disabled:cursor-not-allowed dark:disabled:bg-zinc-700 text-white font-bold transition-all shadow-md mt-2"
+                className="w-full py-3 px-4 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:bg-gray-400 disabled:cursor-not-allowed dark:disabled:bg-zinc-700 text-white font-bold transition-all shadow-md mt-2"
             >
                 {loading ? t('auth_processing') : isSignUp ? t('auth_create_account_btn') : t('auth_signin_btn')}
             </button>
@@ -294,7 +294,7 @@ export default function Auth() {
             <div className="p-5 border-t border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded-b-xl flex justify-end">
               <button 
                 onClick={() => { setAcceptedToS(true); setShowToS(false); }}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-bold text-sm shadow transition-colors"
+                className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md font-bold text-sm shadow transition-colors"
               >
                 {t('tos_agree_btn')}
               </button>

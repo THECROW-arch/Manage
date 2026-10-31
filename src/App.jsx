@@ -76,24 +76,36 @@ export default function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem('activeTab', activeTab);
+    try { localStorage.setItem('activeTab', activeTab); }
+    catch (e) { console.warn('Failed to persist activeTab:', e); }
   }, [activeTab]);
 
   const [plannerSubTab, setPlannerSubTab] = useState('occasions'); 
 
-  // Support Tab Persisted Draft State (Survives Tab Switching and Refreshes)
-  const [supportDraft, setSupportDraft] = useState(() => {
-    try {
-      const saved = localStorage.getItem('supportDraft');
-      return saved ? JSON.parse(saved) : { subject: '', category: 'general', message: '' };
-    } catch {
-      return { subject: '', category: 'general', message: '' };
-    }
-  });
+  // Support Tab Persisted Draft State (Isolated by authenticated user ID)
+  const [supportDraft, setSupportDraft] = useState({ subject: '', category: 'general', message: '' });
 
   useEffect(() => {
-    localStorage.setItem('supportDraft', JSON.stringify(supportDraft));
-  }, [supportDraft]);
+    if (!session?.user?.id) {
+      setSupportDraft({ subject: '', category: 'general', message: '' });
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(`supportDraft_${session.user.id}`);
+      setSupportDraft(saved ? JSON.parse(saved) : { subject: '', category: 'general', message: '' });
+    } catch {
+      setSupportDraft({ subject: '', category: 'general', message: '' });
+    }
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    try {
+      localStorage.setItem(`supportDraft_${session.user.id}`, JSON.stringify(supportDraft));
+    } catch (e) {
+      console.warn('Failed to persist supportDraft:', e);
+    }
+  }, [supportDraft, session?.user?.id]);
 
   const [salary, setSalary] = useState('');
   const [username, setUsername] = useState('');
@@ -163,8 +175,25 @@ export default function App() {
   const isCurrentMonthClosed = closedMonths.some(c => c.month === todayMonth);
   const isReadOnly = isPastMonth || (selectedMonth === todayMonth && isCurrentMonthClosed);
 
-  useEffect(() => { localStorage.setItem('selectedMonth', selectedMonth); }, [selectedMonth]);
-  useEffect(() => { localStorage.setItem('lockedCats', JSON.stringify(lockedCategories)); }, [lockedCategories]);
+  useEffect(() => {
+    try { localStorage.setItem('selectedMonth', selectedMonth); }
+    catch (e) { console.warn('Failed to save selectedMonth:', e); }
+  }, [selectedMonth]);
+
+  useEffect(() => {
+    try { localStorage.setItem('lockedCats', JSON.stringify(lockedCategories)); }
+    catch (e) { console.warn('Failed to save lockedCats:', e); }
+  }, [lockedCategories]);
+
+  // Reset saved activeTab if the current user's role cannot access it
+  useEffect(() => {
+    if (loadingData) return;
+    if (activeTab === 'dev_dashboard' && userRole !== 'dev' && userRole !== 'owner') {
+      setActiveTab('cashflow');
+    } else if (activeTab === 'owner_dashboard' && userRole !== 'owner') {
+      setActiveTab('cashflow');
+    }
+  }, [activeTab, userRole, loadingData]);
 
   useEffect(() => {
     if (alertMsg) {
@@ -328,6 +357,7 @@ export default function App() {
       setAssetAdjustments([]);
       setClosedMonths([]);
       setSalary('');
+      setSupportDraft({ subject: '', category: 'general', message: '' });
       setShowLogoutConfirm(false);
     } catch (error) {
       console.error("Logout failed:", error);
@@ -1354,27 +1384,39 @@ export default function App() {
       
       {/* Logout Confirmation Modal */}
       {showLogoutConfirm && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="logout-dialog-title"
+          tabIndex={-1}
+          onKeyDown={(e) => { if (e.key === 'Escape') setShowLogoutConfirm(false); }}
+        >
           <div className="w-full max-w-sm bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6 text-center">
             <div className="w-12 h-12 rounded-full bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-4">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
               </svg>
             </div>
-            <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">Sign Out</h2>
-            <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">Are you sure you want to securely sign out of your account?</p>
+            <h2 id="logout-dialog-title" className="text-xl font-black text-gray-900 dark:text-white mb-2">
+              {t('sign_out', 'Sign Out')}
+            </h2>
+            <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">
+              {t('confirm_sign_out_prompt', 'Are you sure you want to securely sign out of your account?')}
+            </p>
             <div className="flex gap-3 justify-center">
               <button 
+                autoFocus
                 onClick={() => setShowLogoutConfirm(false)} 
                 className="px-5 py-2.5 rounded-lg font-bold text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 transition-colors w-1/2"
               >
-                Cancel
+                {t('cancel', 'Cancel')}
               </button>
               <button 
                 onClick={confirmLogout} 
                 className="px-5 py-2.5 rounded-lg font-bold text-sm bg-rose-600 text-white hover:bg-rose-700 transition-colors w-1/2 shadow-sm"
               >
-                Sign Out
+                {t('sign_out', 'Sign Out')}
               </button>
             </div>
           </div>
@@ -1406,14 +1448,14 @@ export default function App() {
                        type="password" 
                        value={recoveryPassword}
                        onChange={(e) => setRecoveryPassword(e.target.value)}
-                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
+                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                        placeholder={t('new_password', 'New Password')}
                        aria-label={t('new_password', 'New Password')}
                        required minLength={6}
                    />
                    <button 
                        type="submit" 
-                       className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold shadow-md"
+                       className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold shadow-md"
                    >
                       {t('save_password', 'Save Password')}
                    </button>

@@ -71,7 +71,7 @@ export default function TaxCenterTab({
 
           <button
             onClick={calculateTaxEstimate}
-            className="w-full py-2.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition-all text-sm shadow-md"
+            className="w-full py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-bold transition-all text-sm shadow-md"
           >
             {t('calc_progressive_tax_btn')}
           </button>

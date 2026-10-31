@@ -156,7 +156,7 @@ export default function OccasionsSandboxTab({
 
                         <button
                             onClick={handleCreateBundle}
-                            className="w-full py-2.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold shadow-md transition-all"
+                            className="w-full py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-bold shadow-md transition-all"
                         >
                             {t('create_occasion_bundle_btn')}
                         </button>
@@ -267,7 +267,7 @@ export default function OccasionsSandboxTab({
                                                     <button
                                                         type="button"
                                                         onClick={() => handleAddOccasionItem(bundle.id)}
-                                                        className="px-4 py-2 h-[34px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold"
+                                                        className="px-4 py-2 h-[34px] bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-xs font-bold"
                                                     >
                                                         {t('add_item_btn')}
                                                     </button>
@@ -308,7 +308,7 @@ export default function OccasionsSandboxTab({
                                         {!isLocked && !isReadOnly && (
                                             <button
                                                 onClick={() => handleLockAndFinalizeBundle(bundle)}
-                                                className="w-full py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow transition-all"
+                                                className="w-full py-2 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold shadow transition-all"
                                             >
                                                 {t('done_lock_bundle_btn')}
                                             </button>
@@ -340,7 +340,7 @@ export default function OccasionsSandboxTab({
                                 className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm"
                                 required
                             />
-                            <button type="submit" className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-sm font-bold">
+                            <button type="submit" className="w-full py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-bold">
                                 {t('create_calc_page_btn')}
                             </button>
                         </form>
@@ -395,7 +395,7 @@ export default function OccasionsSandboxTab({
                                     </div>
                                     <button
                                         onClick={() => handleExportSandboxCSV(activeSheet)}
-                                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold shadow"
+                                        className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-xs font-bold shadow"
                                     >
                                         {t('export_calc_csv')}
                                     </button>
@@ -469,7 +469,7 @@ export default function OccasionsSandboxTab({
                                         <option value="MAIN">{t('general_budget_pool')}</option>
                                         {activeSheet.buckets.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                                     </select>
-                                    <button type="submit" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold">
+                                    <button type="submit" className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-bold">
                                         {t('add_item_btn')}
                                     </button>
                                 </form>

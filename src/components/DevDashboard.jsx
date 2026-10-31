@@ -118,6 +118,13 @@ export default function DevDashboard() {
                         {/* User Issue Column */}
                         <div className="flex-1 space-y-2">
                             <div className="flex items-center gap-3">
+                                {ticket.priority && (
+                                    <span className={`text-[10px] uppercase font-black px-2 py-0.5 rounded ${
+                                        ticket.priority === 'high' ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400' :
+                                        ticket.priority === 'medium' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400' :
+                                        'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400'
+                                    }`}>{ticket.priority} Priority</span>
+                                )}
                                 <span className="text-xs font-black px-2 py-0.5 rounded bg-gray-100 text-gray-700 dark:bg-zinc-800 dark:text-zinc-300 uppercase tracking-widest">{ticket.category}</span>
                                 <span className="text-[10px] font-bold text-gray-400 uppercase">ID: {ticket.id.substring(0,8)}</span>
                             </div>
@@ -132,7 +139,7 @@ export default function DevDashboard() {
                                 value={replyDrafts[ticket.id] !== undefined ? replyDrafts[ticket.id] : (ticket.admin_reply || '')}
                                 onChange={(e) => handleReplyChange(ticket.id, e.target.value)}
                                 placeholder="Type your response to the user here..."
-                                className="w-full h-24 px-3 py-2 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white"
+                                className="w-full h-24 px-3 py-2 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                             ></textarea>
                             <div className="flex gap-2">
                                 <button onClick={() => submitReply(ticket.id, 'in_progress')} className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded font-bold text-xs">
@@ -143,8 +150,19 @@ export default function DevDashboard() {
                                 </button>
                                 <button 
                                     onClick={async () => {
-                                        if(!window.confirm("Dismiss this ticket as junk/invalid? It will be deleted permanently.")) return;
-                                        await supabase.from('support_tickets').delete().eq('id', ticket.id);
+                                        if (!window.confirm("Dismiss this ticket as junk/invalid? It will be deleted permanently.")) return;
+                                        setAlertMsg('');
+                                        const { data, error } = await supabase
+                                            .from('support_tickets')
+                                            .delete()
+                                            .eq('id', ticket.id)
+                                            .select('id');
+                                        if (error || !data || data.length === 0) {
+                                            console.error(error);
+                                            setAlertMsg(`Failed to dismiss ticket ${ticket.id.substring(0, 8)}. Check permissions.`);
+                                            return;
+                                        }
+                                        setAlertMsg(`Ticket ${ticket.id.substring(0, 8)} dismissed.`);
                                         fetchTickets();
                                     }} 
                                     className="px-3 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded font-bold text-xs transition-colors"

@@ -238,7 +238,7 @@ export default function CashFlowTab({
                                 </button>
                                 <button
                                     onClick={handleSmartLockAll}
-                                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-all flex items-center gap-2 shadow-md"
+                                    className="px-4 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-xs font-bold transition-all flex items-center gap-2 shadow-md"
                                 >
                                     {t('smart_lock_board')}
                                 </button>
@@ -470,7 +470,7 @@ export default function CashFlowTab({
                                                 )}
                                                 <button
                                                     onClick={handleAddCategory}
-                                                    className="w-full py-2.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold shadow-md transition-all mt-2"
+                                                    className="w-full py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-bold shadow-md transition-all mt-2"
                                                 >
                                                     {t('add_category')}
                                                 </button>
@@ -558,7 +558,7 @@ export default function CashFlowTab({
                                 </div>
                                 <button
                                     type="submit"
-                                    className="w-full py-2.5 px-4 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition-all text-sm shadow-md"
+                                    className="w-full py-2.5 px-4 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-bold transition-all text-sm shadow-md"
                                 >
                                     {t('save_expense')}
                                 </button>
