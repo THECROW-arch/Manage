@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 
 /**
@@ -13,18 +13,23 @@ export default function DevDashboard() {
     const [priorityUpdates, setPriorityUpdates] = useState({});
     const [savingTicketIds, setSavingTicketIds] = useState({});
     const [alertMsg, setAlertMsg] = useState('');
+    const fetchRequestIdRef = useRef(0);
+
     useEffect(() => {
         fetchTickets();
     }, []);
 
     /**
      * Fetches all support tickets from the database, ordered by newest first.
+     * Guards against out-of-order responses overwriting newer state.
      */
     const fetchTickets = async () => {
+        const requestId = ++fetchRequestIdRef.current;
         const { data, error } = await supabase
             .from('support_tickets')
             .select('*')
             .order('created_at', { ascending: false });
+        if (requestId !== fetchRequestIdRef.current) return;
         if (!error && data) setTickets(data);
     };
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient';
 
@@ -48,12 +48,15 @@ export default function SupportTab({
         }
     }, [supportDraft, session?.user?.id, draftHydratedUserId]);
 
+    const fetchRequestIdRef = useRef(0);
     const fetchTickets = async () => {
+        const reqId = ++fetchRequestIdRef.current;
         const { data, error } = await supabase
             .from('support_tickets')
             .select('*')
             .eq('user_id', session.user.id)
             .order('created_at', { ascending: false });
+            if (reqId !== fetchRequestIdRef.current) return;
         if (!error && data) setTickets(data);
     };
 
@@ -70,7 +73,7 @@ export default function SupportTab({
         if (setSubmittingTicketUserId) setSubmittingTicketUserId(submitterId);
         else setLocalSubmitting(true);
         setSuccessMsg('');
-        
+
         const newTicket = {
             user_id: submitterId,
             username: username || 'User',
@@ -88,7 +91,7 @@ export default function SupportTab({
 
             if (error) {
                 console.error(error);
-                alert(t('err_ticket_submit', 'Failed to submit ticket. Please try again.')); 
+                alert(t('err_ticket_submit', 'Failed to submit ticket. Please try again.'));
                 return;
             }
 
@@ -115,7 +118,7 @@ export default function SupportTab({
 
                 if (session?.user?.id === submitterId) {
                     setTickets(current => [data[0], ...current]);
-                    setSuccessMsg(t('succ_ticket_submit', 'Ticket submitted successfully!')); 
+                    setSuccessMsg(t('succ_ticket_submit', 'Ticket submitted successfully!'));
                 }
             }
         } finally {
@@ -129,13 +132,13 @@ export default function SupportTab({
 
     const handleDeleteTicket = async (id) => {
         if (!window.confirm(t('confirm_delete_ticket', 'Are you sure you want to delete this ticket?'))) return;
-        
+
         const deletedIndex = tickets.findIndex(item => item.id === id);
         const deletedTicket = tickets[deletedIndex];
         if (!deletedTicket) return;
 
         setTickets(current => current.filter(item => item.id !== id));
-        
+
         try {
             const { data, error } = await supabase
                 .from('support_tickets')
@@ -260,11 +263,10 @@ export default function SupportTab({
                             <div key={ticket.id} className="p-4 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 space-y-2 relative group">
                                 <div className="flex justify-between items-center pr-8">
                                     <span className="font-bold text-sm text-gray-900 dark:text-white">{ticket.subject}</span>
-                                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
-                                        ticket.status === 'resolved' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300' :
-                                        ticket.status === 'in_progress' ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300' :
-                                        'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300'
-                                    }`}>
+                                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${ticket.status === 'resolved' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300' :
+                                            ticket.status === 'in_progress' ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300' :
+                                                'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300'
+                                        }`}>
                                         {ticket.status === 'resolved' ? t('status_resolved') : ticket.status === 'in_progress' ? t('status_in_progress') : t('status_open')}
                                     </span>
                                 </div>

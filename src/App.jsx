@@ -86,14 +86,6 @@ export default function App() {
   const [supportDraft, setSupportDraft] = useState({ userId: null, subject: '', category: 'general', message: '' });
   const [submittingTicketUserId, setSubmittingTicketUserId] = useState(null);
 
-  useEffect(() => {
-    if (!session?.user?.id) return;
-    try {
-      localStorage.setItem(`supportDraft_${session.user.id}`, JSON.stringify(supportDraft));
-    } catch (e) {
-      console.warn('Failed to persist supportDraft:', e);
-    }
-  }, [supportDraft, session?.user?.id]);
 
   const [salary, setSalary] = useState('');
   const [username, setUsername] = useState('');
