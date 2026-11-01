@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
 import './i18n';
 import { useTranslation } from 'react-i18next';
@@ -27,6 +27,13 @@ export default function App() {
   
   // Logout Confirmation State
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const logoutDialogRef = useRef(null);
+
+  useEffect(() => {
+    if (showLogoutConfirm) {
+      logoutDialogRef.current?.focus();
+    }
+  }, [showLogoutConfirm]);
 
   useEffect(() => {
     const lang = i18n.resolvedLanguage || i18n.language || 'en';
@@ -43,7 +50,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem('theme', theme);
+    try { localStorage.setItem('theme', theme); } catch (e) { console.warn(e); };
     if (theme === 'dark') {
       document.documentElement.classList.add('dark');
       document.documentElement.style.colorScheme = 'dark';
@@ -322,7 +329,14 @@ export default function App() {
         setShowRecoveryModal(true);
       }
       setSession(session);
-      if (session) fetchUserData(session.user.id);
+      if (session) {
+        fetchUserData(session.user.id);
+      } else {
+        window.__activeUserId = null;
+        window.__fetchingUserId = null;
+        setDraftHydratedUserId(null);
+        setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
+      }
     });
 
     return () => {
@@ -1417,7 +1431,8 @@ export default function App() {
       {/* Logout Confirmation Modal */}
       {showLogoutConfirm && (
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+          ref={logoutDialogRef}
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in outline-none"
           role="dialog"
           aria-modal="true"
           aria-labelledby="logout-dialog-title"

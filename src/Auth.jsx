@@ -106,7 +106,7 @@ export default function Auth() {
           <select
             value={i18n.resolvedLanguage || 'en'}
             onChange={(e) => i18n.changeLanguage(e.target.value)}
-            className="px-2.5 py-1 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-700 dark:text-zinc-300 text-xs focus:outline-none focus:border-emerald-500"
+            className="px-2.5 py-1 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-700 dark:text-zinc-300 text-xs focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30"
           >
             <option value="en">English</option>
             <option value="fr">Français</option>
@@ -148,7 +148,7 @@ export default function Auth() {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder={t('auth_email_placeholder')}
-                    className="w-full px-4 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm"
+                    className="w-full px-4 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30 transition-colors text-sm"
                     required
                   />
                 </div>
@@ -170,7 +170,7 @@ export default function Auth() {
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     placeholder={t('auth_username_placeholder')}
-                    className="w-full px-4 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm"
+                    className="w-full px-4 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30 transition-colors text-sm"
                     required={isSignUp}
                 />
                 </div>
@@ -183,7 +183,7 @@ export default function Auth() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder={t('auth_email_placeholder')}
-                className="w-full px-4 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm"
+                className="w-full px-4 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30 transition-colors text-sm"
                 required
                 />
             </div>
@@ -210,7 +210,7 @@ export default function Auth() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full px-4 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500 transition-colors text-sm"
+                className="w-full px-4 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30 transition-colors text-sm"
                 required
                 />
             </div>
