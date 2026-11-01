@@ -10,8 +10,8 @@ export default function DevDashboard() {
     const [filter, setFilter] = useState('open'); // 'all', 'open', 'in_progress', 'resolved'
     const [categoryFilter, setCategoryFilter] = useState('all'); // 'all', 'bug', 'general', etc.
     const [replyDrafts, setReplyDrafts] = useState({});
+    const [priorityUpdates, setPriorityUpdates] = useState({});
     const [alertMsg, setAlertMsg] = useState('');
-
     useEffect(() => {
         fetchTickets();
     }, []);
@@ -44,10 +44,13 @@ export default function DevDashboard() {
     const submitReply = async (ticketId, newStatus) => {
         setAlertMsg('');
         const replyText = replyDrafts[ticketId];
-        if (replyText === undefined && newStatus === 'open') return;
+        const newPriority = priorityUpdates[ticketId];
+        
+        if (replyText === undefined && newPriority === undefined && newStatus === 'open') return;
 
         const updateData = { status: newStatus };
         if (replyText !== undefined) updateData.admin_reply = replyText;
+        if (newPriority !== undefined) updateData.priority = newPriority;
 
         const { error } = await supabase
             .from('support_tickets')
@@ -122,8 +125,11 @@ export default function DevDashboard() {
                                     <span className={`text-[10px] uppercase font-black px-2 py-0.5 rounded ${
                                         ticket.priority === 'high' ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400' :
                                         ticket.priority === 'medium' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400' :
-                                        'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400'
-                                    }`}>{ticket.priority} Priority</span>
+                                        ticket.priority === 'low' ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400' :
+                                        'bg-gray-200 text-gray-700 dark:bg-zinc-700 dark:text-zinc-300'
+                                    }`}>
+                                        {ticket.priority === 'pending' ? 'Needs Triage' : `${ticket.priority} Priority`}
+                                    </span>
                                 )}
                                 <span className="text-xs font-black px-2 py-0.5 rounded bg-gray-100 text-gray-700 dark:bg-zinc-800 dark:text-zinc-300 uppercase tracking-widest">{ticket.category}</span>
                                 <span className="text-[10px] font-bold text-gray-400 uppercase">ID: {ticket.id.substring(0,8)}</span>
@@ -135,6 +141,16 @@ export default function DevDashboard() {
 
                         {/* Dev Reply Column */}
                         <div className="w-full md:w-96 flex flex-col space-y-3 border-t md:border-t-0 md:border-l border-gray-200 dark:border-zinc-800 pt-4 md:pt-0 md:pl-6">
+                            <select
+                                value={priorityUpdates[ticket.id] || ticket.priority || 'pending'}
+                                onChange={(e) => setPriorityUpdates(prev => ({ ...prev, [ticket.id]: e.target.value }))}
+                                className="w-full px-3 py-1.5 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-bold focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white uppercase"
+                            >
+                                <option value="pending">Pending Triage</option>
+                                <option value="low">Low Priority</option>
+                                <option value="medium">Medium Priority</option>
+                                <option value="high">High Priority</option>
+                            </select>
                             <textarea
                                 value={replyDrafts[ticket.id] !== undefined ? replyDrafts[ticket.id] : (ticket.admin_reply || '')}
                                 onChange={(e) => handleReplyChange(ticket.id, e.target.value)}

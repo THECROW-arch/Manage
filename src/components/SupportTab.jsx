@@ -16,6 +16,14 @@ export default function SupportTab({ session, username, supportDraft, setSupport
         if (session) fetchTickets();
     }, [session]);
 
+    // Safely save draft without overwriting on initial load
+    useEffect(() => {
+        if (session?.user?.id && supportDraft.subject !== undefined) {
+            try { localStorage.setItem(`supportDraft_${session.user.id}`, JSON.stringify(supportDraft)); } 
+            catch (e) { console.warn('Failed to save draft', e); }
+        }
+    }, [supportDraft, session?.user?.id]);
+
     const fetchTickets = async () => {
         const { data, error } = await supabase
             .from('support_tickets')
@@ -37,7 +45,7 @@ export default function SupportTab({ session, username, supportDraft, setSupport
             email: session.user.email,
             subject: supportDraft.subject.trim(),
             category: supportDraft.category,
-            priority: 'medium', // Hardcoded standard priority. Devs can triage manually.
+            priority: 'pending', // Flags it for Dev Triage
             message: supportDraft.message.trim(),
             status: 'open',
             admin_reply: ''
