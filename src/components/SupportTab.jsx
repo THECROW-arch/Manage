@@ -96,24 +96,23 @@ export default function SupportTab({
             }
 
             if (data && data.length > 0) {
-                try {
-                    localStorage.setItem(
-                        `supportDraft_${submitterId}`,
-                        JSON.stringify({ subject: '', category: 'general', message: '' })
-                    );
-                } catch (err) {
-                    console.warn('Failed to clear saved draft', err);
-                }
-
-                // Only clear the draft if it still belongs to the submitting user
+                // Only clear the draft if it still belongs to the submitting user AND wasn't edited during submission
                 setSupportDraft(prev => {
                     if (prev.userId && prev.userId !== submitterId) return prev;
-                    return {
-                        userId: submitterId,
-                        subject: (prev.subject || '').trim() === submittedSubject ? '' : prev.subject,
-                        category: prev.category === submittedCategory ? 'general' : prev.category,
-                        message: (prev.message || '').trim() === submittedMessage ? '' : prev.message
-                    };
+                    const wasEditedDuringSubmit =
+                        (prev.subject || '').trim() !== submittedSubject ||
+                        (prev.category || 'general') !== submittedCategory ||
+                        (prev.message || '').trim() !== submittedMessage;
+
+                    if (wasEditedDuringSubmit) return prev;
+
+                    const clearedDraft = { subject: '', category: 'general', message: '' };
+                    try {
+                        localStorage.setItem(`supportDraft_${submitterId}`, JSON.stringify(clearedDraft));
+                    } catch (err) {
+                        console.warn('Failed to clear saved draft', err);
+                    }
+                    return { userId: submitterId, ...clearedDraft };
                 });
 
                 if (session?.user?.id === submitterId) {
@@ -210,6 +209,7 @@ export default function SupportTab({
                             <label className="block text-xs font-bold text-gray-700 dark:text-zinc-300 uppercase mb-1">{t('ticket_category')}</label>
                             <select
                                 value={supportDraft.category}
+                                disabled={loading}
                                 onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, category: e.target.value }))}
                                 className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                             >
@@ -223,6 +223,7 @@ export default function SupportTab({
                             <label className="block text-xs font-bold text-gray-700 dark:text-zinc-300 uppercase mb-1">{t('ticket_subject')}</label>
                             <input
                                 type="text"
+                                disabled={loading}
                                 value={supportDraft.subject}
                                 onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, subject: e.target.value }))}
                                 placeholder="Brief summary"
@@ -236,6 +237,7 @@ export default function SupportTab({
                         <textarea
                             rows={3}
                             value={supportDraft.message}
+                            disabled={loading}
                             onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, message: e.target.value }))}
                             placeholder="Describe your issue or request..."
                             className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
