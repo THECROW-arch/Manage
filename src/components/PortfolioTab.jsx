@@ -86,7 +86,7 @@ export default function PortfolioTab({
               </div>
               <button
                 type="submit"
-                className="w-full py-2 px-4 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition-all text-sm shadow-md"
+                className="w-full py-2 px-4 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-semibold transition-all text-sm shadow-md"
               >
                 {t('save_adjustment')}
               </button>

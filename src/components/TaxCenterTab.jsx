@@ -34,7 +34,7 @@ export default function TaxCenterTab({
                 id="tax-country"
                 value={taxCountry}
                 onChange={(e) => setTaxCountry(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 text-sm"
+                className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500 text-sm"
               >
                 <option value="US">{t('country_us')}</option>
                 <option value="UK">{t('country_uk')}</option>
@@ -47,7 +47,7 @@ export default function TaxCenterTab({
                 id="tax-filing-status"
                 value={taxCountry === 'US' ? taxFilingStatus : 'single'}
                 onChange={(e) => setTaxFilingStatus(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 text-sm"
+                className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500 text-sm"
               >
                 <option value="single">{t('status_single')}</option>
                 {taxCountry === 'US' && <option value="married">{t('status_married')}</option>}
@@ -64,14 +64,14 @@ export default function TaxCenterTab({
               type="number"
               value={taxIncomeInput}
               onChange={(e) => setTaxIncomeInput(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white font-mono focus:outline-none focus:border-indigo-500"
+              className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500"
             />
             <p className="text-xs text-gray-500 dark:text-zinc-400 mt-2">{t('enter_income_help', { currency })}</p>
           </div>
 
           <button
             onClick={calculateTaxEstimate}
-            className="w-full py-2.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-all text-sm shadow-md"
+            className="w-full py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-bold transition-all text-sm shadow-md"
           >
             {t('calc_progressive_tax_btn')}
           </button>

@@ -1,5 +1,6 @@
 export const hexColorMap = {
   'indigo-600': '#4f46e5',
+  'emerald-600': '#059669',
   'pink-600': '#db2777',
   'green-600': '#16a34a',
   'teal-600': '#0d9488',

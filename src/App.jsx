@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
 import './i18n';
 import { useTranslation } from 'react-i18next';
@@ -24,6 +24,17 @@ export default function App() {
   const { t, i18n } = useTranslation();
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryPassword, setRecoveryPassword] = useState('');
+  
+  // Logout Confirmation State
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const logoutDialogRef = useRef(null);
+
+  useEffect(() => {
+    if (showLogoutConfirm) {
+      logoutDialogRef.current?.focus();
+    }
+  }, [showLogoutConfirm]);
+
   useEffect(() => {
     const lang = i18n.resolvedLanguage || i18n.language || 'en';
     document.documentElement.dir = lang.startsWith('ar') ? 'rtl' : 'ltr';
@@ -39,7 +50,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem('theme', theme);
+    try { localStorage.setItem('theme', theme); } catch (e) { console.warn(e); };
     if (theme === 'dark') {
       document.documentElement.classList.add('dark');
       document.documentElement.style.colorScheme = 'dark';
@@ -64,8 +75,24 @@ export default function App() {
   });
 
   const [closedMonths, setClosedMonths] = useState([]);
-  const [activeTab, setActiveTab] = useState('cashflow');
-  const [plannerSubTab, setPlannerSubTab] = useState('occasions'); // 'occasions' | 'sandbox'
+  
+  // Persisted Active Tab State (Survives Refreshes)
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return localStorage.getItem('activeTab') || 'cashflow'; }
+    catch { return 'cashflow'; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem('activeTab', activeTab); }
+    catch (e) { console.warn('Failed to persist activeTab:', e); }
+  }, [activeTab]);
+
+  const [plannerSubTab, setPlannerSubTab] = useState('occasions'); 
+
+  // Support Tab Persisted Draft & Submission State (Isolated by authenticated user ID)
+  const [supportDraft, setSupportDraft] = useState({ userId: null, subject: '', category: 'general', message: '' });
+  const [submittingTicketUserId, setSubmittingTicketUserId] = useState(null);
+
 
   const [salary, setSalary] = useState('');
   const [username, setUsername] = useState('');
@@ -75,7 +102,7 @@ export default function App() {
   const [newCategoryType, setNewCategoryType] = useState('expense');
   const [newCategoryGoal, setNewCategoryGoal] = useState('');
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
-  const [exportScope, setExportScope] = useState('month'); // 'month' | 'day'
+  const [exportScope, setExportScope] = useState('month'); 
   const [exportMonth, setExportMonth] = useState(getCurrentMonth());
   const [exportDate, setExportDate] = useState(getToday());
   const [expenses, setExpenses] = useState([]);
@@ -135,8 +162,17 @@ export default function App() {
   const isCurrentMonthClosed = closedMonths.some(c => c.month === todayMonth);
   const isReadOnly = isPastMonth || (selectedMonth === todayMonth && isCurrentMonthClosed);
 
-  useEffect(() => { localStorage.setItem('selectedMonth', selectedMonth); }, [selectedMonth]);
-  useEffect(() => { localStorage.setItem('lockedCats', JSON.stringify(lockedCategories)); }, [lockedCategories]);
+  useEffect(() => {
+    try { localStorage.setItem('selectedMonth', selectedMonth); }
+    catch (e) { console.warn('Failed to save selectedMonth:', e); }
+  }, [selectedMonth]);
+
+  useEffect(() => {
+    try { localStorage.setItem('lockedCats', JSON.stringify(lockedCategories)); }
+    catch (e) { console.warn('Failed to save lockedCats:', e); }
+  }, [lockedCategories]);
+
+  
 
   useEffect(() => {
     if (alertMsg) {
@@ -145,92 +181,141 @@ export default function App() {
     }
   }, [alertMsg]);
 
+  const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
+
   const fetchUserData = async (userId) => {
+    window.__activeUserId = userId;
+    if (window.__fetchingUserId === userId) return;
+    window.__fetchingUserId = userId;
+    const isStale = () => window.__activeUserId !== userId;
+
     setLoadingData(true);
-    let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
+    try {
+      let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
+      if (isStale()) return;
 
-    if (!profile) {
-      const { data: authData } = await supabase.auth.getUser();
-      const registeredUsername = authData?.user?.user_metadata?.username || `user_${Date.now()}`;
+      if (!profile) {
+        const { data: authData } = await supabase.auth.getUser();
+        if (isStale()) return;
+        const registeredUsername = authData?.user?.user_metadata?.username || `user_${Date.now()}`;
 
-      const { data: newProfile } = await supabase.from('profiles').insert([{
-        user_id: userId,
-        username: registeredUsername,
-        role: 'user',
-        subscription_tier: 'free'
-      }]).select().single();
+        const { data: newProfile } = await supabase.from('profiles').insert([{
+          user_id: userId,
+          username: registeredUsername,
+          role: 'user',
+          subscription_tier: 'free'
+        }]).select().single();
+        if (isStale()) return;
 
-      profile = newProfile;
-    }
-
-    if (profile) {
-      setUserRole(profile.role || 'user');
-      setSalary(profile.salary > 0 ? profile.salary.toString() : '');
-      if (profile.currency !== undefined) {
-        setCurrency(profile.currency);
-        if (!['$', '€', '£', 'MAD', ''].includes(profile.currency)) {
-          setCurrencyMode('custom');
-          setCustomCurrency(profile.currency);
-        }
-        else if (profile.currency === '') setCurrencyMode('none');
-        else setCurrencyMode(profile.currency);
+        profile = newProfile;
       }
-      if (profile.tax_country) setTaxCountry(profile.tax_country);
-      if (profile.username) setUsername(profile.username);
-      if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_country === 'US' ? profile.tax_filing_status : 'single');
-      setCurrentStreak(profile.current_streak || 0);
-      setLongestStreak(profile.longest_streak || 0);
+
+      if (profile) {
+        const loadedRole = profile.role || 'user';
+        setUserRole(loadedRole);
+        
+        // Validate saved tab access against loaded role safely
+        setActiveTab(currentTab => {
+          if (currentTab === 'dev_dashboard' && loadedRole !== 'dev' && loadedRole !== 'owner') return 'cashflow';
+          if (currentTab === 'owner_dashboard' && loadedRole !== 'owner') return 'cashflow';
+          return currentTab;
+        });
+
+        // Hydrate isolated support draft for this user safely before enabling persistence
+        let loadedDraft = { userId, subject: '', category: 'general', message: '' };
+        try {
+          const savedDraft = localStorage.getItem(`supportDraft_${userId}`);
+          if (savedDraft) {
+            const parsed = JSON.parse(savedDraft);
+            loadedDraft = {
+              userId,
+              subject: parsed?.subject || '',
+              category: parsed?.category || 'general',
+              message: parsed?.message || ''
+            };
+          }
+        } catch { /* ignore */ }
+        setSupportDraft(loadedDraft);
+        setDraftHydratedUserId(userId);
+
+        setSalary(profile.salary > 0 ? profile.salary.toString() : '');
+        if (profile.currency !== undefined) {
+          setCurrency(profile.currency);
+          if (!['$', '€', '£', 'MAD', ''].includes(profile.currency)) {
+            setCurrencyMode('custom');
+            setCustomCurrency(profile.currency);
+          }
+          else if (profile.currency === '') setCurrencyMode('none');
+          else setCurrencyMode(profile.currency);
+        }
+        if (profile.tax_country) setTaxCountry(profile.tax_country);
+        if (profile.username) setUsername(profile.username);
+        if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_country === 'US' ? profile.tax_filing_status : 'single');
+        setCurrentStreak(profile.current_streak || 0);
+        setLongestStreak(profile.longest_streak || 0);
+      }
+
+      let { data: cats } = await supabase.from('categories').select('*').eq('user_id', userId).order('created_at', { ascending: true });
+      if (isStale()) return;
+      cats = cats || [];
+
+      if (cats.length === 0) {
+        const defaultCats = [
+          { user_id: userId, name: 'Needs', percentage: 50, color: 'emerald-600', type: 'expense', target_goal: 0 },
+          { user_id: userId, name: 'Wants', percentage: 30, color: 'pink-600', type: 'expense', target_goal: 0 },
+          { user_id: userId, name: 'Savings', percentage: 20, color: 'green-600', type: 'asset', target_goal: 50000 }
+        ];
+        const { data: seededCats } = await supabase.from('categories').insert(defaultCats).select();
+        if (isStale()) return;
+        cats = seededCats || defaultCats;
+      }
+
+      setCategories(cats);
+      if (cats.length > 0) {
+        const firstExpenseCat = cats.find(c => c.type !== 'asset') || cats[0];
+        setExpenseCategoryId(firstExpenseCat?.id || '');
+        const firstAssetCat = cats.find(c => c.type === 'asset');
+        if (firstAssetCat) setAdjCatId(firstAssetCat.id);
+      }
+
+      let { data: expensesData } = await supabase.from('expenses').select('*').eq('user_id', userId).order('expense_date', { ascending: false });
+      if (isStale()) return;
+      setExpenses(expensesData || []);
+
+      let { data: bundlesData } = await supabase
+        .from('bundles')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      if (isStale()) return;
+      setBundles(bundlesData || []);
+
+      let { data: sandboxData } = await supabase
+        .from('sandbox_sheets')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      if (isStale()) return;
+
+      setSandboxSheets((sandboxData || []).map(s => ({
+        id: s.id, title: s.title, totalBudget: parseFloat(s.total_budget),
+        buckets: s.buckets || [], expenses: s.expenses || []
+      })));
+
+      let { data: adjData } = await supabase.from('asset_adjustments').select('*').eq('user_id', userId).order('adjustment_date', { ascending: false });
+      if (isStale()) return;
+      setAssetAdjustments(adjData || []);
+
+      let { data: closedData } = await supabase.from('closed_months').select('*').eq('user_id', userId);
+      if (isStale()) return;
+      setClosedMonths(closedData || []);
+
+      setLoadingData(false);
+    } finally {
+      if (window.__fetchingUserId === userId) {
+        window.__fetchingUserId = null;
+      }
     }
-
-    let { data: cats } = await supabase.from('categories').select('*').eq('user_id', userId).order('created_at', { ascending: true });
-    cats = cats || [];
-
-    if (cats.length === 0) {
-      const defaultCats = [
-        { user_id: userId, name: 'Needs', percentage: 50, color: 'indigo-600', type: 'expense', target_goal: 0 },
-        { user_id: userId, name: 'Wants', percentage: 30, color: 'pink-600', type: 'expense', target_goal: 0 },
-        { user_id: userId, name: 'Savings', percentage: 20, color: 'green-600', type: 'asset', target_goal: 50000 }
-      ];
-      const { data: seededCats } = await supabase.from('categories').insert(defaultCats).select();
-      cats = seededCats || defaultCats;
-    }
-
-    setCategories(cats);
-    if (cats.length > 0) {
-      const firstExpenseCat = cats.find(c => c.type !== 'asset') || cats[0];
-      setExpenseCategoryId(firstExpenseCat?.id || '');
-      const firstAssetCat = cats.find(c => c.type === 'asset');
-      if (firstAssetCat) setAdjCatId(firstAssetCat.id);
-    }
-
-    let { data: expensesData } = await supabase.from('expenses').select('*').eq('user_id', userId).order('expense_date', { ascending: false });
-    setExpenses(expensesData || []);
-
-    let { data: bundlesData } = await supabase
-      .from('bundles')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-    setBundles(bundlesData || []);
-
-    let { data: sandboxData } = await supabase
-      .from('sandbox_sheets')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    setSandboxSheets((sandboxData || []).map(s => ({
-      id: s.id, title: s.title, totalBudget: parseFloat(s.total_budget),
-      buckets: s.buckets || [], expenses: s.expenses || []
-    })));
-
-    let { data: adjData } = await supabase.from('asset_adjustments').select('*').eq('user_id', userId).order('adjustment_date', { ascending: false });
-    setAssetAdjustments(adjData || []);
-
-    let { data: closedData } = await supabase.from('closed_months').select('*').eq('user_id', userId);
-    setClosedMonths(closedData || []);
-
-    setLoadingData(false);
   };
 
   useEffect(() => {
@@ -244,7 +329,14 @@ export default function App() {
         setShowRecoveryModal(true);
       }
       setSession(session);
-      if (session) fetchUserData(session.user.id);
+      if (session) {
+        fetchUserData(session.user.id);
+      } else {
+        window.__activeUserId = null;
+        window.__fetchingUserId = null;
+        setDraftHydratedUserId(null);
+        setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
+      }
     });
 
     return () => {
@@ -286,8 +378,15 @@ export default function App() {
   }, [salary, categories, sandboxSheets, session, loadingData, currency, taxCountry, taxFilingStatus, t]);
 
 
-  const handleLogout = async () => {
+  // Request Confirmation before actual logout
+  const handleLogoutRequest = () => {
+    setShowLogoutConfirm(true);
+  };
+
+  const confirmLogout = async () => {
     try {
+      window.__activeUserId = null;
+      window.__fetchingUserId = null;
       await supabase.auth.signOut();
       setSession(null);
       setExpenses([]);
@@ -295,6 +394,9 @@ export default function App() {
       setAssetAdjustments([]);
       setClosedMonths([]);
       setSalary('');
+      setDraftHydratedUserId(null);
+      setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
+      setShowLogoutConfirm(false);
     } catch (error) {
       console.error("Logout failed:", error);
     }
@@ -603,6 +705,10 @@ export default function App() {
       const updatedExpenses = expenses.filter(e => !idsToDelete.includes(e.id));
       setExpenses([...newRecurring, ...newlyAggregated, ...updatedExpenses]);
 
+      // Automatically advance the user to the newly opened month (e.g., 2026-11)
+      const nextMonthYYYYMM = nextMonthStamp.slice(0, 7);
+      setSelectedMonth(nextMonthYYYYMM);
+
       setAlertMsg(t('succ_month_closed', { month: selectedMonth }));
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -665,12 +771,16 @@ export default function App() {
   };
 
   const handleDeleteCategory = async (id, percentage) => {
-    if (isReadOnly || categories.length <= 1) return;
+    if (isReadOnly) return;
+    if (categories.length <= 1) {
+      setAlertMsg(t('err_min_one_cat', 'You must keep at least one category in your budget. You can rename it instead!'));
+      return;
+    }
     const previousCategories = [...categories];
     const previousExpenses = [...expenses];
-    const remainingCategories = categories.filter(c => c.id !== id);
+    const remainingCategories = categories.filter(c => c.id !== id).map(c => ({ ...c }));
 
-    remainingCategories[0].percentage += percentage;
+    remainingCategories[0].percentage = Math.min(100, Number((remainingCategories[0].percentage + percentage).toFixed(2)));
 
     setCategories(remainingCategories);
     setLockedCategories(lockedCategories.filter(catId => catId !== id));
@@ -1317,6 +1427,48 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-zinc-950 text-gray-900 dark:text-zinc-300 font-sans overflow-hidden transition-colors duration-300">
+      
+      {/* Logout Confirmation Modal */}
+      {showLogoutConfirm && (
+        <div
+          ref={logoutDialogRef}
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in outline-none"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="logout-dialog-title"
+          tabIndex={-1}
+          onKeyDown={(e) => { if (e.key === 'Escape') setShowLogoutConfirm(false); }}
+        >
+          <div className="w-full max-w-sm bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6 text-center">
+            <div className="w-12 h-12 rounded-full bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-4">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
+              </svg>
+            </div>
+            <h2 id="logout-dialog-title" className="text-xl font-black text-gray-900 dark:text-white mb-2">
+              {t('sign_out', 'Sign Out')}
+            </h2>
+            <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">
+              {t('confirm_sign_out_prompt', 'Are you sure you want to securely sign out of your account?')}
+            </p>
+            <div className="flex gap-3 justify-center">
+              <button 
+                autoFocus
+                onClick={() => setShowLogoutConfirm(false)} 
+                className="px-5 py-2.5 rounded-lg font-bold text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 transition-colors w-1/2"
+              >
+                {t('cancel', 'Cancel')}
+              </button>
+              <button 
+                onClick={confirmLogout} 
+                className="px-5 py-2.5 rounded-lg font-bold text-sm bg-rose-600 text-white hover:bg-rose-700 transition-colors w-1/2 shadow-sm"
+              >
+                {t('sign_out', 'Sign Out')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Password Recovery Forced Modal */}
       {showRecoveryModal && (
@@ -1343,14 +1495,14 @@ export default function App() {
                        type="password" 
                        value={recoveryPassword}
                        onChange={(e) => setRecoveryPassword(e.target.value)}
-                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                        placeholder={t('new_password', 'New Password')}
                        aria-label={t('new_password', 'New Password')}
                        required minLength={6}
                    />
                    <button 
                        type="submit" 
-                       className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md"
+                       className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold shadow-md"
                    >
                       {t('save_password', 'Save Password')}
                    </button>
@@ -1365,7 +1517,7 @@ export default function App() {
         setAlertMsg={setAlertMsg}
         currentStreak={currentStreak}
         longestStreak={longestStreak}
-        handleLogout={handleLogout}
+        handleLogout={handleLogoutRequest} 
         username={username}
         userRole={userRole}
       />
@@ -1373,7 +1525,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto w-full">
 
           {alertMsg && (
-            <div className="mb-6 p-3 rounded-md text-sm font-medium border bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-500/20 dark:border-indigo-500/40 dark:text-indigo-200 shadow-sm">
+            <div className="mb-6 p-3 rounded-md text-sm font-medium border bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/20 dark:border-emerald-500/40 dark:text-emerald-200 shadow-sm">
               {alertMsg}
             </div>
           )}
@@ -1571,6 +1723,11 @@ export default function App() {
             <SupportTab
               session={session}
               username={username}
+              supportDraft={supportDraft}
+              setSupportDraft={setSupportDraft}
+              draftHydratedUserId={draftHydratedUserId}
+              isSubmittingTicket={submittingTicketUserId === session?.user?.id}
+              setSubmittingTicketUserId={setSubmittingTicketUserId}
             />
           )}
           {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (

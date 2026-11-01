@@ -1,70 +1,163 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient';
-/** Renders the customer support hub... */
-export default function SupportTab({ session, username }) {
+
+/** 
+ * Renders the customer support hub.
+ * Uses lifted state (supportDraft) so written tickets survive tab switching.
+ */
+export default function SupportTab({
+    session,
+    username,
+    supportDraft,
+    setSupportDraft,
+    draftHydratedUserId,
+    isSubmittingTicket = false,
+    setSubmittingTicketUserId
+}) {
     const { t } = useTranslation();
     const [tickets, setTickets] = useState([]);
-    const [subject, setSubject] = useState('');
-    const [category, setCategory] = useState('general');
-    const [priority, setPriority] = useState('medium');
-    const [message, setMessage] = useState('');
-    const [loading, setLoading] = useState(false);
+    const [localSubmitting, setLocalSubmitting] = useState(false);
     const [successMsg, setSuccessMsg] = useState('');
+    const loading = isSubmittingTicket || localSubmitting;
 
     useEffect(() => {
         if (session) fetchTickets();
     }, [session]);
 
+    // Only persist draft after hydration for the active user has completed and draft belongs to this user
+    useEffect(() => {
+        if (
+            session?.user?.id &&
+            draftHydratedUserId === session.user.id &&
+            supportDraft.userId === session.user.id &&
+            supportDraft.subject !== undefined
+        ) {
+            try {
+                localStorage.setItem(
+                    `supportDraft_${session.user.id}`,
+                    JSON.stringify({
+                        subject: supportDraft.subject,
+                        category: supportDraft.category,
+                        message: supportDraft.message
+                    })
+                );
+            } catch (e) {
+                console.warn('Failed to save draft', e);
+            }
+        }
+    }, [supportDraft, session?.user?.id, draftHydratedUserId]);
+
+    const fetchRequestIdRef = useRef(0);
     const fetchTickets = async () => {
+        const reqId = ++fetchRequestIdRef.current;
         const { data, error } = await supabase
             .from('support_tickets')
             .select('*')
             .eq('user_id', session.user.id)
             .order('created_at', { ascending: false });
+            if (reqId !== fetchRequestIdRef.current) return;
         if (!error && data) setTickets(data);
     };
 
-    /**
-     * Submits a new customer support ticket to the database.
-     * Captures the user's session ID, username, and selected priority.
-     * Displays a success message on completion or an error if the insert fails.
-     * 
-     * @param {Event} e - The form submission event.
-     */
     const handleCreateTicket = async (e) => {
         e.preventDefault();
-        if (!subject.trim() || !message.trim()) return;
-        setLoading(true);
+        const submitterId = session?.user?.id;
+        if (!submitterId || loading) return;
+
+        const submittedSubject = (supportDraft.subject || '').trim();
+        const submittedCategory = supportDraft.category || 'general';
+        const submittedMessage = (supportDraft.message || '').trim();
+        if (!submittedSubject || !submittedMessage) return;
+
+        if (setSubmittingTicketUserId) setSubmittingTicketUserId(submitterId);
+        else setLocalSubmitting(true);
         setSuccessMsg('');
-        // NOTE: Assuming setAlertMsg is passed as a prop, or use an internal error state if you have one.
-        
+
         const newTicket = {
-            user_id: session.user.id,
+            user_id: submitterId,
             username: username || 'User',
             email: session.user.email,
-            subject: subject.trim(),
-            category,
-            priority,
-            message: message.trim(),
+            subject: submittedSubject,
+            category: submittedCategory,
+            priority: 'pending',
+            message: submittedMessage,
             status: 'open',
             admin_reply: ''
         };
 
-        const { data, error } = await supabase.from('support_tickets').insert([newTicket]).select();
-        setLoading(false);
+        try {
+            const { data, error } = await supabase.from('support_tickets').insert([newTicket]).select();
 
-        if (error) {
-            console.error(error);
-            alert(t('err_ticket_submit')); // <-- Uses i18n instead of hardcoded English
-            return;
+            if (error) {
+                console.error(error);
+                alert(t('err_ticket_submit', 'Failed to submit ticket. Please try again.'));
+                return;
+            }
+
+            if (data && data.length > 0) {
+                // Only clear the draft if it still belongs to the submitting user AND wasn't edited during submission
+                setSupportDraft(prev => {
+                    if (prev.userId && prev.userId !== submitterId) return prev;
+                    const wasEditedDuringSubmit =
+                        (prev.subject || '').trim() !== submittedSubject ||
+                        (prev.category || 'general') !== submittedCategory ||
+                        (prev.message || '').trim() !== submittedMessage;
+
+                    if (wasEditedDuringSubmit) return prev;
+
+                    const clearedDraft = { subject: '', category: 'general', message: '' };
+                    try {
+                        localStorage.setItem(`supportDraft_${submitterId}`, JSON.stringify(clearedDraft));
+                    } catch (err) {
+                        console.warn('Failed to clear saved draft', err);
+                    }
+                    return { userId: submitterId, ...clearedDraft };
+                });
+
+                if (session?.user?.id === submitterId) {
+                    setTickets(current => [data[0], ...current]);
+                    setSuccessMsg(t('succ_ticket_submit', 'Ticket submitted successfully!'));
+                }
+            }
+        } finally {
+            if (setSubmittingTicketUserId) {
+                setSubmittingTicketUserId(prev => (prev === submitterId ? null : prev));
+            } else {
+                setLocalSubmitting(false);
+            }
         }
+    };
 
-        if (data) {
-            setTickets([data[0], ...tickets]);
-            setSubject('');
-            setMessage('');
-            setSuccessMsg(t('succ_ticket_submit')); // <-- Uses i18n
+    const handleDeleteTicket = async (id) => {
+        if (!window.confirm(t('confirm_delete_ticket', 'Are you sure you want to delete this ticket?'))) return;
+
+        const deletedIndex = tickets.findIndex(item => item.id === id);
+        const deletedTicket = tickets[deletedIndex];
+        if (!deletedTicket) return;
+
+        setTickets(current => current.filter(item => item.id !== id));
+
+        try {
+            const { data, error } = await supabase
+                .from('support_tickets')
+                .delete()
+                .eq('id', id)
+                .select('id');
+
+            if (error) throw error;
+            if (!data || data.length === 0) {
+                throw new Error('No ticket was deleted.');
+            }
+        } catch (error) {
+            console.error(error);
+            alert(t('err_delete_ticket', 'Failed to delete ticket.'));
+            setTickets(current => {
+                if (current.some(item => item.id === id)) return current;
+                const next = [...current];
+                next.splice(Math.min(deletedIndex, next.length), 0, deletedTicket);
+                return next;
+            });
         }
     };
 
@@ -99,18 +192,6 @@ export default function SupportTab({ session, username }) {
                         <h3 className="text-sm font-semibold text-gray-800 dark:text-zinc-200 mb-1">{t('faq_q5')}</h3>
                         <p className="text-xs text-gray-600 dark:text-zinc-400">{t('faq_a5')}</p>
                     </div>
-                    <div className="p-4 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800">
-                        <h3 className="text-sm font-semibold text-gray-800 dark:text-zinc-200 mb-1">{t('faq_q6')}</h3>
-                        <p className="text-xs text-gray-600 dark:text-zinc-400">{t('faq_a6')}</p>
-                    </div>
-                    <div className="p-4 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800">
-                        <h3 className="text-sm font-semibold text-gray-800 dark:text-zinc-200 mb-1">{t('faq_q7')}</h3>
-                        <p className="text-xs text-gray-600 dark:text-zinc-400">{t('faq_a7')}</p>
-                    </div>
-                    <div className="p-4 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800">
-                        <h3 className="text-sm font-semibold text-gray-800 dark:text-zinc-200 mb-1">{t('faq_q8')}</h3>
-                        <p className="text-xs text-gray-600 dark:text-zinc-400">{t('faq_a8')}</p>
-                    </div>
                 </div>
             </div>
 
@@ -123,13 +204,14 @@ export default function SupportTab({ session, username }) {
                     </div>
                 )}
                 <form onSubmit={handleCreateTicket} className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="md:col-span-1">
                             <label className="block text-xs font-bold text-gray-700 dark:text-zinc-300 uppercase mb-1">{t('ticket_category')}</label>
                             <select
-                                value={category}
-                                onChange={(e) => setCategory(e.target.value)}
-                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                                value={supportDraft.category}
+                                disabled={loading}
+                                onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, category: e.target.value }))}
+                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                             >
                                 <option value="general">{t('cat_general')}</option>
                                 <option value="bug">{t('cat_bug')}</option>
@@ -138,25 +220,14 @@ export default function SupportTab({ session, username }) {
                             </select>
                         </div>
                         <div className="md:col-span-1">
-                            <label className="block text-xs font-bold text-gray-700 dark:text-zinc-300 uppercase mb-1">{t('ticket_priority')}</label>
-                            <select
-                                value={priority}
-                                onChange={(e) => setPriority(e.target.value)}
-                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
-                            >
-                                <option value="low">{t('priority_low')}</option>
-                                <option value="medium">{t('priority_medium')}</option>
-                                <option value="high">{t('priority_high')}</option>
-                            </select>
-                        </div>
-                        <div className="md:col-span-1">
                             <label className="block text-xs font-bold text-gray-700 dark:text-zinc-300 uppercase mb-1">{t('ticket_subject')}</label>
                             <input
                                 type="text"
-                                value={subject}
-                                onChange={(e) => setSubject(e.target.value)}
+                                disabled={loading}
+                                value={supportDraft.subject}
+                                onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, subject: e.target.value }))}
                                 placeholder="Brief summary"
-                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                                className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                                 required
                             />
                         </div>
@@ -165,17 +236,18 @@ export default function SupportTab({ session, username }) {
                         <label className="block text-xs font-bold text-gray-700 dark:text-zinc-300 uppercase mb-1">{t('ticket_message')}</label>
                         <textarea
                             rows={3}
-                            value={message}
-                            onChange={(e) => setMessage(e.target.value)}
+                            value={supportDraft.message}
+                            disabled={loading}
+                            onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, message: e.target.value }))}
                             placeholder="Describe your issue or request..."
-                            className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-indigo-500 text-gray-900 dark:text-white"
+                            className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                             required
                         ></textarea>
                     </div>
                     <button
                         type="submit"
                         disabled={loading}
-                        className="py-2.5 px-5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold text-sm shadow transition-colors"
+                        className="py-2.5 px-5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold text-sm shadow transition-colors"
                     >
                         {loading ? 'Submitting...' : t('submit_ticket')}
                     </button>
@@ -190,23 +262,32 @@ export default function SupportTab({ session, username }) {
                 ) : (
                     <div className="space-y-3">
                         {tickets.map(ticket => (
-                            <div key={ticket.id} className="p-4 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 space-y-2">
-                                <div className="flex justify-between items-center">
+                            <div key={ticket.id} className="p-4 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 space-y-2 relative group">
+                                <div className="flex justify-between items-center pr-8">
                                     <span className="font-bold text-sm text-gray-900 dark:text-white">{ticket.subject}</span>
-                                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
-                                        ticket.status === 'resolved' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300' :
-                                        ticket.status === 'in_progress' ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300' :
-                                        'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300'
-                                    }`}>
+                                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${ticket.status === 'resolved' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300' :
+                                            ticket.status === 'in_progress' ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300' :
+                                                'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300'
+                                        }`}>
                                         {ticket.status === 'resolved' ? t('status_resolved') : ticket.status === 'in_progress' ? t('status_in_progress') : t('status_open')}
                                     </span>
                                 </div>
                                 <p className="text-xs text-gray-600 dark:text-zinc-400">{ticket.message}</p>
                                 {ticket.admin_reply && (
-                                    <div className="mt-2 p-2.5 rounded bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-500/20 text-xs text-indigo-900 dark:text-indigo-200">
+                                    <div className="mt-2 p-2.5 rounded bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-500/20 text-xs text-emerald-900 dark:text-emerald-200">
                                         <strong>{t('admin_response')}</strong> {ticket.admin_reply}
                                     </div>
                                 )}
+                                {/* Delete Button */}
+                                <button
+                                    onClick={() => handleDeleteTicket(ticket.id)}
+                                    className="absolute top-4 right-4 text-gray-400 hover:text-rose-500 transition-colors"
+                                    title="Delete Ticket"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                                    </svg>
+                                </button>
                             </div>
                         ))}
                     </div>

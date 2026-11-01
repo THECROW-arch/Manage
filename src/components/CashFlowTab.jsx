@@ -133,7 +133,7 @@ export default function CashFlowTab({
                         type="month"
                         value={selectedMonth}
                         onChange={(e) => setSelectedMonth(e.target.value)}
-                        className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-zinc-200 focus:outline-none focus:border-indigo-500 transition-all text-sm cursor-pointer"
+                        className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-zinc-200 focus:outline-none focus:border-emerald-500 transition-all text-sm cursor-pointer"
                     />
                 </div>
             </div>
@@ -149,7 +149,7 @@ export default function CashFlowTab({
                         </div>
                         <div className="w-full bg-gray-100 dark:bg-zinc-950 rounded-full h-1.5 mb-3 overflow-hidden border border-gray-200 dark:border-zinc-800">
                             <div
-                                className={`h-1.5 rounded-full transition-all duration-1000 ease-out ${globalPercentUsed > 85 ? 'bg-rose-500' : 'bg-indigo-500 dark:bg-zinc-400'}`}
+                                className={`h-1.5 rounded-full transition-all duration-1000 ease-out ${globalPercentUsed > 85 ? 'bg-rose-500' : 'bg-emerald-500 dark:bg-zinc-400'}`}
                                 style={{ width: `${globalPercentUsed}%` }}
                             ></div>
                         </div>
@@ -168,9 +168,9 @@ export default function CashFlowTab({
                     </div>
                     {/* Financial Conscience Banner */}
                     {smartInsights && smartInsights.length > 0 && (
-                        <div className="col-span-1 lg:col-span-12 bg-indigo-50/50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-500/20 rounded-lg p-4 mb-2 animate-fade-in">
-                            <h3 className="text-xs font-bold text-indigo-800 dark:text-indigo-300 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-indigo-600 dark:text-indigo-400">
+                        <div className="col-span-1 lg:col-span-12 bg-emerald-50/50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-500/20 rounded-lg p-4 mb-2 animate-fade-in">
+                            <h3 className="text-xs font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-emerald-600 dark:text-emerald-400">
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18" />
                                 </svg>
                                 {t('smart_insights')}
@@ -238,7 +238,7 @@ export default function CashFlowTab({
                                 </button>
                                 <button
                                     onClick={handleSmartLockAll}
-                                    className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-xs font-bold transition-all flex items-center gap-2 shadow-md"
+                                    className="px-4 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-xs font-bold transition-all flex items-center gap-2 shadow-md"
                                 >
                                     {t('smart_lock_board')}
                                 </button>
@@ -253,7 +253,7 @@ export default function CashFlowTab({
                                 const remaining = Math.max(0, categoryBase - spent);
                                 const percentUsed = (isAsset && spent === 0) ? 100 : (categoryBase > 0 ? Math.min(100, (spent / categoryBase) * 100) : 0);
 
-                                let healthColor = isAsset ? "bg-emerald-500" : "bg-indigo-500";
+                                let healthColor = isAsset ? "bg-emerald-500" : "bg-emerald-500";
                                 if (!isAsset && percentUsed > 75) healthColor = "bg-amber-500";
                                 if (!isAsset && percentUsed >= 90) healthColor = "bg-rose-500";
 
@@ -350,7 +350,7 @@ export default function CashFlowTab({
                                                         <button
                                                             onClick={() => toggleIndividualLock(cat.id)}
                                                             className={`p-1 rounded transition-all ${isCatLocked
-                                                                ? 'text-indigo-600 bg-indigo-50 dark:text-zinc-100 dark:bg-zinc-800'
+                                                                ? 'text-emerald-600 bg-emerald-50 dark:text-zinc-100 dark:bg-zinc-800'
                                                                 : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:text-zinc-600 dark:hover:text-zinc-300 dark:hover:bg-zinc-800'
                                                                 }`}
                                                         >
@@ -399,7 +399,7 @@ export default function CashFlowTab({
                                                         setDragState({ id: null, val: 0 });
                                                     }
                                                 }}
-                                                className={`w-full accent-indigo-600 dark:accent-zinc-400 ${isCatLocked ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
+                                                className={`w-full accent-emerald-600 dark:accent-zinc-400 ${isCatLocked ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'}`}
                                             />
                                         </div>
                                     </div>
@@ -412,7 +412,7 @@ export default function CashFlowTab({
                             <>
                                 <button
                                     onClick={() => setIsCategoryModalOpen(true)}
-                                    className="w-full py-3 mt-4 rounded-lg border-2 border-dashed border-gray-300 dark:border-zinc-700 text-gray-500 dark:text-zinc-400 hover:border-indigo-500 hover:text-indigo-600 dark:hover:border-indigo-500 dark:hover:text-indigo-400 font-semibold transition-all flex items-center justify-center gap-2"
+                                    className="w-full py-3 mt-4 rounded-lg border-2 border-dashed border-gray-300 dark:border-zinc-700 text-gray-500 dark:text-zinc-400 hover:border-emerald-500 hover:text-emerald-600 dark:hover:border-emerald-500 dark:hover:text-emerald-400 font-semibold transition-all flex items-center justify-center gap-2"
                                 >
                                     + {t('create_new_category')}
                                 </button>
@@ -456,7 +456,7 @@ export default function CashFlowTab({
                                                     value={newCategoryName}
                                                     onChange={(e) => setNewCategoryName(e.target.value)}
                                                     placeholder={t('modal_name_placeholder')}
-                                                    className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-indigo-500"
+                                                    className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-emerald-500"
                                                 />
                                                 {newCategoryType === 'asset' && (
                                                     <input
@@ -465,12 +465,12 @@ export default function CashFlowTab({
                                                         value={newCategoryGoal}
                                                         onChange={(e) => setNewCategoryGoal(e.target.value)}
                                                         placeholder={t('modal_goal_placeholder')}
-                                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-indigo-500"
+                                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-emerald-500"
                                                     />
                                                 )}
                                                 <button
                                                     onClick={handleAddCategory}
-                                                    className="w-full py-2.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold shadow-md transition-all mt-2"
+                                                    className="w-full py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-bold shadow-md transition-all mt-2"
                                                 >
                                                     {t('add_category')}
                                                 </button>
@@ -490,7 +490,7 @@ export default function CashFlowTab({
                             <button
                                 type="button"
                                 onClick={() => { setActiveTab('occasions'); setPlannerSubTab('occasions'); }}
-                                className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                                className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline"
                             >
                                 {t('logging_special_occasion')}
                             </button>
@@ -507,7 +507,7 @@ export default function CashFlowTab({
                                         value={expenseName}
                                         onChange={(e) => setExpenseName(e.target.value)}
                                         placeholder={t('what_did_you_buy')}
-                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-indigo-500"
+                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-emerald-500"
                                         required
                                     />
                                     <input
@@ -516,7 +516,7 @@ export default function CashFlowTab({
                                         value={expenseCost}
                                         onChange={(e) => setExpenseCost(e.target.value)}
                                         placeholder={t('cost_placeholder')}
-                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-indigo-500"
+                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-emerald-500"
                                         required
                                     />
                                 </div>
@@ -524,7 +524,7 @@ export default function CashFlowTab({
                                     <select
                                         value={expenseCategoryId}
                                         onChange={(e) => setExpenseCategoryId(e.target.value)}
-                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-indigo-500"
+                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-emerald-500"
                                     >
                                         {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name} {cat.type === 'asset' ? '(Asset)' : ''}</option>)}
                                     </select>
@@ -532,7 +532,7 @@ export default function CashFlowTab({
                                         type="date"
                                         value={expenseDate}
                                         onChange={(e) => setExpenseDate(e.target.value)}
-                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-indigo-500"
+                                        className="w-full px-3 py-2.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-sm focus:outline-none focus:border-emerald-500"
                                         required
                                     />
                                 </div>
@@ -542,7 +542,7 @@ export default function CashFlowTab({
                                             type="checkbox"
                                             checked={isRecurring}
                                             onChange={(e) => setIsRecurring(e.target.checked)}
-                                            className="rounded border-gray-300 dark:border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-transparent cursor-pointer"
+                                            className="rounded border-gray-300 dark:border-zinc-700 text-emerald-600 focus:ring-emerald-500 bg-transparent cursor-pointer"
                                         />
                                         {t('recurring_monthly')}
                                     </label>
@@ -551,14 +551,14 @@ export default function CashFlowTab({
                                             type="checkbox"
                                             checked={isBatched}
                                             onChange={(e) => setIsBatched(e.target.checked)}
-                                            className="rounded border-gray-300 dark:border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-transparent cursor-pointer"
+                                            className="rounded border-gray-300 dark:border-zinc-700 text-emerald-600 focus:ring-emerald-500 bg-transparent cursor-pointer"
                                         />
                                         {t('batch_month_end')}
                                     </label>
                                 </div>
                                 <button
                                     type="submit"
-                                    className="w-full py-2.5 px-4 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-all text-sm shadow-md"
+                                    className="w-full py-2.5 px-4 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-bold transition-all text-sm shadow-md"
                                 >
                                     {t('save_expense')}
                                 </button>
@@ -578,12 +578,12 @@ export default function CashFlowTab({
                                         placeholder={t('search_placeholder')}
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
-                                        className="w-full sm:w-40 px-3 py-1.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-xs focus:outline-none focus:border-indigo-500"
+                                        className="w-full sm:w-40 px-3 py-1.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-xs focus:outline-none focus:border-emerald-500"
                                     />
                                     <select
                                         value={filterCategory}
                                         onChange={(e) => setFilterCategory(e.target.value)}
-                                        className="w-full sm:w-40 px-3 py-1.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-xs focus:outline-none focus:border-indigo-500"
+                                        className="w-full sm:w-40 px-3 py-1.5 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-xs focus:outline-none focus:border-emerald-500"
                                     >
                                         <option value="All">{t('all_categories')}</option>
                                         {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
@@ -612,7 +612,7 @@ export default function CashFlowTab({
                                                 }
                                             }}
                                             className={`p-3 rounded-md border flex flex-col group transition-all ${exp.bundle_id
-                                                ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-500/30 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-500/50'
+                                                ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-500/30 cursor-pointer hover:border-emerald-300 dark:hover:border-emerald-500/50'
                                                 : 'bg-gray-50 dark:bg-zinc-950 border-gray-100 dark:border-zinc-800'
                                                 }`}
                                         >
@@ -621,7 +621,7 @@ export default function CashFlowTab({
                                                     <div className="text-gray-900 dark:text-zinc-200 font-medium text-sm flex items-center gap-2">
                                                         <span>{exp.name}</span>
                                                         {exp.bundle_id && <span className="text-[9px] uppercase font-bold text-purple-600 bg-purple-100 dark:text-purple-300 dark:bg-purple-500/20 px-1.5 py-0.5 rounded tracking-wider">Occasion Bundle</span>}
-                                                        {exp.is_recurring && <span className="text-[9px] uppercase font-bold text-indigo-500 bg-indigo-50 dark:bg-indigo-500/20 px-1.5 py-0.5 rounded tracking-wider">Recurring</span>}
+                                                        {exp.is_recurring && <span className="text-[9px] uppercase font-bold text-emerald-500 bg-emerald-50 dark:bg-emerald-500/20 px-1.5 py-0.5 rounded tracking-wider">Recurring</span>}
                                                         {exp.is_batched && <span className="text-[9px] uppercase font-bold text-amber-600 bg-amber-50 dark:bg-amber-500/20 px-1.5 py-0.5 rounded tracking-wider">Batched</span>}
                                                     </div>
                                                     <span className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
@@ -646,7 +646,7 @@ export default function CashFlowTab({
                                                     )}
 
                                                     {exp.bundle_id && (
-                                                        <span className="text-indigo-400 dark:text-indigo-500 font-bold text-xs ml-1 transition-transform">
+                                                        <span className="text-emerald-400 dark:text-emerald-500 font-bold text-xs ml-1 transition-transform">
                                                             {isExpanded ? '▲' : '▼'}
                                                         </span>
                                                     )}
@@ -654,15 +654,15 @@ export default function CashFlowTab({
                                             </div>
 
                                             {isExpanded && bundleItems.length > 0 && (
-                                                <div className="mt-3 pt-3 border-t border-indigo-200/50 dark:border-indigo-500/30 animate-fade-in" onClick={(e) => e.stopPropagation()}>
-                                                    <p className="text-[10px] uppercase font-bold text-indigo-500 dark:text-indigo-400 mb-2">Itemized Receipts</p>
+                                                <div className="mt-3 pt-3 border-t border-emerald-200/50 dark:border-emerald-500/30 animate-fade-in" onClick={(e) => e.stopPropagation()}>
+                                                    <p className="text-[10px] uppercase font-bold text-emerald-500 dark:text-emerald-400 mb-2">Itemized Receipts</p>
                                                     <ul className="space-y-1.5">
                                                         {bundleItems.map((item, idx) => (
-                                                            <li key={idx} className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1 text-xs px-3 py-2 rounded bg-white dark:bg-zinc-900/80 border border-indigo-50 dark:border-zinc-800">
+                                                            <li key={idx} className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1 text-xs px-3 py-2 rounded bg-white dark:bg-zinc-900/80 border border-emerald-50 dark:border-zinc-800">
                                                                 <div className="flex flex-wrap items-center gap-2">
                                                                     <span className="text-gray-800 dark:text-zinc-200 font-semibold">{item.name}</span>
                                                                     {item.allocations && Object.entries(item.allocations).map(([cId, amt]) => (
-                                                                        <span key={cId} className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-zinc-800 text-indigo-600 dark:text-zinc-400 font-medium">
+                                                                        <span key={cId} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-zinc-800 text-emerald-600 dark:text-zinc-400 font-medium">
                                                                             {categories.find(c => c.id === cId)?.name || 'Category'}: {formatCurrency(amt)}
                                                                         </span>
                                                                     ))}
