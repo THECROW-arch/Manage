@@ -6,21 +6,45 @@ import { supabase } from '../supabaseClient';
  * Renders the customer support hub.
  * Uses lifted state (supportDraft) so written tickets survive tab switching.
  */
-export default function SupportTab({ session, username, supportDraft, setSupportDraft, draftHydratedUserId }) {
+export default function SupportTab({
+    session,
+    username,
+    supportDraft,
+    setSupportDraft,
+    draftHydratedUserId,
+    isSubmittingTicket = false,
+    setSubmittingTicketUserId
+}) {
     const { t } = useTranslation();
     const [tickets, setTickets] = useState([]);
-    const [loading, setLoading] = useState(false);
+    const [localSubmitting, setLocalSubmitting] = useState(false);
     const [successMsg, setSuccessMsg] = useState('');
+    const loading = isSubmittingTicket || localSubmitting;
 
     useEffect(() => {
         if (session) fetchTickets();
     }, [session]);
 
-    // Only persist draft after hydration for the active user has completed
+    // Only persist draft after hydration for the active user has completed and draft belongs to this user
     useEffect(() => {
-        if (session?.user?.id && draftHydratedUserId === session.user.id && supportDraft.subject !== undefined) {
-            try { localStorage.setItem(`supportDraft_${session.user.id}`, JSON.stringify(supportDraft)); } 
-            catch (e) { console.warn('Failed to save draft', e); }
+        if (
+            session?.user?.id &&
+            draftHydratedUserId === session.user.id &&
+            supportDraft.userId === session.user.id &&
+            supportDraft.subject !== undefined
+        ) {
+            try {
+                localStorage.setItem(
+                    `supportDraft_${session.user.id}`,
+                    JSON.stringify({
+                        subject: supportDraft.subject,
+                        category: supportDraft.category,
+                        message: supportDraft.message
+                    })
+                );
+            } catch (e) {
+                console.warn('Failed to save draft', e);
+            }
         }
     }, [supportDraft, session?.user?.id, draftHydratedUserId]);
 
@@ -35,35 +59,71 @@ export default function SupportTab({ session, username, supportDraft, setSupport
 
     const handleCreateTicket = async (e) => {
         e.preventDefault();
-        if (!supportDraft.subject.trim() || !supportDraft.message.trim()) return;
-        setLoading(true);
+        const submitterId = session?.user?.id;
+        if (!submitterId || loading) return;
+
+        const submittedSubject = (supportDraft.subject || '').trim();
+        const submittedCategory = supportDraft.category || 'general';
+        const submittedMessage = (supportDraft.message || '').trim();
+        if (!submittedSubject || !submittedMessage) return;
+
+        if (setSubmittingTicketUserId) setSubmittingTicketUserId(submitterId);
+        else setLocalSubmitting(true);
         setSuccessMsg('');
         
         const newTicket = {
-            user_id: session.user.id,
+            user_id: submitterId,
             username: username || 'User',
             email: session.user.email,
-            subject: supportDraft.subject.trim(),
-            category: supportDraft.category,
-            priority: 'pending', // Flags it for Dev Triage
-            message: supportDraft.message.trim(),
+            subject: submittedSubject,
+            category: submittedCategory,
+            priority: 'pending',
+            message: submittedMessage,
             status: 'open',
             admin_reply: ''
         };
 
-        const { data, error } = await supabase.from('support_tickets').insert([newTicket]).select();
-        setLoading(false);
+        try {
+            const { data, error } = await supabase.from('support_tickets').insert([newTicket]).select();
 
-        if (error) {
-            console.error(error);
-            alert(t('err_ticket_submit', 'Failed to submit ticket. Please try again.')); 
-            return;
-        }
+            if (error) {
+                console.error(error);
+                alert(t('err_ticket_submit', 'Failed to submit ticket. Please try again.')); 
+                return;
+            }
 
-        if (data) {
-            setTickets(current => [data[0], ...current]);
-            setSupportDraft({ subject: '', category: 'general', message: '' });
-            setSuccessMsg(t('succ_ticket_submit', 'Ticket submitted successfully!')); 
+            if (data && data.length > 0) {
+                try {
+                    localStorage.setItem(
+                        `supportDraft_${submitterId}`,
+                        JSON.stringify({ subject: '', category: 'general', message: '' })
+                    );
+                } catch (err) {
+                    console.warn('Failed to clear saved draft', err);
+                }
+
+                // Only clear the draft if it still belongs to the submitting user
+                setSupportDraft(prev => {
+                    if (prev.userId && prev.userId !== submitterId) return prev;
+                    return {
+                        userId: submitterId,
+                        subject: (prev.subject || '').trim() === submittedSubject ? '' : prev.subject,
+                        category: prev.category === submittedCategory ? 'general' : prev.category,
+                        message: (prev.message || '').trim() === submittedMessage ? '' : prev.message
+                    };
+                });
+
+                if (session?.user?.id === submitterId) {
+                    setTickets(current => [data[0], ...current]);
+                    setSuccessMsg(t('succ_ticket_submit', 'Ticket submitted successfully!')); 
+                }
+            }
+        } finally {
+            if (setSubmittingTicketUserId) {
+                setSubmittingTicketUserId(prev => (prev === submitterId ? null : prev));
+            } else {
+                setLocalSubmitting(false);
+            }
         }
     };
 
@@ -147,7 +207,7 @@ export default function SupportTab({ session, username, supportDraft, setSupport
                             <label className="block text-xs font-bold text-gray-700 dark:text-zinc-300 uppercase mb-1">{t('ticket_category')}</label>
                             <select
                                 value={supportDraft.category}
-                                onChange={(e) => setSupportDraft({ ...supportDraft, category: e.target.value })}
+                                onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, category: e.target.value }))}
                                 className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                             >
                                 <option value="general">{t('cat_general')}</option>
@@ -161,7 +221,7 @@ export default function SupportTab({ session, username, supportDraft, setSupport
                             <input
                                 type="text"
                                 value={supportDraft.subject}
-                                onChange={(e) => setSupportDraft({ ...supportDraft, subject: e.target.value })}
+                                onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, subject: e.target.value }))}
                                 placeholder="Brief summary"
                                 className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                                 required
@@ -173,7 +233,7 @@ export default function SupportTab({ session, username, supportDraft, setSupport
                         <textarea
                             rows={3}
                             value={supportDraft.message}
-                            onChange={(e) => setSupportDraft({ ...supportDraft, message: e.target.value })}
+                            onChange={(e) => setSupportDraft(prev => ({ ...prev, userId: session?.user?.id ?? prev.userId, message: e.target.value }))}
                             placeholder="Describe your issue or request..."
                             className="w-full px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
                             required

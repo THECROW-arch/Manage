@@ -11,6 +11,7 @@ export default function DevDashboard() {
     const [categoryFilter, setCategoryFilter] = useState('all'); // 'all', 'bug', 'general', etc.
     const [replyDrafts, setReplyDrafts] = useState({});
     const [priorityUpdates, setPriorityUpdates] = useState({});
+    const [savingTicketIds, setSavingTicketIds] = useState({});
     const [alertMsg, setAlertMsg] = useState('');
     useEffect(() => {
         fetchTickets();
@@ -41,7 +42,46 @@ export default function DevDashboard() {
      * @param {string} ticketId - UUID of the ticket to update.
      * @param {string} newStatus - The new status ('open', 'in_progress', 'resolved').
      */
+    const savePriority = async (ticketId) => {
+        if (savingTicketIds[ticketId]) return;
+        const newPriority = priorityUpdates[ticketId];
+        const currentTicket = tickets.find(t => t.id === ticketId);
+        if (newPriority === undefined || !currentTicket || newPriority === (currentTicket.priority ?? 'pending')) return;
+
+        setAlertMsg('');
+        setSavingTicketIds(prev => ({ ...prev, [ticketId]: true }));
+        try {
+            const { data, error } = await supabase
+                .from('support_tickets')
+                .update({ priority: newPriority })
+                .eq('id', ticketId)
+                .select('id');
+
+            if (error || !data || data.length === 0) {
+                console.error(error);
+                setAlertMsg(`Failed to update priority for ticket ${ticketId.substring(0, 8)}`);
+                return;
+            }
+
+            setPriorityUpdates(prev => {
+                const updated = { ...prev };
+                if (updated[ticketId] === newPriority) delete updated[ticketId];
+                return updated;
+            });
+            setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, priority: newPriority } : t));
+            setAlertMsg(`Ticket priority updated.`);
+            await fetchTickets();
+        } finally {
+            setSavingTicketIds(prev => {
+                const updated = { ...prev };
+                delete updated[ticketId];
+                return updated;
+            });
+        }
+    };
+
     const submitReply = async (ticketId, newStatus) => {
+        if (savingTicketIds[ticketId]) return;
         setAlertMsg('');
         const replyText = replyDrafts[ticketId];
         const newPriority = priorityUpdates[ticketId];
@@ -53,30 +93,39 @@ export default function DevDashboard() {
         if (replyText !== undefined) updateData.admin_reply = replyText;
         if (newPriority !== undefined) updateData.priority = newPriority;
 
-        const { data, error } = await supabase
-            .from('support_tickets')
-            .update(updateData)
-            .eq('id', ticketId)
-            .select('id');
+        setSavingTicketIds(prev => ({ ...prev, [ticketId]: true }));
+        try {
+            const { data, error } = await supabase
+                .from('support_tickets')
+                .update(updateData)
+                .eq('id', ticketId)
+                .select('id');
 
-        if (error || !data || data.length === 0) {
-            console.error(error);
-            setAlertMsg(`Failed to update ticket ${ticketId.substring(0, 8)}`);
-            return;
+            if (error || !data || data.length === 0) {
+                console.error(error);
+                setAlertMsg(`Failed to update ticket ${ticketId.substring(0, 8)}`);
+                return;
+            }
+
+            setReplyDrafts(prev => {
+                const updated = { ...prev };
+                if (updated[ticketId] === replyText) delete updated[ticketId];
+                return updated;
+            });
+            setPriorityUpdates(prev => {
+                const updated = { ...prev };
+                if (updated[ticketId] === newPriority) delete updated[ticketId];
+                return updated;
+            });
+            setAlertMsg(`Ticket updated successfully.`);
+            await fetchTickets();
+        } finally {
+            setSavingTicketIds(prev => {
+                const updated = { ...prev };
+                delete updated[ticketId];
+                return updated;
+            });
         }
-
-        setReplyDrafts(prev => {
-            const updated = { ...prev };
-            if (updated[ticketId] === replyText) delete updated[ticketId];
-            return updated;
-        });
-        setPriorityUpdates(prev => {
-            const updated = { ...prev };
-            if (updated[ticketId] === newPriority) delete updated[ticketId];
-            return updated;
-        });
-        setAlertMsg(`Ticket updated successfully.`);
-        fetchTickets();
     };
 
     const filteredTickets = tickets.filter(t => {
@@ -150,9 +199,11 @@ export default function DevDashboard() {
                         <div className="w-full md:w-96 flex flex-col space-y-3 border-t md:border-t-0 md:border-l border-gray-200 dark:border-zinc-800 pt-4 md:pt-0 md:pl-6">
                             <div className="flex gap-2">
                                 <select
+                                    aria-label="Ticket priority"
+                                    disabled={Boolean(savingTicketIds[ticket.id])}
                                     value={priorityUpdates[ticket.id] ?? ticket.priority ?? 'pending'}
                                     onChange={(e) => setPriorityUpdates(prev => ({ ...prev, [ticket.id]: e.target.value }))}
-                                    className="flex-1 px-3 py-1.5 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-bold focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white uppercase"
+                                    className="flex-1 px-3 py-1.5 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-bold focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white uppercase"
                                 >
                                     <option value="pending">Pending Triage</option>
                                     <option value="low">Low Priority</option>
@@ -160,11 +211,16 @@ export default function DevDashboard() {
                                     <option value="high">High Priority</option>
                                 </select>
                                 <button
-                                    onClick={() => submitReply(ticket.id, ticket.status)}
-                                    disabled={priorityUpdates[ticket.id] === undefined || priorityUpdates[ticket.id] === ticket.priority}
+                                    type="button"
+                                    onClick={() => savePriority(ticket.id)}
+                                    disabled={
+                                        Boolean(savingTicketIds[ticket.id]) ||
+                                        priorityUpdates[ticket.id] === undefined ||
+                                        priorityUpdates[ticket.id] === (ticket.priority ?? 'pending')
+                                    }
                                     className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded font-bold text-xs transition-colors"
                                 >
-                                    Save Priority
+                                    {savingTicketIds[ticket.id] ? 'Saving...' : 'Save Priority'}
                                 </button>
                             </div>
                             <textarea

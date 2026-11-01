@@ -82,8 +82,9 @@ export default function App() {
 
   const [plannerSubTab, setPlannerSubTab] = useState('occasions'); 
 
-  // Support Tab Persisted Draft State (Isolated by authenticated user ID)
-  const [supportDraft, setSupportDraft] = useState({ subject: '', category: 'general', message: '' });
+  // Support Tab Persisted Draft & Submission State (Isolated by authenticated user ID)
+  const [supportDraft, setSupportDraft] = useState({ userId: null, subject: '', category: 'general', message: '' });
+  const [submittingTicketUserId, setSubmittingTicketUserId] = useState(null);
 
   useEffect(() => {
     if (!session?.user?.id) return;
@@ -184,124 +185,138 @@ export default function App() {
   const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
 
   const fetchUserData = async (userId) => {
+    window.__activeUserId = userId;
     if (window.__fetchingUserId === userId) return;
     window.__fetchingUserId = userId;
+    const isStale = () => window.__activeUserId !== userId;
+
     setLoadingData(true);
-    let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
+    try {
+      let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
+      if (isStale()) return;
 
-    if (!profile) {
-      const { data: authData } = await supabase.auth.getUser();
-      const registeredUsername = authData?.user?.user_metadata?.username || `user_${Date.now()}`;
+      if (!profile) {
+        const { data: authData } = await supabase.auth.getUser();
+        if (isStale()) return;
+        const registeredUsername = authData?.user?.user_metadata?.username || `user_${Date.now()}`;
 
-      const { data: newProfile } = await supabase.from('profiles').insert([{
-        user_id: userId,
-        username: registeredUsername,
-        role: 'user',
-        subscription_tier: 'free'
-      }]).select().single();
+        const { data: newProfile } = await supabase.from('profiles').insert([{
+          user_id: userId,
+          username: registeredUsername,
+          role: 'user',
+          subscription_tier: 'free'
+        }]).select().single();
+        if (isStale()) return;
 
-      profile = newProfile;
-    }
-
-    if (profile) {
-      const loadedRole = profile.role || 'user';
-      setUserRole(loadedRole);
-      
-      // Validate saved tab access against loaded role safely
-      setActiveTab(currentTab => {
-        if (currentTab === 'dev_dashboard' && loadedRole !== 'dev' && loadedRole !== 'owner') return 'cashflow';
-        if (currentTab === 'owner_dashboard' && loadedRole !== 'owner') return 'cashflow';
-        return currentTab;
-      });
-
-      // Hydrate isolated support draft for this user safely before enabling persistence
-      try {
-        const savedDraft = localStorage.getItem(`supportDraft_${userId}`);
-        setSupportDraft(savedDraft ? JSON.parse(savedDraft) : { subject: '', category: 'general', message: '' });
-      } catch {
-        setSupportDraft({ subject: '', category: 'general', message: '' });
+        profile = newProfile;
       }
-      setDraftHydratedUserId(userId);
 
-      setSalary(profile.salary > 0 ? profile.salary.toString() : '');
-      if (profile.currency !== undefined) {
-        setCurrency(profile.currency);
-        if (!['$', '€', '£', 'MAD', ''].includes(profile.currency)) {
-          setCurrencyMode('custom');
-          setCustomCurrency(profile.currency);
+      if (profile) {
+        const loadedRole = profile.role || 'user';
+        setUserRole(loadedRole);
+        
+        // Validate saved tab access against loaded role safely
+        setActiveTab(currentTab => {
+          if (currentTab === 'dev_dashboard' && loadedRole !== 'dev' && loadedRole !== 'owner') return 'cashflow';
+          if (currentTab === 'owner_dashboard' && loadedRole !== 'owner') return 'cashflow';
+          return currentTab;
+        });
+
+        // Hydrate isolated support draft for this user safely before enabling persistence
+        let loadedDraft = { userId, subject: '', category: 'general', message: '' };
+        try {
+          const savedDraft = localStorage.getItem(`supportDraft_${userId}`);
+          if (savedDraft) {
+            const parsed = JSON.parse(savedDraft);
+            loadedDraft = {
+              userId,
+              subject: parsed?.subject || '',
+              category: parsed?.category || 'general',
+              message: parsed?.message || ''
+            };
+          }
+        } catch { /* ignore */ }
+        setSupportDraft(loadedDraft);
+        setDraftHydratedUserId(userId);
+
+        setSalary(profile.salary > 0 ? profile.salary.toString() : '');
+        if (profile.currency !== undefined) {
+          setCurrency(profile.currency);
+          if (!['$', '€', '£', 'MAD', ''].includes(profile.currency)) {
+            setCurrencyMode('custom');
+            setCustomCurrency(profile.currency);
+          }
+          else if (profile.currency === '') setCurrencyMode('none');
+          else setCurrencyMode(profile.currency);
         }
-        else if (profile.currency === '') setCurrencyMode('none');
-        else setCurrencyMode(profile.currency);
+        if (profile.tax_country) setTaxCountry(profile.tax_country);
+        if (profile.username) setUsername(profile.username);
+        if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_country === 'US' ? profile.tax_filing_status : 'single');
+        setCurrentStreak(profile.current_streak || 0);
+        setLongestStreak(profile.longest_streak || 0);
       }
-      if (profile.tax_country) setTaxCountry(profile.tax_country);
-      if (profile.username) setUsername(profile.username);
-      if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_country === 'US' ? profile.tax_filing_status : 'single');
-      setCurrentStreak(profile.current_streak || 0);
-      setLongestStreak(profile.longest_streak || 0);
-    }
 
-    let { data: cats } = await supabase.from('categories').select('*').eq('user_id', userId).order('created_at', { ascending: true });
-    cats = cats || [];
+      let { data: cats } = await supabase.from('categories').select('*').eq('user_id', userId).order('created_at', { ascending: true });
+      if (isStale()) return;
+      cats = cats || [];
 
-    if (cats.length === 0) {
-      const defaultCats = [
-        { user_id: userId, name: 'Needs', percentage: 50, color: 'emerald-600', type: 'expense', target_goal: 0 },
-        { user_id: userId, name: 'Wants', percentage: 30, color: 'pink-600', type: 'expense', target_goal: 0 },
-        { user_id: userId, name: 'Savings', percentage: 20, color: 'green-600', type: 'asset', target_goal: 50000 }
-      ];
-      const { data: seededCats } = await supabase.from('categories').insert(defaultCats).select();
-      cats = seededCats || defaultCats;
-    } else {
-      // Auto-heal if duplicate seeding or >100% bug ever occurred on this account
-      const totalPct = cats.reduce((s, c) => s + Number(c.percentage || 0), 0);
-      if (totalPct > 100.1) {
-        cats = cats.map(c => ({ ...c, percentage: Number(((c.percentage / totalPct) * 100).toFixed(2)) }));
+      if (cats.length === 0) {
+        const defaultCats = [
+          { user_id: userId, name: 'Needs', percentage: 50, color: 'emerald-600', type: 'expense', target_goal: 0 },
+          { user_id: userId, name: 'Wants', percentage: 30, color: 'pink-600', type: 'expense', target_goal: 0 },
+          { user_id: userId, name: 'Savings', percentage: 20, color: 'green-600', type: 'asset', target_goal: 50000 }
+        ];
+        const { data: seededCats } = await supabase.from('categories').insert(defaultCats).select();
+        if (isStale()) return;
+        cats = seededCats || defaultCats;
+      }
+
+      setCategories(cats);
+      if (cats.length > 0) {
+        const firstExpenseCat = cats.find(c => c.type !== 'asset') || cats[0];
+        setExpenseCategoryId(firstExpenseCat?.id || '');
+        const firstAssetCat = cats.find(c => c.type === 'asset');
+        if (firstAssetCat) setAdjCatId(firstAssetCat.id);
+      }
+
+      let { data: expensesData } = await supabase.from('expenses').select('*').eq('user_id', userId).order('expense_date', { ascending: false });
+      if (isStale()) return;
+      setExpenses(expensesData || []);
+
+      let { data: bundlesData } = await supabase
+        .from('bundles')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      if (isStale()) return;
+      setBundles(bundlesData || []);
+
+      let { data: sandboxData } = await supabase
+        .from('sandbox_sheets')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      if (isStale()) return;
+
+      setSandboxSheets((sandboxData || []).map(s => ({
+        id: s.id, title: s.title, totalBudget: parseFloat(s.total_budget),
+        buckets: s.buckets || [], expenses: s.expenses || []
+      })));
+
+      let { data: adjData } = await supabase.from('asset_adjustments').select('*').eq('user_id', userId).order('adjustment_date', { ascending: false });
+      if (isStale()) return;
+      setAssetAdjustments(adjData || []);
+
+      let { data: closedData } = await supabase.from('closed_months').select('*').eq('user_id', userId);
+      if (isStale()) return;
+      setClosedMonths(closedData || []);
+
+      setLoadingData(false);
+    } finally {
+      if (window.__fetchingUserId === userId) {
+        window.__fetchingUserId = null;
       }
     }
-
-    const { data: currentAuth } = await supabase.auth.getUser();
-    if (currentAuth?.user?.id && currentAuth.user.id !== userId) {
-      window.__fetchingUserId = null;
-      return;
-    }
-
-    setCategories(cats);
-    if (cats.length > 0) {
-      const firstExpenseCat = cats.find(c => c.type !== 'asset') || cats[0];
-      setExpenseCategoryId(firstExpenseCat?.id || '');
-      const firstAssetCat = cats.find(c => c.type === 'asset');
-      if (firstAssetCat) setAdjCatId(firstAssetCat.id);
-    }
-
-    let { data: expensesData } = await supabase.from('expenses').select('*').eq('user_id', userId).order('expense_date', { ascending: false });
-    setExpenses(expensesData || []);
-
-    let { data: bundlesData } = await supabase
-      .from('bundles')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-    setBundles(bundlesData || []);
-
-    let { data: sandboxData } = await supabase
-      .from('sandbox_sheets')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    setSandboxSheets((sandboxData || []).map(s => ({
-      id: s.id, title: s.title, totalBudget: parseFloat(s.total_budget),
-      buckets: s.buckets || [], expenses: s.expenses || []
-    })));
-
-    let { data: adjData } = await supabase.from('asset_adjustments').select('*').eq('user_id', userId).order('adjustment_date', { ascending: false });
-    setAssetAdjustments(adjData || []);
-
-    let { data: closedData } = await supabase.from('closed_months').select('*').eq('user_id', userId);
-    setClosedMonths(closedData || []);
-
-    window.__fetchingUserId = null;
-    setLoadingData(false);
   };
 
   useEffect(() => {
@@ -364,6 +379,8 @@ export default function App() {
 
   const confirmLogout = async () => {
     try {
+      window.__activeUserId = null;
+      window.__fetchingUserId = null;
       await supabase.auth.signOut();
       setSession(null);
       setExpenses([]);
@@ -371,7 +388,8 @@ export default function App() {
       setAssetAdjustments([]);
       setClosedMonths([]);
       setSalary('');
-      setSupportDraft({ subject: '', category: 'general', message: '' });
+      setDraftHydratedUserId(null);
+      setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
       setShowLogoutConfirm(false);
     } catch (error) {
       console.error("Logout failed:", error);
@@ -1701,6 +1719,8 @@ export default function App() {
               supportDraft={supportDraft}
               setSupportDraft={setSupportDraft}
               draftHydratedUserId={draftHydratedUserId}
+              isSubmittingTicket={submittingTicketUserId === session?.user?.id}
+              setSubmittingTicketUserId={setSubmittingTicketUserId}
             />
           )}
           {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (
