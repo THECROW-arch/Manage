@@ -6,7 +6,7 @@ import { supabase } from '../supabaseClient';
  * Renders the customer support hub.
  * Uses lifted state (supportDraft) so written tickets survive tab switching.
  */
-export default function SupportTab({ session, username, supportDraft, setSupportDraft }) {
+export default function SupportTab({ session, username, supportDraft, setSupportDraft, draftHydratedUserId }) {
     const { t } = useTranslation();
     const [tickets, setTickets] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -16,13 +16,13 @@ export default function SupportTab({ session, username, supportDraft, setSupport
         if (session) fetchTickets();
     }, [session]);
 
-    // Safely save draft without overwriting on initial load
+    // Only persist draft after hydration for the active user has completed
     useEffect(() => {
-        if (session?.user?.id && supportDraft.subject !== undefined) {
+        if (session?.user?.id && draftHydratedUserId === session.user.id && supportDraft.subject !== undefined) {
             try { localStorage.setItem(`supportDraft_${session.user.id}`, JSON.stringify(supportDraft)); } 
             catch (e) { console.warn('Failed to save draft', e); }
         }
-    }, [supportDraft, session?.user?.id]);
+    }, [supportDraft, session?.user?.id, draftHydratedUserId]);
 
     const fetchTickets = async () => {
         const { data, error } = await supabase
@@ -61,7 +61,7 @@ export default function SupportTab({ session, username, supportDraft, setSupport
         }
 
         if (data) {
-            setTickets([data[0], ...tickets]);
+            setTickets(current => [data[0], ...current]);
             setSupportDraft({ subject: '', category: 'general', message: '' });
             setSuccessMsg(t('succ_ticket_submit', 'Ticket submitted successfully!')); 
         }

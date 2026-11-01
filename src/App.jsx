@@ -181,7 +181,11 @@ export default function App() {
     }
   }, [alertMsg]);
 
+  const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
+
   const fetchUserData = async (userId) => {
+    if (window.__fetchingUserId === userId) return;
+    window.__fetchingUserId = userId;
     setLoadingData(true);
     let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
 
@@ -210,11 +214,14 @@ export default function App() {
         return currentTab;
       });
 
-      // Load isolated support draft for this user safely
+      // Hydrate isolated support draft for this user safely before enabling persistence
       try {
         const savedDraft = localStorage.getItem(`supportDraft_${userId}`);
-        if (savedDraft) setSupportDraft(JSON.parse(savedDraft));
-      } catch { /* ignore */ }
+        setSupportDraft(savedDraft ? JSON.parse(savedDraft) : { subject: '', category: 'general', message: '' });
+      } catch {
+        setSupportDraft({ subject: '', category: 'general', message: '' });
+      }
+      setDraftHydratedUserId(userId);
 
       setSalary(profile.salary > 0 ? profile.salary.toString() : '');
       if (profile.currency !== undefined) {
@@ -244,6 +251,18 @@ export default function App() {
       ];
       const { data: seededCats } = await supabase.from('categories').insert(defaultCats).select();
       cats = seededCats || defaultCats;
+    } else {
+      // Auto-heal if duplicate seeding or >100% bug ever occurred on this account
+      const totalPct = cats.reduce((s, c) => s + Number(c.percentage || 0), 0);
+      if (totalPct > 100.1) {
+        cats = cats.map(c => ({ ...c, percentage: Number(((c.percentage / totalPct) * 100).toFixed(2)) }));
+      }
+    }
+
+    const { data: currentAuth } = await supabase.auth.getUser();
+    if (currentAuth?.user?.id && currentAuth.user.id !== userId) {
+      window.__fetchingUserId = null;
+      return;
     }
 
     setCategories(cats);
@@ -281,6 +300,7 @@ export default function App() {
     let { data: closedData } = await supabase.from('closed_months').select('*').eq('user_id', userId);
     setClosedMonths(closedData || []);
 
+    window.__fetchingUserId = null;
     setLoadingData(false);
   };
 
@@ -661,6 +681,10 @@ export default function App() {
       const updatedExpenses = expenses.filter(e => !idsToDelete.includes(e.id));
       setExpenses([...newRecurring, ...newlyAggregated, ...updatedExpenses]);
 
+      // Automatically advance the user to the newly opened month (e.g., 2026-11)
+      const nextMonthYYYYMM = nextMonthStamp.slice(0, 7);
+      setSelectedMonth(nextMonthYYYYMM);
+
       setAlertMsg(t('succ_month_closed', { month: selectedMonth }));
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
@@ -723,12 +747,16 @@ export default function App() {
   };
 
   const handleDeleteCategory = async (id, percentage) => {
-    if (isReadOnly || categories.length <= 1) return;
+    if (isReadOnly) return;
+    if (categories.length <= 1) {
+      setAlertMsg(t('err_min_one_cat', 'You must keep at least one category in your budget. You can rename it instead!'));
+      return;
+    }
     const previousCategories = [...categories];
     const previousExpenses = [...expenses];
-    const remainingCategories = categories.filter(c => c.id !== id);
+    const remainingCategories = categories.filter(c => c.id !== id).map(c => ({ ...c }));
 
-    remainingCategories[0].percentage += percentage;
+    remainingCategories[0].percentage = Math.min(100, Number((remainingCategories[0].percentage + percentage).toFixed(2)));
 
     setCategories(remainingCategories);
     setLockedCategories(lockedCategories.filter(catId => catId !== id));
@@ -1672,6 +1700,7 @@ export default function App() {
               username={username}
               supportDraft={supportDraft}
               setSupportDraft={setSupportDraft}
+              draftHydratedUserId={draftHydratedUserId}
             />
           )}
           {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (

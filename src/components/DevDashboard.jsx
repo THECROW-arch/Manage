@@ -46,18 +46,20 @@ export default function DevDashboard() {
         const replyText = replyDrafts[ticketId];
         const newPriority = priorityUpdates[ticketId];
         
-        if (replyText === undefined && newPriority === undefined && newStatus === 'open') return;
+        if (replyText === undefined && newPriority === undefined && !newStatus) return;
 
-        const updateData = { status: newStatus };
+        const updateData = {};
+        if (newStatus) updateData.status = newStatus;
         if (replyText !== undefined) updateData.admin_reply = replyText;
         if (newPriority !== undefined) updateData.priority = newPriority;
 
-        const { error } = await supabase
+        const { data, error } = await supabase
             .from('support_tickets')
             .update(updateData)
-            .eq('id', ticketId);
+            .eq('id', ticketId)
+            .select('id');
 
-        if (error) {
+        if (error || !data || data.length === 0) {
             console.error(error);
             setAlertMsg(`Failed to update ticket ${ticketId.substring(0, 8)}`);
             return;
@@ -65,7 +67,12 @@ export default function DevDashboard() {
 
         setReplyDrafts(prev => {
             const updated = { ...prev };
-            delete updated[ticketId];
+            if (updated[ticketId] === replyText) delete updated[ticketId];
+            return updated;
+        });
+        setPriorityUpdates(prev => {
+            const updated = { ...prev };
+            if (updated[ticketId] === newPriority) delete updated[ticketId];
             return updated;
         });
         setAlertMsg(`Ticket updated successfully.`);
@@ -141,16 +148,25 @@ export default function DevDashboard() {
 
                         {/* Dev Reply Column */}
                         <div className="w-full md:w-96 flex flex-col space-y-3 border-t md:border-t-0 md:border-l border-gray-200 dark:border-zinc-800 pt-4 md:pt-0 md:pl-6">
-                            <select
-                                value={priorityUpdates[ticket.id] || ticket.priority || 'pending'}
-                                onChange={(e) => setPriorityUpdates(prev => ({ ...prev, [ticket.id]: e.target.value }))}
-                                className="w-full px-3 py-1.5 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-bold focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white uppercase"
-                            >
-                                <option value="pending">Pending Triage</option>
-                                <option value="low">Low Priority</option>
-                                <option value="medium">Medium Priority</option>
-                                <option value="high">High Priority</option>
-                            </select>
+                            <div className="flex gap-2">
+                                <select
+                                    value={priorityUpdates[ticket.id] ?? ticket.priority ?? 'pending'}
+                                    onChange={(e) => setPriorityUpdates(prev => ({ ...prev, [ticket.id]: e.target.value }))}
+                                    className="flex-1 px-3 py-1.5 rounded bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-bold focus:outline-none focus:border-emerald-500 text-gray-900 dark:text-white uppercase"
+                                >
+                                    <option value="pending">Pending Triage</option>
+                                    <option value="low">Low Priority</option>
+                                    <option value="medium">Medium Priority</option>
+                                    <option value="high">High Priority</option>
+                                </select>
+                                <button
+                                    onClick={() => submitReply(ticket.id, ticket.status)}
+                                    disabled={priorityUpdates[ticket.id] === undefined || priorityUpdates[ticket.id] === ticket.priority}
+                                    className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded font-bold text-xs transition-colors"
+                                >
+                                    Save Priority
+                                </button>
+                            </div>
                             <textarea
                                 value={replyDrafts[ticket.id] !== undefined ? replyDrafts[ticket.id] : (ticket.admin_reply || '')}
                                 onChange={(e) => handleReplyChange(ticket.id, e.target.value)}
