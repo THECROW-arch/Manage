@@ -1,24 +1,26 @@
-import { pipeline, env } from '@huggingface/transformers';
-
-// Ensure models load cleanly from Hugging Face CDN and cache in the browser
-env.allowLocalModels = false;
-env.useBrowserCache = true;
-
 let transcriberPromise = null;
 
 /**
- * Lazily loads and caches the upgraded Whisper Base speech-to-text model in the browser.
+ * Lazily loads and caches the Whisper Base speech-to-text model in the browser via CDN
+ * so Vite and Cloudflare Pages builds never bundle heavy ONNX binaries at build time.
  * @param {Function} onProgress - Optional callback for first-time download progress.
  */
 export async function getLocalTranscriber(onProgress) {
     if (!transcriberPromise) {
-        transcriberPromise = pipeline(
-            'automatic-speech-recognition',
-            'Xenova/whisper-base.en',
-            {
-                progress_callback: onProgress
-            }
-        ).catch((err) => {
+        transcriberPromise = (async () => {
+            const transformersUrl = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/+esm';
+            const { pipeline, env } = await import(/* @vite-ignore */ transformersUrl);
+            env.allowLocalModels = false;
+            env.useBrowserCache = true;
+
+            return pipeline(
+                'automatic-speech-recognition',
+                'Xenova/whisper-base.en',
+                {
+                    progress_callback: onProgress
+                }
+            );
+        })().catch((err) => {
             transcriberPromise = null;
             throw err;
         });
@@ -59,7 +61,6 @@ export function mergeAndResampleTo16kHz(chunks, inputSampleRate) {
         }
     }
 
-    // 1. Remove DC offset (microphone hum) and find peak amplitude
     let sum = 0;
     for (let i = 0; i < resampled.length; i++) {
         sum += resampled[i];
@@ -73,7 +74,6 @@ export function mergeAndResampleTo16kHz(chunks, inputSampleRate) {
         if (abs > maxPeak) maxPeak = abs;
     }
 
-    // 2. Normalize volume to 0.95 peak so quiet speech is crystal clear
     if (maxPeak > 0.005 && maxPeak < 0.95) {
         const gain = 0.95 / maxPeak;
         for (let i = 0; i < resampled.length; i++) {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { getToday, getCurrentMonth } from '../utils/constants';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient'; // Ensure supabase client is imported

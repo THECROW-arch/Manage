@@ -74,15 +74,19 @@ export default function CashFlowTab({
     editingExpense,
     setEditingExpense,
     handleUpdateExpense,
+    userId,
     groupedExpenses
 }) {
     const { t, i18n } = useTranslation();
     const [recurrenceType, setRecurrenceType] = useState('monthly');
     const [showBoostInput, setShowBoostInput] = useState(false);
     const [boostAmountInput, setBoostAmountInput] = useState('');
+    const metaStorageKey = userId ? `managed_expense_meta_${userId}` : null;
+
     const [expenseMetaMap, setExpenseMetaMap] = useState(() => {
+        if (!metaStorageKey) return {};
         try {
-            const saved = localStorage.getItem('managed_expense_meta');
+            const saved = localStorage.getItem(metaStorageKey);
             return saved ? JSON.parse(saved) : {};
         } catch {
             return {};
@@ -95,10 +99,12 @@ export default function CashFlowTab({
                 ...prev,
                 [expId]: { ...(prev[expId] || {}), ...patch }
             };
-            try {
-                localStorage.setItem('managed_expense_meta', JSON.stringify(next));
-            } catch (e) {
-                console.warn('Failed to save expense metadata:', e);
+            if (metaStorageKey) {
+                try {
+                    localStorage.setItem(metaStorageKey, JSON.stringify(next));
+                } catch (e) {
+                    console.warn('Failed to save expense metadata:', e);
+                }
             }
             return next;
         });
@@ -341,7 +347,9 @@ export default function CashFlowTab({
             thousand: '1000'
         };
 
-        working = working.replace(/(\d),(\d{3})\b/g, '$1$2');
+        while (/(\d),(\d{3})\b/.test(working)) {
+            working = working.replace(/(\d),(\d{3})\b/g, '$1$2');
+        }
 
         const amountRegex = /(?:[$€£]\s*)?(\d+(?:[.,]\d{1,2})?)\s*(?:dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks)?/i;
         const amountMatch = !explicitCostMatch ? working.match(amountRegex) : null;
@@ -356,7 +364,7 @@ export default function CashFlowTab({
             .replace(/\s+/g, ' ')
             .trim();
 
-        let candidateNameSegment = '';
+        let candidateNameSegment;
 
         if (amountMatch) {
             const normalizedAmount = amountMatch[1].replace(',', '.');

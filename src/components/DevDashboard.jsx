@@ -15,12 +15,8 @@ export default function DevDashboard() {
     const [alertMsg, setAlertMsg] = useState('');
     const fetchRequestIdRef = useRef(0);
 
-    useEffect(() => {
-        fetchTickets();
-    }, []);
-
     /**
-     * Fetches all support tickets from the database, ordered by newest first.
+     * Fetches all support tickets ordered by creation date descending.
      * Guards against out-of-order responses overwriting newer state.
      */
     const fetchTickets = async () => {
@@ -32,6 +28,11 @@ export default function DevDashboard() {
         if (requestId !== fetchRequestIdRef.current) return;
         if (!error && data) setTickets(data);
     };
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        fetchTickets();
+    }, []);
 
     /**
      * Updates local state with the staff member's drafted reply for a specific ticket.

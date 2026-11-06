@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { processAIAgentTurn } from '../utils/aiAgentEngine';
 import { getLocalTranscriber, mergeAndResampleTo16kHz } from '../utils/voiceTranscriber';
@@ -6,7 +6,7 @@ import { getLocalTranscriber, mergeAndResampleTo16kHz } from '../utils/voiceTran
 const DEFAULT_WELCOME_MESSAGE = {
     id: 'welcome',
     role: 'assistant',
-    text: 'Hi! I am your **MANAGED AI Assistant**. I can analyze your live budget, tell you how many expenses you have, check if you can afford a purchase, or log expenses and adjust categories directly for you.',
+    text: 'Hi! I am **Sterling**, your MANAGED AI Assistant. I can analyze your live budget, tell you how many expenses you have, check if you can afford a purchase, or log expenses and adjust categories directly for you.',
     suggestions: [
         'How many expenses do I have this month?',
         'Audit my budget',
@@ -15,7 +15,22 @@ const DEFAULT_WELCOME_MESSAGE = {
     ]
 };
 
+const getChatStorageKey = (uid) => (uid ? `managed_ai_chat_history_${uid}` : null);
+
+const loadAccountChatHistory = (uid) => {
+    const key = getChatStorageKey(uid);
+    if (!key) return [DEFAULT_WELCOME_MESSAGE];
+    try {
+        const saved = localStorage.getItem(key);
+        const parsed = saved ? JSON.parse(saved) : null;
+        return Array.isArray(parsed) && parsed.length > 0 ? parsed : [DEFAULT_WELCOME_MESSAGE];
+    } catch {
+        return [DEFAULT_WELCOME_MESSAGE];
+    }
+};
+
 export default function AIAssistantDrawer(props) {
+    const { userId } = props;
     const { t } = useTranslation();
     const [isOpen, setIsOpen] = useState(false);
     const [input, setInput] = useState('');
@@ -23,24 +38,8 @@ export default function AIAssistantDrawer(props) {
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
 
-    // Persist chat messages across page refreshes
-    const [messages, setMessages] = useState(() => {
-        try {
-            const saved = localStorage.getItem('managed_ai_chat_history');
-            const parsed = saved ? JSON.parse(saved) : null;
-            return Array.isArray(parsed) && parsed.length > 0 ? parsed : [DEFAULT_WELCOME_MESSAGE];
-        } catch {
-            return [DEFAULT_WELCOME_MESSAGE];
-        }
-    });
-
-    useEffect(() => {
-        try {
-            localStorage.setItem('managed_ai_chat_history', JSON.stringify(messages.slice(-40)));
-        } catch (e) {
-            console.warn('Failed to persist AI chat history:', e);
-        }
-    }, [messages]);
+    const [messages, setMessages] = useState(() => loadAccountChatHistory(userId));
+    const msgIdCounterRef = useRef(1);
 
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null);
@@ -51,16 +50,10 @@ export default function AIAssistantDrawer(props) {
     const mediaStreamRef = useRef(null);
     const audioChunksRef = useRef([]);
 
-    useEffect(() => {
-        if (isOpen) {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-            inputRef.current?.focus();
-        }
-    }, [messages, isOpen]);
-
-    const releaseMic = () => {
+    const releaseMic = useCallback(() => {
         isRecordingRef.current = false;
         isStartingMicRef.current = false;
+        audioChunksRef.current = [];
         if (processorRef.current) {
             try { processorRef.current.disconnect(); } catch { /* ignore */ }
             processorRef.current = null;
@@ -75,29 +68,64 @@ export default function AIAssistantDrawer(props) {
             });
             mediaStreamRef.current = null;
         }
-    };
+    }, []);
+
+    // Persist chat history only under the authenticated user's key
+    useEffect(() => {
+        const key = getChatStorageKey(userId);
+        if (!key) return;
+        try {
+            localStorage.setItem(key, JSON.stringify(messages.slice(-40)));
+        } catch (e) {
+            console.warn('Failed to persist AI chat history:', e);
+        }
+    }, [messages, userId]);
+
+    useEffect(() => {
+        if (!isOpen) {
+            releaseMic();
+        } else {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            inputRef.current?.focus();
+        }
+    }, [isOpen, releaseMic]);
+
+    useEffect(() => {
+        if (isOpen) {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [messages, isOpen]);
 
     useEffect(() => {
         return () => {
             releaseMic();
         };
-    }, []);
+    }, [releaseMic]);
+
+    const handleCloseDrawer = () => {
+        releaseMic();
+        setIsRecording(false);
+        setIsTranscribing(false);
+        setIsOpen(false);
+    };
 
     const handleSendPrompt = async (promptText) => {
         const cleanPrompt = (promptText ?? input).trim();
         if (!cleanPrompt || isProcessing) return;
 
-        const userMsg = { id: `u_${Date.now()}`, role: 'user', text: cleanPrompt };
+        const nextUserMsgId = `u_${++msgIdCounterRef.current}`;
+        const userMsg = { id: nextUserMsgId, role: 'user', text: cleanPrompt };
         setMessages(prev => [...prev, userMsg]);
         if (promptText === undefined) setInput('');
         setIsProcessing(true);
 
         try {
             const response = await processAIAgentTurn(cleanPrompt, props);
+            const nextAiMsgId = `a_${++msgIdCounterRef.current}`;
             setMessages(prev => [
                 ...prev,
                 {
-                    id: `a_${Date.now()}`,
+                    id: nextAiMsgId,
                     role: 'assistant',
                     text: response.reply,
                     actionBadge: response.actionBadge,
@@ -106,10 +134,11 @@ export default function AIAssistantDrawer(props) {
             ]);
         } catch (err) {
             console.error('AI Assistant error:', err);
+            const nextErrMsgId = `e_${++msgIdCounterRef.current}`;
             setMessages(prev => [
                 ...prev,
                 {
-                    id: `e_${Date.now()}`,
+                    id: nextErrMsgId,
                     role: 'assistant',
                     text: 'Something went wrong while processing that request. Please try again.'
                 }
@@ -122,11 +151,9 @@ export default function AIAssistantDrawer(props) {
     const toggleAssistantVoice = async () => {
         if (isTranscribing) return;
 
-        // 1. SYNCHRONOUS STOP: Immediately flip state so it can NEVER get stuck in a loop
         if (isRecordingRef.current || isRecording || isStartingMicRef.current) {
             const sampleRate = audioContextRef.current?.sampleRate || 16000;
             const chunks = [...audioChunksRef.current];
-            audioChunksRef.current = [];
             releaseMic();
             setIsRecording(false);
 
@@ -160,7 +187,6 @@ export default function AIAssistantDrawer(props) {
 
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-            // If the user clicked Stop while the permission dialog was opening, abort immediately
             if (!isStartingMicRef.current) {
                 stream.getTracks().forEach(track => track.stop());
                 setIsRecording(false);
@@ -216,7 +242,10 @@ export default function AIAssistantDrawer(props) {
         <>
             <button
                 type="button"
-                onClick={() => setIsOpen(prev => !prev)}
+                onClick={() => {
+                    if (isOpen) handleCloseDrawer();
+                    else setIsOpen(true);
+                }}
                 aria-label={t('toggle_ai_assistant', 'Toggle MANAGED AI Assistant')}
                 className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-full bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs shadow-xl transition-all focus:outline-none focus:ring-2 focus:ring-emerald-600/40"
             >
@@ -230,7 +259,7 @@ export default function AIAssistantDrawer(props) {
                 <div
                     role="dialog"
                     aria-label="MANAGED AI Financial Assistant"
-                    onKeyDown={(e) => { if (e.key === 'Escape') setIsOpen(false); }}
+                    onKeyDown={(e) => { if (e.key === 'Escape') handleCloseDrawer(); }}
                     className="fixed bottom-20 right-6 z-50 w-[92vw] sm:w-[400px] h-[540px] max-h-[80vh] bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-fade-in"
                 >
                     <div className="px-4 py-3 bg-emerald-700 text-white flex items-center justify-between">
@@ -252,7 +281,7 @@ export default function AIAssistantDrawer(props) {
                             </button>
                             <button
                                 type="button"
-                                onClick={() => setIsOpen(false)}
+                                onClick={handleCloseDrawer}
                                 aria-label="Close AI Assistant"
                                 className="p-1 rounded hover:bg-emerald-800 text-white transition-colors"
                             >

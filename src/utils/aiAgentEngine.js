@@ -1,8 +1,5 @@
 import { calculateProgressiveTax, getToday } from './constants';
 
-/**
- * Normalizes common user spelling typos so natural commands never miss their intent handler.
- */
 function normalizeTypos(str) {
     return str
         .toLowerCase()
@@ -27,6 +24,29 @@ function normalizeTypos(str) {
         .trim();
 }
 
+/**
+ * Safely parses numeric amounts from natural text, distinguishing thousands separators (1,200)
+ * from decimal commas (45,50) so expense/budget amounts are never corrupted.
+ */
+export function parseMoneyAmount(rawNumberStr) {
+    if (!rawNumberStr) return NaN;
+    let s = String(rawNumberStr).trim();
+    // If both comma and dot exist (e.g. 1,200.50), strip commas
+    if (s.includes(',') && s.includes('.')) {
+        s = s.replace(/,/g, '');
+    } else if (s.includes(',')) {
+        // If comma is followed by 3 digits (e.g. 1,000 or 12,500), it is a thousands separator
+        if (/^\d{1,3}(,\d{3})+$/.test(s)) {
+            s = s.replace(/,/g, '');
+        } else {
+            s = s.replace(',', '.');
+        }
+    }
+    return parseFloat(s);
+}
+
+const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)/;
+
 export async function processAIAgentTurn(rawInput, ctx) {
     const text = (rawInput || '').trim();
     if (!text) {
@@ -42,7 +62,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
     const {
         parsedSalary = 0,
         setSalary,
-        currency = '$',
         setCurrency,
         setCurrencyMode,
         setCustomCurrency,
@@ -51,6 +70,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         totalAutomatedAssets = 0,
         categories = [],
         monthlyExpenses = [],
+        lastAddedExpenseId = null,
         assetAdjustments = [],
         selectedMonth,
         setSelectedMonth,
@@ -85,12 +105,25 @@ export async function processAIAgentTurn(rawInput, ctx) {
         onDirectCreateSandbox
     } = ctx;
 
+    const getExpenseDateForActiveMonth = () => {
+        const today = getToday();
+        if (selectedMonth && !today.startsWith(selectedMonth)) {
+            return `${selectedMonth}-01`;
+        }
+        return today;
+    };
+
     const findCategoryInText = (inputStr) => {
         if (!Array.isArray(categories) || categories.length === 0) return null;
+        // Strip leading logging verbs (like "save") so "Save 20 for lunch" does not match Savings
+        const cleanedLookup = String(inputStr || '').replace(
+            /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b\s*/i,
+            ''
+        );
         const aliases = {
             wants: ['wants', 'want', 'once', 'entertainment', 'lifestyle'],
             needs: ['needs', 'need', 'bills', 'essentials'],
-            savings: ['savings', 'saving', 'save', 'invest', 'investment']
+            savings: ['savings', 'saving', 'invest', 'investment']
         };
         const sorted = [...categories].sort((a, b) => b.name.length - a.name.length);
         for (const cat of sorted) {
@@ -99,7 +132,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             const list = [cName, stem, ...(aliases[cName] || []), ...(aliases[`${stem}s`] || [])];
             for (const word of list) {
                 const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                if (new RegExp(`\\b${escaped}\\b`, 'i').test(inputStr)) {
+                if (new RegExp(`\\b${escaped}\\b`, 'i').test(cleanedLookup)) {
                     return cat;
                 }
             }
@@ -172,9 +205,11 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     // =========================================================================
     // 2. DELETE / REMOVE A WEALTH OBJECTIVE
-    // Matches: "delete the Car chevy wealth objective", "remouve the Car chevy wealth objective"
     // =========================================================================
     if (/\b(delete|remove|erase|clear)\b.*\b(wealth\s+objective|objective|objectives|goal)\b/i.test(lower) && setWealthObjectives) {
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
         if (!Array.isArray(wealthObjectives) || wealthObjectives.length === 0) {
             return {
                 reply: 'You do not have any Wealth Objectives to remove right now.',
@@ -211,9 +246,11 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     // =========================================================================
     // 3. DELETE / REMOVE A SANDBOX SHEET
-    // Matches: "delete the Home office sandbox sheet", "remove the last sandbox sheet"
     // =========================================================================
     if (/\b(delete|remove|erase)\b.*\b(sandbox|calculation\s+sheet|temp\s+sheet|sheet)\b/i.test(lower) && handleDeleteSandboxSheet) {
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
         if (!Array.isArray(sandboxSheets) || sandboxSheets.length === 0) {
             return { reply: 'You do not have any Sandbox calculation sheets to delete.' };
         }
@@ -236,7 +273,10 @@ export async function processAIAgentTurn(rawInput, ctx) {
             };
         }
 
-        await handleDeleteSandboxSheet(targetSheet.id);
+        const ok = await handleDeleteSandboxSheet(targetSheet.id);
+        if (ok === false) {
+            return { reply: `Failed to delete Sandbox Sheet **${targetSheet.title}**. Please try again.` };
+        }
         return {
             reply: `Deleted Sandbox Sheet **${targetSheet.title}** (${formatCurrency(targetSheet.totalBudget)} budget).`,
             actionBadge: `Deleted Sandbox → ${targetSheet.title}`,
@@ -246,9 +286,11 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     // =========================================================================
     // 4. DELETE / REMOVE A SPECIAL OCCASION BUNDLE
-    // Matches: "delete the Trip special occasion", "remove the Trip bundle"
     // =========================================================================
     if (/\b(delete|remove|erase)\b.*\b(special\s+occasion|occasion|bundle)\b/i.test(lower) && handleDeleteBundle) {
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
         if (!Array.isArray(bundles) || bundles.length === 0) {
             return { reply: 'You do not have any Special Occasion bundles to delete.' };
         }
@@ -271,7 +313,10 @@ export async function processAIAgentTurn(rawInput, ctx) {
             };
         }
 
-        await handleDeleteBundle(targetBundle.id);
+        const ok = await handleDeleteBundle(targetBundle.id);
+        if (ok === false) {
+            return { reply: `Failed to delete Special Occasion **${targetBundle.name}**. Please try again.` };
+        }
         return {
             reply: `Deleted Special Occasion **${targetBundle.name}** and released its reserved budget back to your categories.`,
             actionBadge: `Deleted Occasion → ${targetBundle.name}`,
@@ -295,10 +340,10 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
         const allocations = {};
         const splitSummary = [];
-        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d{1,2})?)\s*(?:dollars?|mad|dhs?|euros?)?\s*(?:from|in|out\s+of|off)\s+([a-zA-Z]+)\b/gi;
+        const pairRegex = /[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:dollars?|mad|dhs?|euros?)?\s*(?:from|in|out\s+of|off)\s+([a-zA-Z]+)\b/gi;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
-            const amt = parseFloat(match[1].replace(',', '.'));
+            const amt = parseMoneyAmount(match[1]);
             const catWord = match[2];
             const matchedCat = categories.find(c =>
                 c.name.toLowerCase() === catWord.toLowerCase() ||
@@ -334,7 +379,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 6. CREATE A SANDBOX CALCULATION SHEET (Preserves full multi-word titles like "Home office")
+    // 6. CREATE A SANDBOX CALCULATION SHEET
     // =========================================================================
     if (/\b(create|make|add|new)\b.*\b(sandbox|calculation\s+sheet|temp\s+sheet)\b/i.test(lower)) {
         if (!onDirectCreateSandbox) {
@@ -342,10 +387,10 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const nameMatch = text.match(/\b(?:named|called|titled)\s+([a-zA-Z0-9\s'-]+?)(?=\s+(?:with\b|having\b|budget\b|of\b|at\b|for\b)|\s+[$€£]?\d|[,.]|$)/i);
-        const amtMatch = text.match(/[$€£]?\s*(\d+(?:[.,]\d{1,2})?)/);
+        const amtMatch = text.match(MONEY_TOKEN_REGEX);
         const rawTitle = nameMatch?.[1]?.trim() || 'Sandbox Plan';
         const sheetTitle = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
-        const budgetAmt = amtMatch ? parseFloat(amtMatch[1].replace(',', '.')) : 0;
+        const budgetAmt = amtMatch ? parseMoneyAmount(amtMatch[1]) : 0;
 
         if (!budgetAmt || budgetAmt <= 0) {
             return { reply: 'Please include a master budget amount, e.g., *"Create a sandbox sheet named Home office with a budget of 8000"*.' };
@@ -362,14 +407,17 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 7. CREATE A WEALTH OBJECTIVE (Preserves full multi-word titles like "Car Chevy")
+    // 7. CREATE A WEALTH OBJECTIVE
     // =========================================================================
     if (/\b(create|make|add|new)\b.*\b(wealth\s+objective|objective)\b/i.test(lower) && setWealthObjectives) {
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
         const nameMatch = text.match(/\b(?:named|called|titled)\s+([a-zA-Z0-9\s'-]+?)(?=\s+(?:for\b|with\b|costing\b|cost\b|target\b|at\b|pulling\b|and\s+it\b)|\s+[$€£]?\d|[,.]|$)/i);
         const rawObjTitle = nameMatch?.[1]?.trim() || 'Wealth Objective';
         const objTitle = rawObjTitle.charAt(0).toUpperCase() + rawObjTitle.slice(1);
 
-        const numbers = [...text.matchAll(/[$€£]?\s*(\d+(?:[.,]\d+)?)/g)].map(m => parseFloat(m[1].replace(',', '')));
+        const numbers = [...text.matchAll(/[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d+)?)/g)].map(m => parseMoneyAmount(m[1]));
         const targetCost = numbers[0] || 0;
 
         if (targetCost <= 0) {
@@ -377,10 +425,10 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const autoPulls = {};
-        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d{1,2})?)\s*(?:from|in)\s+([a-zA-Z]+)\b/gi;
+        const pairRegex = /[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:from|in)\s+([a-zA-Z]+)\b/gi;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
-            const amt = parseFloat(match[1].replace(',', '.'));
+            const amt = parseMoneyAmount(match[1]);
             const catWord = match[2];
             const matchedCat = categories.find(c => c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, '')));
             if (matchedCat && amt > 0) autoPulls[matchedCat.id] = amt;
@@ -408,6 +456,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // 8. ONE-MONTH INCOME BOOST (GIFT / BONUS FOR THIS MONTH ONLY)
     // =========================================================================
     if (/\b(clear|remove|reset)\b.*\b(boost|bonus|gift|extra\s+income)\b/i.test(lower) && handleClearMonthlyBoost) {
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
         handleClearMonthlyBoost();
         return {
             reply: `Cleared the temporary income boost for **${selectedMonth}**. Your monthly income is back to your base salary.`,
@@ -417,8 +468,11 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     if (/\b(gift|bonus|boost|extra\s+income|extra\s+money|add\s+to\s+my\s+salary\s+this\s+month|add\s+to\s+this\s+month'?s\s+income)\b/i.test(lower) && handleAddMonthlyBoost) {
-        const amtMatch = text.match(/[$€£]?\s*(\d+(?:[.,]\d{1,2})?)/);
-        const boostVal = amtMatch ? parseFloat(amtMatch[1].replace(',', '.')) : NaN;
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
+        const amtMatch = text.match(MONEY_TOKEN_REGEX);
+        const boostVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
         if (!isNaN(boostVal) && boostVal > 0) {
             handleAddMonthlyBoost(boostVal);
             return {
@@ -441,8 +495,8 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const pctMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:%|percent)/i);
         const requestedPct = pctMatch ? parseFloat(pctMatch[1]) : 0;
 
-        const goalMatch = text.match(/\b(?:goal|target)\s*(?:of|is|to|:)?\s*[$€£]?\s*(\d+(?:[.,]\d+)?)/i);
-        const requestedGoal = goalMatch ? parseFloat(goalMatch[1].replace(',', '')) : 0;
+        const goalMatch = text.match(/\b(?:goal|target)\s*(?:of|is|to|:)?\s*[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d+)?)/i);
+        const requestedGoal = goalMatch ? parseMoneyAmount(goalMatch[1]) : 0;
 
         let extractedName = '';
         const namedMatch = text.match(/\b(?:named|called|titled)\s+([a-zA-Z0-9\s&'-]+?)(?=\s*(?:,|\bit'?s\b|\bits\b|\bit\s+is\b|\bas\s+a\b|\bwhich\s+is\b|\btype\b|\bwealth\b|\basset\b|\bexpense\b|\bgive\s+it\b|\bwith\b|\bat\b|\d+\s*%|$))/i);
@@ -486,6 +540,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     if (/\b(delete|remove)\b.*\bcategory\b/i.test(lower)) {
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
         const targetCat = findCategoryInText(lower);
         if (!targetCat) {
             return { reply: `Which category would you like to delete? Your current categories are: **${categories.map(c => c.name).join(', ')}**.` };
@@ -493,7 +550,10 @@ export async function processAIAgentTurn(rawInput, ctx) {
         if (categories.length <= 1) {
             return { reply: 'You must keep at least one category in your budget, so I cannot delete your final category.' };
         }
-        await handleDeleteCategory(targetCat.id, targetCat.percentage);
+        const ok = await handleDeleteCategory(targetCat.id, targetCat.percentage);
+        if (ok === false) {
+            return { reply: `Failed to delete category **${targetCat.name}**. Please try again.` };
+        }
         return {
             reply: `Deleted the **${targetCat.name}** category and redistributed its **${Math.round(targetCat.percentage)}%** allocation.`,
             actionBadge: `Deleted Category → ${targetCat.name}`,
@@ -503,10 +563,16 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     const renameCatMatch = text.match(/\b(?:rename|change)\s+(?:the\s+)?category\s+([a-zA-Z0-9\s]+?)\s+to\s+([a-zA-Z0-9\s]+)$/i);
     if (renameCatMatch && handleUpdateCategory) {
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
         const targetCat = findCategoryInText(renameCatMatch[1]);
         const newCatName = renameCatMatch[2].trim();
         if (targetCat && newCatName) {
-            await handleUpdateCategory(targetCat.id, newCatName, targetCat.target_goal || 0);
+            const ok = await handleUpdateCategory(targetCat.id, newCatName, targetCat.target_goal || 0);
+            if (ok === false) {
+                return { reply: `Failed to rename category **${targetCat.name}**. Please try again.` };
+            }
             return {
                 reply: `Renamed category **${targetCat.name}** to **${newCatName}**.`,
                 actionBadge: `Renamed → ${newCatName}`,
@@ -516,7 +582,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 10. REMOVE / DELETE / UNDO AN EXPENSE
+    // 10. REMOVE / DELETE / UNDO AN EXPENSE (Uses creation order for last-added expense)
     // =========================================================================
     if (/\b(remove|delete|undo|erase|cancel)\b.*\b(expense|expenses|transaction|item|purchase|last|latest|recent)\b/i.test(lower) || /\b(remove|delete)\s+the\s+last\b/i.test(lower)) {
         if (isReadOnly) {
@@ -527,9 +593,23 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const isLastIntent = /\b(last|latest|recent|previous|just\s+added|i\s+added)\b/i.test(lower);
-        let targetExp = isLastIntent ? monthlyExpenses[0] : null;
+        let targetExp = null;
 
-        if (!targetExp) {
+        if (isLastIntent) {
+            if (lastAddedExpenseId) {
+                targetExp = monthlyExpenses.find(e => e.id === lastAddedExpenseId) || null;
+            }
+            if (!targetExp) {
+                // Fall back to creation timestamp order (created_at) rather than expense_date order
+                const byCreationOrder = [...monthlyExpenses].sort((a, b) => {
+                    if (a.created_at && b.created_at) {
+                        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+                    }
+                    return 0;
+                });
+                targetExp = byCreationOrder[0];
+            }
+        } else {
             const sortedExps = [...monthlyExpenses].sort((a, b) => b.name.length - a.name.length);
             targetExp = sortedExps.find(e => lower.includes(e.name.toLowerCase()));
         }
@@ -541,7 +621,10 @@ export async function processAIAgentTurn(rawInput, ctx) {
             };
         }
 
-        await handleDeleteExpense(targetExp.id);
+        const ok = await handleDeleteExpense(targetExp.id);
+        if (ok === false) {
+            return { reply: `Failed to remove **${targetExp.name}**. Please try again.` };
+        }
         return {
             reply: `Removed **${targetExp.name}** (${formatCurrency(targetExp.cost)}) from **${targetExp.category}**. That **${formatCurrency(targetExp.cost)}** is back in your available balance!`,
             actionBadge: `Removed → ${targetExp.name} (${formatCurrency(targetExp.cost)})`,
@@ -554,14 +637,20 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     const renameExpMatch = text.match(/\b(?:rename|change\s+the\s+name\s+of)\s+(?:the\s+)?(?:expense\s+)?(.+?)\s+to\s+([a-zA-Z0-9\s']+)$/i);
     if (renameExpMatch && handleUpdateExpense && !/\bcategory\b/i.test(lower)) {
+        if (isReadOnly) {
+            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+        }
         const searchName = renameExpMatch[1].trim().toLowerCase();
         const newName = renameExpMatch[2].trim();
         const targetExp = monthlyExpenses.find(e => e.name.toLowerCase().includes(searchName) || searchName.includes(e.name.toLowerCase()));
         if (targetExp && newName) {
-            await handleUpdateExpense(targetExp.id, {
+            const ok = await handleUpdateExpense(targetExp.id, {
                 ...targetExp,
                 name: newName.charAt(0).toUpperCase() + newName.slice(1)
             });
+            if (ok === false) {
+                return { reply: `Failed to update **${targetExp.name}**. Please try again.` };
+            }
             return {
                 reply: `Updated expense name from **${targetExp.name}** to **${newName.charAt(0).toUpperCase() + newName.slice(1)}**.`,
                 actionBadge: `Edited → ${newName}`,
@@ -605,9 +694,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
     }
 
-    const salaryCmdMatch = lower.match(/\b(?:set|change|update|make)\s+(?:my\s+)?(?:monthly\s+)?(?:salary|income|paycheck)\s+(?:to|as|at)?\s*[$€£]?\s*(\d+(?:[.,]\d+)?)/i);
+    const salaryCmdMatch = text.match(/\b(?:set|change|update|make)\s+(?:my\s+)?(?:monthly\s+)?(?:salary|income|paycheck)\s+(?:to|as|at)?\s*[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d+)?)/i);
     if (salaryCmdMatch && setSalary) {
-        const newSal = parseFloat(salaryCmdMatch[1].replace(',', ''));
+        const newSal = parseMoneyAmount(salaryCmdMatch[1]);
         if (!isNaN(newSal) && newSal >= 0) {
             setSalary(newSal.toString());
             return {
@@ -685,6 +774,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     if (/^(?:please\s+)?(lock|unlock)\s+([a-zA-Z\s]+)$/i.test(lower) && toggleIndividualLock) {
+        if (isReadOnly) return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
         const isUnlock = /^unlock/i.test(lower);
         const targetCat = findCategoryInText(lower);
         if (targetCat) {
@@ -730,8 +820,8 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const batchFlag = /\b(batch|batched|month\s+end)\b/i.test(lower);
 
         const matchedCat = findCategoryInText(lower) || categories.find(c => c.type !== 'asset') || categories[0];
-        const amtMatch = text.match(/[$€£]?\s*(\d+(?:[.,]\d{1,2})?)/);
-        const costVal = amtMatch ? parseFloat(amtMatch[1].replace(',', '.')) : NaN;
+        const amtMatch = text.match(MONEY_TOKEN_REGEX);
+        const costVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
 
         if (!matchedCat || isNaN(costVal) || costVal <= 0) {
             return {
@@ -774,7 +864,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 name: cleanItem,
                 cost: costVal,
                 categoryId: matchedCat.id,
-                expenseDate: getToday(),
+                expenseDate: getExpenseDateForActiveMonth(),
                 isRecurring: recFlag,
                 isBatched: batchFlag
             });
@@ -796,7 +886,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 14. ANALYST ENGINE: DAILY SAFE-SPEND PACE (Placed ABOVE generic "how much spend"!)
+    // 14. ANALYST ENGINE: DAILY SAFE-SPEND PACE
     // =========================================================================
     if (/\b(per\s+day|daily|a\s+day|safe\s+to\s+spend|burn\s+rate|pace)\b/i.test(lower)) {
         const now = new Date();
@@ -902,8 +992,8 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // 18. ANALYST ENGINE: AFFORDABILITY CHECK
     // =========================================================================
     if (/\b(can\s+i\s+afford|afford|do\s+i\s+have\s+enough\s+for|what\s+if\s+i\s+spend)\b/i.test(lower)) {
-        const amtMatch = text.match(/[$€£]?\s*(\d+(?:[.,]\d{1,2})?)/);
-        const testCost = amtMatch ? parseFloat(amtMatch[1].replace(',', '.')) : NaN;
+        const amtMatch = text.match(MONEY_TOKEN_REGEX);
+        const testCost = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
         const targetCat = findCategoryInText(lower);
 
         if (isNaN(testCost) || testCost <= 0) {
@@ -1006,11 +1096,13 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 21. ANALYST ENGINE: CRASH-PROOF TAX ESTIMATOR
+    // 21. ANALYST ENGINE: ACCURATE PROGRESSIVE TAX ESTIMATOR
     // =========================================================================
     if (/\b(tax|taxes)\b/i.test(lower)) {
-        const amtMatch = text.match(/[$€£]?\s*(\d+(?:[.,]\d+)?)/);
-        const annualIncome = amtMatch ? parseFloat(amtMatch[1].replace(/,/g, '')) : (parsedSalary * 12);
+        // Ignore 4-digit calendar years like "2026" when looking for an explicit income amount
+        const withoutYear = text.replace(/\b20\d{2}\b/g, ' ');
+        const amtMatch = withoutYear.match(MONEY_TOKEN_REGEX);
+        const annualIncome = amtMatch ? parseMoneyAmount(amtMatch[1]) : (parsedSalary * 12);
 
         if (!annualIncome || annualIncome <= 0) {
             return {
@@ -1030,8 +1122,22 @@ export async function processAIAgentTurn(rawInput, ctx) {
             netIncome = Math.max(0, annualIncome - totalTax);
             effectiveRate = annualIncome > 0 ? (totalTax / annualIncome) * 100 : 0;
         } else if (rawRes && typeof rawRes === 'object') {
-            totalTax = Number(rawRes.totalTax ?? rawRes.tax ?? rawRes.estimatedTax ?? rawRes.taxAmount ?? 0);
-            netIncome = Number(rawRes.netIncome ?? rawRes.net ?? rawRes.takeHome ?? Math.max(0, annualIncome - totalTax));
+            const bracketSum = Array.isArray(rawRes.breakdown || rawRes.brackets)
+                ? (rawRes.breakdown || rawRes.brackets).reduce((s, b) => s + Number(b.tax ?? b.taxOwed ?? b.amount ?? 0), 0)
+                : 0;
+            const rawNet = rawRes.netIncome ?? rawRes.netPay ?? rawRes.afterTaxIncome ?? rawRes.takeHome ?? rawRes.net;
+            const derivedFromNet = rawNet !== undefined ? Math.max(0, annualIncome - Number(rawNet)) : 0;
+
+            totalTax = Number(
+                rawRes.totalTax ??
+                rawRes.taxOwed ??
+                rawRes.tax ??
+                rawRes.estimatedTax ??
+                rawRes.annualTax ??
+                rawRes.taxAmount ??
+                (bracketSum > 0 ? bracketSum : derivedFromNet)
+            );
+            netIncome = rawNet !== undefined ? Number(rawNet) : Math.max(0, annualIncome - totalTax);
             effectiveRate = Number(
                 rawRes.effectiveRate ??
                 rawRes.effectiveTaxRate ??

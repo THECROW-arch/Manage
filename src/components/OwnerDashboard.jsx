@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
 
 /**
@@ -13,7 +13,6 @@ export default function OwnerDashboard() {
     const [errorMsg, setErrorMsg] = useState('');
     const [toastMsg, setToastMsg] = useState('');
 
-    // Interactive User Manager Filters
     const [searchQuery, setSearchQuery] = useState('');
     const [roleFilter, setRoleFilter] = useState('all');
     const [tierFilter, setTierFilter] = useState('all');
@@ -21,26 +20,16 @@ export default function OwnerDashboard() {
 
     const fetchRequestIdRef = useRef(0);
 
-    useEffect(() => {
-        fetchCommandCenterData();
-    }, []);
-
-    useEffect(() => {
-        if (!toastMsg) return;
-        const timer = setTimeout(() => setToastMsg(''), 3500);
-        return () => clearTimeout(timer);
-    }, [toastMsg]);
-
-    const fetchCommandCenterData = async () => {
+    const fetchCommandCenterData = useCallback(async () => {
         const reqId = ++fetchRequestIdRef.current;
+        await Promise.resolve();
         setLoading(true);
         setErrorMsg('');
 
         try {
-            // 1. Fetch RPC metrics, full profiles directory, and support tickets in parallel
-            const [rpcRes, profilesRes, ticketsRes] = await Promise.all([
+            const [rpcRes, ownerProfilesRes, ticketsRes] = await Promise.all([
                 supabase.rpc('get_saas_metrics_for_owner'),
-                supabase.from('profiles').select('*'),
+                supabase.rpc('get_all_profiles_for_owner'),
                 supabase.from('support_tickets').select('*')
             ]);
 
@@ -50,14 +39,13 @@ export default function OwnerDashboard() {
                 setRpcMetrics(rpcRes.data);
             }
 
-            // Merge profile rows with any extra fields returned by the RPC user list
             const rpcUserList = Array.isArray(rpcRes.data?.users)
                 ? rpcRes.data.users
                 : Array.isArray(rpcRes.data)
                 ? rpcRes.data
                 : [];
 
-            const profileRows = Array.isArray(profilesRes.data) ? profilesRes.data : [];
+            const profileRows = Array.isArray(ownerProfilesRes.data) ? ownerProfilesRes.data : [];
             const mergedMap = new Map();
 
             rpcUserList.forEach((u) => {
@@ -83,14 +71,13 @@ export default function OwnerDashboard() {
                 const rawRole = (u.role || 'user').toLowerCase();
                 const cleanRole = rawRole === 'customer' ? 'user' : rawRole;
                 const cleanTier = (u.subscription_tier || u.tier || 'free').toLowerCase();
-                const cleanStatus = u.status || 'active';
 
                 return {
                     ...u,
                     displayName: rawName,
                     role: cleanRole,
                     subscription_tier: cleanTier,
-                    accountStatus: cleanStatus,
+                    accountStatus: 'active',
                     current_streak: Number(u.current_streak || 0),
                     longest_streak: Number(u.longest_streak || 0),
                     salary: Number(u.salary || 0),
@@ -102,8 +89,8 @@ export default function OwnerDashboard() {
             setUsers(normalizedUsers);
             setTickets(Array.isArray(ticketsRes.data) ? ticketsRes.data : []);
 
-            if (profilesRes.error && rpcRes.error) {
-                setErrorMsg(profilesRes.error.message || rpcRes.error.message);
+            if (ownerProfilesRes.error && rpcRes.error) {
+                setErrorMsg(ownerProfilesRes.error.message || rpcRes.error.message);
             }
         } catch (err) {
             if (reqId === fetchRequestIdRef.current) {
@@ -114,7 +101,18 @@ export default function OwnerDashboard() {
                 setLoading(false);
             }
         }
-    };
+    }, []);
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        fetchCommandCenterData();
+    }, [fetchCommandCenterData]);
+
+    useEffect(() => {
+        if (!toastMsg) return;
+        const timer = setTimeout(() => setToastMsg(''), 3500);
+        return () => clearTimeout(timer);
+    }, [toastMsg]);
 
     const handleUpdateUserAccess = async (targetUserId, updates) => {
         setSavingUserId(targetUserId);
@@ -125,10 +123,11 @@ export default function OwnerDashboard() {
         );
 
         try {
-            const { error } = await supabase
-                .from('profiles')
-                .update(updates)
-                .eq('user_id', targetUserId);
+            const { error } = await supabase.rpc('owner_update_user_profile', {
+                target_user_id: targetUserId,
+                new_role: updates.role ?? null,
+                new_tier: updates.subscription_tier ?? null
+            });
 
             if (error) throw error;
 
@@ -167,9 +166,9 @@ export default function OwnerDashboard() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     };
 
-    // Computed Executive Metrics
     const totalUsers = users.length || Number(rpcMetrics?.total_users || 0);
     const ownerCount = users.filter((u) => u.role === 'owner').length;
     const devCount = users.filter((u) => u.role === 'dev').length;
@@ -183,7 +182,6 @@ export default function OwnerDashboard() {
     const resolvedTickets = tickets.filter((t) => t.status === 'resolved').length;
     const resolutionRate = totalTickets > 0 ? Math.round((resolvedTickets / totalTickets) * 100) : 100;
 
-    // Filtered Directory List
     const filteredUsers = users.filter((u) => {
         const matchesSearch =
             u.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -210,7 +208,6 @@ export default function OwnerDashboard() {
 
     return (
         <div className="space-y-8 pb-12">
-            {/* Executive Command Header */}
             <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-zinc-900 via-zinc-900 to-emerald-950 text-white p-6 sm:p-8 border border-zinc-800 shadow-xl">
                 <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
                     <div>
@@ -222,7 +219,7 @@ export default function OwnerDashboard() {
                             Executive Platform Overview
                         </h1>
                         <p className="text-xs sm:text-sm text-zinc-400 mt-1 max-w-2xl">
-                            Monitor global user growth, manage staff permissions (Owner / Dev / User), oversee subscription tiers, and audit customer support SLA performance.
+                            Monitor global user growth, manage staff permissions (Owner / Dev / Special / User), oversee subscription tiers, and audit customer support SLA performance.
                         </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2.5 shrink-0">
@@ -244,7 +241,6 @@ export default function OwnerDashboard() {
                 </div>
             </div>
 
-            {/* Alerts & Toast Notifications */}
             {errorMsg && (
                 <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-center justify-between">
                     <span>{errorMsg}</span>
@@ -259,7 +255,6 @@ export default function OwnerDashboard() {
                 </div>
             )}
 
-            {/* 4 Primary Executive KPI Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-white dark:bg-zinc-900 p-5 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-sm">
                     <div className="flex items-center justify-between mb-2">
@@ -267,7 +262,7 @@ export default function OwnerDashboard() {
                             Total Accounts
                         </span>
                         <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
-                            100% Verified
+                            Verified
                         </span>
                     </div>
                     <p className="text-3xl font-black text-gray-900 dark:text-white">{totalUsers}</p>
@@ -326,7 +321,6 @@ export default function OwnerDashboard() {
                 </div>
             </div>
 
-            {/* Platform Role & Tier Distribution Breakdown */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-sm space-y-4">
                     <h2 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-400">
@@ -389,7 +383,6 @@ export default function OwnerDashboard() {
                 </div>
             </div>
 
-            {/* Interactive User Directory & Access Control */}
             <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-gray-200 dark:border-zinc-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                     <div>
@@ -401,7 +394,6 @@ export default function OwnerDashboard() {
                         </p>
                     </div>
 
-                    {/* Search & Filters */}
                     <div className="flex flex-wrap items-center gap-2.5">
                         <input
                             type="text"
@@ -435,7 +427,6 @@ export default function OwnerDashboard() {
                     </div>
                 </div>
 
-                {/* User Table / Cards */}
                 <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                         <thead>
@@ -459,7 +450,6 @@ export default function OwnerDashboard() {
                                 filteredUsers.map((u) => {
                                     const isSaving = savingUserId === u.user_id;
                                     const isSpecialRole = u.role === 'special';
-                                    const isSuspended = u.accountStatus === 'suspended';
 
                                     const roleBadgeClass =
                                         u.role === 'owner'
@@ -475,7 +465,6 @@ export default function OwnerDashboard() {
                                             key={u.user_id}
                                             className="hover:bg-gray-50/80 dark:hover:bg-zinc-950/40 transition-colors"
                                         >
-                                            {/* Identity */}
                                             <td className="py-4 px-6">
                                                 <div className="flex items-center gap-3">
                                                     <div className="w-9 h-9 rounded-full bg-emerald-100 dark:bg-emerald-950 border border-emerald-300 dark:border-emerald-500/30 flex items-center justify-center text-emerald-700 dark:text-emerald-400 font-black text-sm shrink-0">
@@ -497,32 +486,13 @@ export default function OwnerDashboard() {
                                                 </div>
                                             </td>
 
-                                            {/* Account Status */}
                                             <td className="py-4 px-4">
-                                                <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                        setUsers((prev) =>
-                                                            prev.map((item) =>
-                                                                item.user_id === u.user_id
-                                                                    ? { ...item, accountStatus: isSuspended ? 'active' : 'suspended' }
-                                                                    : item
-                                                            )
-                                                        )
-                                                    }
-                                                    title="Click to toggle account status"
-                                                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border transition-colors ${
-                                                        isSuspended
-                                                            ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-500/30'
-                                                            : 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30'
-                                                    }`}
-                                                >
-                                                    <span className={`w-1.5 h-1.5 rounded-full ${isSuspended ? 'bg-rose-500' : 'bg-emerald-500'}`} />
-                                                    {isSuspended ? 'Suspended' : 'Active'}
-                                                </button>
+                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30">
+                                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                                    Active
+                                                </span>
                                             </td>
 
-                                            {/* Activity & Streak */}
                                             <td className="py-4 px-4">
                                                 <div className="flex flex-col">
                                                     <span className="font-semibold text-gray-800 dark:text-zinc-200">
@@ -534,7 +504,6 @@ export default function OwnerDashboard() {
                                                 </div>
                                             </td>
 
-                                            {/* Joined Date */}
                                             <td className="py-4 px-4 text-gray-600 dark:text-zinc-400 font-medium">
                                                 {u.created_at
                                                     ? new Date(u.created_at).toLocaleDateString(undefined, {
@@ -545,7 +514,6 @@ export default function OwnerDashboard() {
                                                     : 'Verified Member'}
                                             </td>
 
-                                            {/* Subscription Tier Selector */}
                                             <td className="py-4 px-4">
                                                 {isSpecialRole ? (
                                                     <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-500/40 text-[11px] font-black text-amber-800 dark:text-amber-300">
@@ -569,7 +537,6 @@ export default function OwnerDashboard() {
                                                 )}
                                             </td>
 
-                                            {/* Role Selector */}
                                             <td className="py-4 px-6 text-right">
                                                 <select
                                                     aria-label={`Role for ${u.displayName}`}

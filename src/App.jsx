@@ -25,7 +25,7 @@ export default function App() {
   const { t, i18n } = useTranslation();
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryPassword, setRecoveryPassword] = useState('');
-  
+
   // Logout Confirmation State
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const logoutDialogRef = useRef(null);
@@ -76,7 +76,7 @@ export default function App() {
   });
 
   const [closedMonths, setClosedMonths] = useState([]);
-  
+
   // Persisted Active Tab State (Survives Refreshes)
   const [activeTab, setActiveTab] = useState(() => {
     try { return localStorage.getItem('activeTab') || 'cashflow'; }
@@ -88,7 +88,7 @@ export default function App() {
     catch (e) { console.warn('Failed to persist activeTab:', e); }
   }, [activeTab]);
 
-  const [plannerSubTab, setPlannerSubTab] = useState('occasions'); 
+  const [plannerSubTab, setPlannerSubTab] = useState('occasions');
 
   // Support Tab Persisted Draft & Submission State (Isolated by authenticated user ID)
   const [supportDraft, setSupportDraft] = useState({ userId: null, subject: '', category: 'general', message: '' });
@@ -103,7 +103,7 @@ export default function App() {
   const [newCategoryType, setNewCategoryType] = useState('expense');
   const [newCategoryGoal, setNewCategoryGoal] = useState('');
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
-  const [exportScope, setExportScope] = useState('month'); 
+  const [exportScope, setExportScope] = useState('month');
   const [exportMonth, setExportMonth] = useState(getCurrentMonth());
   const [exportDate, setExportDate] = useState(getToday());
   const [expenses, setExpenses] = useState([]);
@@ -117,7 +117,6 @@ export default function App() {
   const [adjDate, setAdjDate] = useState(getToday());
   const [adjNote, setAdjNote] = useState('');
   const [adjCatId, setAdjCatId] = useState('');
-  const [editingAdj, setEditingAdj] = useState(null);
 
   const [currency, setCurrency] = useState('$');
   const [currencyMode, setCurrencyMode] = useState('$');
@@ -173,7 +172,7 @@ export default function App() {
     catch (e) { console.warn('Failed to save lockedCats:', e); }
   }, [lockedCategories]);
 
-  
+
 
   useEffect(() => {
     if (alertMsg) {
@@ -217,7 +216,7 @@ export default function App() {
       if (profile) {
         const loadedRole = profile.role || 'user';
         setUserRole(loadedRole);
-        
+
         // Validate saved tab access against loaded role safely
         setActiveTab(currentTab => {
           if (currentTab === 'dev_dashboard' && loadedRole !== 'dev' && loadedRole !== 'owner') return 'cashflow';
@@ -481,41 +480,78 @@ export default function App() {
     return currency.length > 1 ? `${currency} ${num}` : `${currency}${num}`;
   };
 
-  // Month-Scoped Temporary Income Boosts (e.g. { "2026-11": 500 } — applies only to that month!)
-  const [monthlyIncomeBoosts, setMonthlyIncomeBoosts] = useState(() => {
-    try {
-      const saved = localStorage.getItem('managed_monthly_boosts');
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
-  });
+  const activeUserId = session?.user?.id || null;
+  const [boostOverridesByUser, setBoostOverridesByUser] = useState({});
+  const [objectivesByUser, setObjectivesByUser] = useState({});
+  const [lastExpenseByUser, setLastExpenseByUser] = useState({});
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('managed_monthly_boosts', JSON.stringify(monthlyIncomeBoosts));
-    } catch (e) {
-      console.warn('Failed to save monthlyIncomeBoosts:', e);
-    }
-  }, [monthlyIncomeBoosts]);
+  const monthlyIncomeBoosts = activeUserId
+    ? (boostOverridesByUser[activeUserId] ?? (() => {
+      try {
+        const saved = localStorage.getItem(`managed_monthly_boosts_${activeUserId}`);
+        return saved ? JSON.parse(saved) : {};
+      } catch {
+        return {};
+      }
+    })())
+    : {};
 
-  // Wealth Objectives (e.g. "Car Chevy" — 240,000 target with auto category pulls & manual top-ups)
-  const [wealthObjectives, setWealthObjectives] = useState(() => {
-    try {
-      const saved = localStorage.getItem('managed_wealth_objectives');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const setMonthlyIncomeBoosts = (updater) => {
+    if (!activeUserId) return;
+    setBoostOverridesByUser(prev => {
+      const current = prev[activeUserId] ?? monthlyIncomeBoosts;
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      try {
+        localStorage.setItem(`managed_monthly_boosts_${activeUserId}`, JSON.stringify(next));
+      } catch (e) {
+        console.warn('Failed to save monthlyIncomeBoosts:', e);
+      }
+      return { ...prev, [activeUserId]: next };
+    });
+  };
 
-  useEffect(() => {
+  const wealthObjectives = activeUserId
+    ? (objectivesByUser[activeUserId] ?? (() => {
+      try {
+        const saved = localStorage.getItem(`managed_wealth_objectives_${activeUserId}`);
+        return saved ? JSON.parse(saved) : [];
+      } catch {
+        return [];
+      }
+    })())
+    : [];
+
+  const setWealthObjectives = (updater) => {
+    if (!activeUserId) return;
+    setObjectivesByUser(prev => {
+      const current = prev[activeUserId] ?? wealthObjectives;
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      try {
+        localStorage.setItem(`managed_wealth_objectives_${activeUserId}`, JSON.stringify(next));
+      } catch (e) {
+        console.warn('Failed to save wealthObjectives:', e);
+      }
+      return { ...prev, [activeUserId]: next };
+    });
+  };
+
+  const lastAddedExpenseId = activeUserId
+    ? (lastExpenseByUser[activeUserId] ?? (() => {
+      try {
+        return localStorage.getItem(`managed_last_expense_${activeUserId}`) || null;
+      } catch {
+        return null;
+      }
+    })())
+    : null;
+
+  const recordLastAddedExpenseId = (expId) => {
+    if (!activeUserId || !expId) return;
+    setLastExpenseByUser(prev => ({ ...prev, [activeUserId]: String(expId) }));
     try {
-      localStorage.setItem('managed_wealth_objectives', JSON.stringify(wealthObjectives));
-    } catch (e) {
-      console.warn('Failed to save wealthObjectives:', e);
-    }
-  }, [wealthObjectives]);
+      localStorage.setItem(`managed_last_expense_${activeUserId}`, String(expId));
+    } catch { /* ignore */ }
+  };
 
   const baseSalary = parseFloat(salary) || 0;
   const currentMonthBoost = parseFloat(monthlyIncomeBoosts[selectedMonth]) || 0;
@@ -544,7 +580,6 @@ export default function App() {
     });
   };
   const monthlyExpenses = expenses.filter(e => e.expense_date && e.expense_date.startsWith(selectedMonth));
-  const expenseCategories = categories.filter(c => c.type !== 'asset');
   const assetCategories = categories.filter(c => c.type === 'asset');
 
   const historyFeed = [
@@ -1156,51 +1191,40 @@ export default function App() {
   };
 
   const handleDeleteBundle = async (bundleId) => {
-    if (isReadOnly) return;
+    if (isReadOnly) return false;
+    const prevBundles = [...bundles];
     setBundles(bundles.filter(b => b.id !== bundleId));
-    setExpenses(expenses.filter(e => e.bundle_id !== bundleId));
     try {
-      await supabase.from('expenses').delete().eq('bundle_id', bundleId);
-      await supabase.from('bundles').delete().eq('id', bundleId);
+      const { error } = await supabase.from('bundles').delete().eq('id', bundleId);
+      if (error) throw error;
+      return true;
     } catch {
-      setAlertMsg(t('err_deleting_occasion'));
+      setBundles(prevBundles);
+      setAlertMsg(t('err_del_bundle', 'Failed to delete special occasion.'));
+      return false;
     }
   };
 
-  // --- SANDBOX / TEMPORARY CALCULATIONS LOGIC ---
-  const activeSheet = sandboxSheets.find(s => s.id === activeSheetId) || sandboxSheets[0] || null;
-
-  /**
-   * Deletes a sandbox calculation sheet from both local state and the Supabase database.
-   * @param {string} sheetId - The UUID of the sandbox sheet to delete.
-   */
   const handleDeleteSandboxSheet = async (sheetId) => {
-    if (isReadOnly) {
-      setAlertMsg(t('err_delete_sandbox_locked'));
-      return;
+    if (isReadOnly) return false;
+    const prevSheets = [...sandboxSheets];
+    const remaining = sandboxSheets.filter(s => s.id !== sheetId);
+    setSandboxSheets(remaining);
+    if (activeSheetId === sheetId) {
+      setActiveSheetId(remaining.length > 0 ? remaining[0].id : null);
     }
-    const previousIndex = sandboxSheets.findIndex(sheet => sheet.id === sheetId);
-    const deletedSheet = sandboxSheets[previousIndex];
-    if (!deletedSheet) return;
-    const previousActiveSheetId = activeSheetId;
-    setSandboxSheets(current => current.filter(x => x.id !== sheetId));
-    if (activeSheetId === sheetId) setActiveSheetId(null);
     try {
       const { error } = await supabase.from('sandbox_sheets').delete().eq('id', sheetId);
       if (error) throw error;
+      return true;
     } catch {
-      setSandboxSheets(current => {
-        if (current.some(sheet => sheet.id === sheetId)) return current;
-        const restored = [...current];
-        restored.splice(previousIndex, 0, deletedSheet);
-        return restored;
-      });
-      if (previousActiveSheetId === sheetId) {
-        setActiveSheetId(current => current === null ? previousActiveSheetId : current);
-      }
-      setAlertMsg(t('err_delete_sandbox_db'));
+      setSandboxSheets(prevSheets);
+      setAlertMsg(t('err_del_sheet'));
+      return false;
     }
   };
+
+  const activeSheet = sandboxSheets.find(s => s.id === activeSheetId) || sandboxSheets[0] || null;
 
   const handleCreateSandboxSheet = async (e) => {
     e.preventDefault();
@@ -1325,7 +1349,7 @@ export default function App() {
       }
     }
 
-    const tempId = Date.now().toString();
+    const tempId = crypto.randomUUID();
     const newExpenseObj = {
       id: tempId, user_id: session.user.id, name: expenseName, cost: cost,
       category_id: expenseCategoryId, category: categories.find(c => c.id === expenseCategoryId).name,
@@ -1410,13 +1434,17 @@ export default function App() {
   };
 
   const handleDeleteExpense = async (id) => {
-    if (isReadOnly) return;
-    setExpenses(expenses.filter(e => e.id !== id));
+    if (isReadOnly) return false;
+    const prevExpenses = [...expenses];
+    setExpenses(expenses.filter(exp => exp.id !== id));
     try {
       const { error } = await supabase.from('expenses').delete().eq('id', id);
       if (error) throw error;
+      return true;
     } catch {
-      setAlertMsg(t('err_db_delete_exp'));
+      setExpenses(prevExpenses);
+      setAlertMsg(t('err_del_exp', 'Failed to delete expense.'));
+      return false;
     }
   };
 
@@ -1508,14 +1536,17 @@ export default function App() {
     wealthHistoryMap[month] += parseFloat(adj.amount);
   });
 
-  let runningWealth = 0;
-  const wealthHistoryData = Object.keys(wealthHistoryMap).sort().map(month => {
-    runningWealth += wealthHistoryMap[month];
-    return {
-      month: new Date(month + '-01').toLocaleString(i18n.language || 'default', { month: 'short', year: '2-digit' }),
-      wealth: runningWealth
-    };
-  });
+  const wealthHistoryData = Object.keys(wealthHistoryMap)
+    .sort()
+    .reduce((acc, month) => {
+      const prevWealth = acc.length > 0 ? acc[acc.length - 1].wealth : 0;
+      const nextWealth = prevWealth + wealthHistoryMap[month];
+      acc.push({
+        month: new Date(month + '-01').toLocaleString(i18n.language || 'default', { month: 'short', year: '2-digit' }),
+        wealth: nextWealth
+      });
+      return acc;
+    }, []);
 
   if (!session) return <Auth />;
   if (loadingData) {
@@ -1528,7 +1559,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-zinc-950 text-gray-900 dark:text-zinc-300 font-sans overflow-hidden transition-colors duration-300">
-      
+
       {/* Logout Confirmation Modal */}
       {showLogoutConfirm && (
         <div
@@ -1553,15 +1584,15 @@ export default function App() {
               {t('confirm_sign_out_prompt', 'Are you sure you want to securely sign out of your account?')}
             </p>
             <div className="flex gap-3 justify-center">
-              <button 
+              <button
                 autoFocus
-                onClick={() => setShowLogoutConfirm(false)} 
+                onClick={() => setShowLogoutConfirm(false)}
                 className="px-5 py-2.5 rounded-lg font-bold text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 transition-colors w-1/2"
               >
                 {t('cancel', 'Cancel')}
               </button>
-              <button 
-                onClick={confirmLogout} 
+              <button
+                onClick={confirmLogout}
                 className="px-5 py-2.5 rounded-lg font-bold text-sm bg-rose-600 text-white hover:bg-rose-700 transition-colors w-1/2 shadow-sm"
               >
                 {t('sign_out', 'Sign Out')}
@@ -1574,51 +1605,51 @@ export default function App() {
       {/* Password Recovery Forced Modal */}
       {showRecoveryModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in" role="dialog" aria-modal="true">
-            <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6">
-               <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">
-                   {t('auth_subtitle_recovery', 'Reset Your Password')}
-               </h2>
-               <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">
-                   {t('auth_recovery_prompt', 'Please enter a new, secure password to complete your recovery.')}
-               </p>
-               <form onSubmit={async (e) => {
-                   e.preventDefault();
-                   // Add a basic loading state check here if you want to use a local state variable
-                   const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
-                   if (error) {
-                       alert(t('err_password_update', 'Failed to update password: ') + error.message);
-                   } else {
-                       alert(t('succ_password_update', 'Password updated successfully!'));
-                       setShowRecoveryModal(false);
-                   }
-               }}>
-                   <input 
-                       type="password" 
-                       value={recoveryPassword}
-                       onChange={(e) => setRecoveryPassword(e.target.value)}
-                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
-                       placeholder={t('new_password', 'New Password')}
-                       aria-label={t('new_password', 'New Password')}
-                       required minLength={6}
-                   />
-                   <button 
-                       type="submit" 
-                       className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold shadow-md"
-                   >
-                      {t('save_password', 'Save Password')}
-                   </button>
-               </form>
-            </div>
+          <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6">
+            <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">
+              {t('auth_subtitle_recovery', 'Reset Your Password')}
+            </h2>
+            <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">
+              {t('auth_recovery_prompt', 'Please enter a new, secure password to complete your recovery.')}
+            </p>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              // Add a basic loading state check here if you want to use a local state variable
+              const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
+              if (error) {
+                alert(t('err_password_update', 'Failed to update password: ') + error.message);
+              } else {
+                alert(t('succ_password_update', 'Password updated successfully!'));
+                setShowRecoveryModal(false);
+              }
+            }}>
+              <input
+                type="password"
+                value={recoveryPassword}
+                onChange={(e) => setRecoveryPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
+                placeholder={t('new_password', 'New Password')}
+                aria-label={t('new_password', 'New Password')}
+                required minLength={6}
+              />
+              <button
+                type="submit"
+                className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold shadow-md"
+              >
+                {t('save_password', 'Save Password')}
+              </button>
+            </form>
+          </div>
         </div>
       )}
-      
+
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         setAlertMsg={setAlertMsg}
         currentStreak={currentStreak}
         longestStreak={longestStreak}
-        handleLogout={handleLogoutRequest} 
+        handleLogout={handleLogoutRequest}
         username={username}
         userRole={userRole}
       />
@@ -1711,6 +1742,8 @@ export default function App() {
               editingExpense={editingExpense}
               setEditingExpense={setEditingExpense}
               handleUpdateExpense={handleUpdateExpense}
+              key={activeUserId || 'guest'}
+              userId={activeUserId}
               groupedExpenses={groupedExpenses}
             />
           )}
@@ -1805,7 +1838,7 @@ export default function App() {
                     cost: amount,
                     category_id: categoryId,
                     category: catObj.name,
-                    expense_date: getToday(),
+                    expense_date: getToday().startsWith(selectedMonth) ? getToday() : `${selectedMonth}-01`,
                     is_recurring: false,
                     is_batched: false,
                     bundle_id: null
@@ -1883,6 +1916,9 @@ export default function App() {
         </div>
 
         <AIAssistantDrawer
+          key={activeUserId || 'guest'}
+          userId={activeUserId}
+          lastAddedExpenseId={lastAddedExpenseId}
           parsedSalary={parsedSalary}
           salary={salary}
           setSalary={setSalary}
@@ -2012,6 +2048,7 @@ export default function App() {
             }
 
             setExpenses(prev => [data[0], ...prev]);
+            recordLastAddedExpenseId(data[0].id);
             return { ok: true, expense: data[0], newRemaining: Math.max(0, availableBalance - cost) };
           }}
           onDirectCreateCategory={async ({ name, type = 'expense', percentage = 0, targetGoal = 0 }) => {
