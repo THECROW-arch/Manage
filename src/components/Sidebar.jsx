@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const NAV_TABS = [
@@ -82,7 +82,8 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
   const { t } = useTranslation();
 
   useEffect(() => {
-    localStorage.setItem('sidebarCollapsed', isCollapsed);
+    try { localStorage.setItem('sidebarCollapsed', isCollapsed); }
+    catch (e) { console.warn('Failed to save sidebar state:', e); }
   }, [isCollapsed]);
 
   return (
@@ -98,11 +99,6 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
             <BrandEmblem className="w-11 h-11" />
           )}
 
-          {!isCollapsed && currentStreak > 0 && (
-            <div title={`Longest Streak: ${longestStreak}`} className="flex items-center gap-1 text-orange-500 bg-orange-50 dark:bg-orange-500/10 px-2 py-1 rounded-md text-xs font-bold border border-orange-200 dark:border-orange-500/20 shrink-0">
-              <span>🔥</span> {currentStreak}
-            </div>
-          )}
         </div>
 
         <nav className="flex-1 px-3 space-y-2 mt-6">
@@ -120,14 +116,14 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
                 ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 dark:shadow-[inset_2px_0_0_0_#10B981]'
                 : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-800/50 font-medium'
                 }`}
-              title={isCollapsed ? t(tab.tKey) : undefined}
+              title={isCollapsed ? (tab.tKey ? t(tab.tKey) : tab.label) : undefined}
             >
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={activeTab === tab.id ? 2 : 1.5} stroke="currentColor" className="w-6 h-6 min-w-[24px] min-h-[24px] shrink-0 block">
                 <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
               </svg>
               {!isCollapsed && (
                 <span className="truncate min-w-0 flex-1 text-left leading-tight">
-                  {t(tab.tKey)}
+                  {tab.tKey ? t(tab.tKey) : tab.label}
                 </span>
               )}
             </button>
@@ -152,14 +148,27 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
         </button>
 
         {!isCollapsed && username && (
-          <div className="px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center text-emerald-600 dark:text-emerald-400 font-bold text-sm shrink-0">
-              {username.charAt(0).toUpperCase()}
+          <div className="px-3 py-2.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center text-emerald-700 dark:text-emerald-400 font-bold text-sm shrink-0">
+                {username.charAt(0).toUpperCase()}
+              </div>
+              <div className="flex flex-col overflow-hidden">
+                <span className="text-xs font-bold text-gray-900 dark:text-white truncate" dir="ltr">@{username}</span>
+                <span className="text-[10px] font-medium text-gray-500 dark:text-zinc-500 uppercase tracking-wider">{userRole}</span>
+              </div>
             </div>
-            <div className="flex flex-col overflow-hidden">
-              <span className="text-xs font-bold text-gray-900 dark:text-white truncate" dir="ltr">@{username}</span>
-              <span className="text-[10px] font-medium text-gray-500 dark:text-zinc-500 uppercase tracking-wider">{userRole}</span>
-            </div>
+            {currentStreak > 0 && (
+              <div
+                title={`Active Perfect-Month Streak: ${currentStreak} (Best: ${longestStreak})`}
+                className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 px-2 py-1 rounded-md text-[11px] font-bold border border-emerald-200 dark:border-emerald-500/20 shrink-0"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400">
+                  <path fillRule="evenodd" d="M13.5 4.938a7 7 0 11-9.006 1.737c.202-.257.59-.218.793.039.278.352.594.672.943.954.332.269.786-.049.773-.476a5.977 5.977 0 01.572-2.759 6.026 6.026 0 012.486-2.665c.247-.14.55-.016.677.238A6.967 6.967 0 0013.5 4.938zM14 12a4 4 0 01-4 4c-1.913 0-3.52-1.398-3.91-3.182-.093-.429.44-.643.814-.413a4.043 4.043 0 001.601.564c.303.038.531-.24.51-.544a5.975 5.975 0 011.315-4.192.447.447 0 01.431-.16A4.001 4.001 0 0114 12z" clipRule="evenodd" />
+                </svg>
+                <span>{currentStreak}</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -184,34 +193,172 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
  * 
  * @param {Object} props - Component properties including activeTab and userRole
  */
-export function MobileHeader({ activeTab, setActiveTab, setAlertMsg, currentStreak, userRole }) {
+export function MobileHeader({
+  activeTab,
+  setActiveTab,
+  setAlertMsg,
+  currentStreak,
+  longestStreak,
+  userRole,
+  username,
+  handleLogout
+}) {
   const { t } = useTranslation();
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const menuContainerRef = useRef(null);
+
+  const visibleTabs = NAV_TABS.filter(tab =>
+    (tab.id !== 'dev_dashboard' || userRole === 'dev' || userRole === 'owner') &&
+    (tab.id !== 'owner_dashboard' || userRole === 'owner')
+  );
+
+  const currentTabObj = visibleTabs.find(tab => tab.id === activeTab) || visibleTabs[0];
+  const getTabLabel = (tab) => (tab?.tKey ? t(tab.tKey) : tab?.label || '');
+
+  // Close the mobile menu automatically when clicking outside or pressing Escape
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+
+    const handleClickOutside = (e) => {
+      if (menuContainerRef.current && !menuContainerRef.current.contains(e.target)) {
+        setIsMobileMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setIsMobileMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMobileMenuOpen]);
+
   return (
-    <header className="md:hidden flex flex-col gap-4 mb-6 pb-4 border-b border-gray-200 dark:border-zinc-800">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
+    <header
+      ref={menuContainerRef}
+      className="md:hidden relative flex flex-col gap-3 mb-6 pb-4 border-b border-gray-200 dark:border-zinc-800"
+    >
+      {/* Top Bar: Brand + Streak + Hamburger Trigger */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
           <BrandEmblem className="w-10 h-10" />
           <BrandWordmark size="sm" />
         </div>
-        {currentStreak > 0 && (
-          <div className="flex items-center gap-1 text-orange-500 bg-orange-50 dark:bg-orange-500/10 px-2 py-1 rounded-md text-xs font-bold border border-orange-200 dark:border-orange-500/20">
-            <span>🔥</span> {currentStreak}
-          </div>
-        )}
+
+        <div className="flex items-center gap-2 shrink-0">
+          {currentStreak > 0 && (
+            <div
+              title={longestStreak ? `Longest Streak: ${longestStreak}` : undefined}
+              className="flex items-center gap-1 text-orange-500 bg-orange-50 dark:bg-orange-500/10 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-orange-200 dark:border-orange-500/20"
+            >
+              <span>🔥</span> {currentStreak}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsMobileMenuOpen(prev => !prev)}
+            aria-expanded={isMobileMenuOpen}
+            aria-haspopup="true"
+            aria-label={t('toggle_navigation', 'Toggle navigation menu')}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 text-gray-800 dark:text-zinc-100 text-xs font-bold shadow-sm hover:border-emerald-500 dark:hover:border-emerald-500/50 focus:outline-none focus:ring-2 focus:ring-emerald-600/30 transition-all"
+          >
+            {currentTabObj && (
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0">
+                <path strokeLinecap="round" strokeLinejoin="round" d={currentTabObj.icon} />
+              </svg>
+            )}
+            <span className="max-w-[115px] truncate">{getTabLabel(currentTabObj)}</span>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={2}
+              stroke="currentColor"
+              className={`w-4 h-4 text-gray-400 dark:text-zinc-400 transition-transform duration-200 ${isMobileMenuOpen ? 'rotate-180' : ''}`}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+            </svg>
+          </button>
+        </div>
       </div>
-      <select
-        aria-label="Select section"
-        value={activeTab}
-        onChange={(e) => { setAlertMsg(''); setActiveTab(e.target.value); }}
-        className="w-full p-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm focus:outline-none focus:border-emerald-500"
-      >
-        {NAV_TABS.filter(tab =>
-          (tab.id !== 'dev_dashboard' || userRole === 'dev' || userRole === 'owner') &&
-          (tab.id !== 'owner_dashboard' || userRole === 'owner')
-        ).map(tab => (
-          <option key={tab.id} value={tab.id}>{t(tab.tKey)}</option>
-        ))}
-      </select>
+
+      {/* Custom Slide-Down Navigation Card (Adapts cleanly to Light & Dark Mode) */}
+      {isMobileMenuOpen && (
+        <div
+          role="menu"
+          className="absolute top-full left-0 right-0 mt-1 z-50 bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-xl shadow-2xl p-2 space-y-1 animate-fade-in"
+        >
+          <div className="grid grid-cols-1 gap-1">
+            {visibleTabs.map(tab => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAlertMsg('');
+                    setActiveTab(tab.id);
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                    isActive
+                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 dark:shadow-[inset_2px_0_0_0_#10B981]'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-800/60 font-medium'
+                  }`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={isActive ? 2 : 1.5} stroke="currentColor" className="w-5 h-5 shrink-0">
+                    <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
+                  </svg>
+                  <span className="truncate flex-1 text-left">{getTabLabel(tab)}</span>
+                  {isActive && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Mobile User Profile & Sign Out Footer */}
+          {(username || handleLogout) && (
+            <div className="pt-2 mt-2 border-t border-gray-100 dark:border-zinc-800 flex items-center justify-between gap-2 px-1">
+              {username && (
+                <div className="flex items-center gap-2.5 min-w-0 px-2 py-1">
+                  <div className="w-7 h-7 rounded-full bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center text-emerald-700 dark:text-emerald-400 font-bold text-xs shrink-0">
+                    {username.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-xs font-bold text-gray-900 dark:text-white truncate" dir="ltr">@{username}</span>
+                    <span className="text-[9px] font-medium text-gray-500 dark:text-zinc-500 uppercase tracking-wider">{userRole}</span>
+                  </div>
+                </div>
+              )}
+
+              {handleLogout && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    handleLogout();
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold text-rose-600 dark:text-rose-400 bg-rose-50/70 dark:bg-rose-500/10 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-colors shrink-0"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor" className="w-4 h-4">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15M12 9l-3 3m0 0l3 3m-3-3h12.75" />
+                  </svg>
+                  <span>{t('sign_out', 'Sign Out')}</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </header>
   );
 }

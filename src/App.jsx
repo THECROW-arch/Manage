@@ -11,12 +11,13 @@ import TaxCenterTab from './components/TaxCenterTab';
 import SettingsTab from './components/SettingsTab';
 import Sidebar, { MobileHeader } from './components/Sidebar';
 import PortfolioTab from './components/PortfolioTab';
+import WealthObjectivesSection from './components/WealthObjectivesSection';
 import OccasionsSandboxTab from './components/OccasionsSandboxTab';
 import CashFlowTab from './components/CashFlowTab';
 import SupportTab from './components/SupportTab';
 import DevDashboard from './components/DevDashboard';
 import OwnerDashboard from './components/OwnerDashboard';
-
+import AIAssistantDrawer from './components/AIAssistantDrawer';
 /**
  * Main application component orchestrating global state, data fetching, and tab routing.
  */
@@ -183,13 +184,16 @@ export default function App() {
 
   const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
 
-  const fetchUserData = async (userId) => {
+  const fetchUserData = async (userId, isBackgroundSync = false) => {
     window.__activeUserId = userId;
     if (window.__fetchingUserId === userId) return;
+    if (isBackgroundSync && window.__loadedUserId === userId) return;
     window.__fetchingUserId = userId;
     const isStale = () => window.__activeUserId !== userId;
 
-    setLoadingData(true);
+    if (window.__loadedUserId !== userId) {
+      setLoadingData(true);
+    }
     try {
       let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
       if (isStale()) return;
@@ -310,6 +314,7 @@ export default function App() {
       if (isStale()) return;
       setClosedMonths(closedData || []);
 
+      window.__loadedUserId = userId;
       setLoadingData(false);
     } finally {
       if (window.__fetchingUserId === userId) {
@@ -321,7 +326,7 @@ export default function App() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) fetchUserData(session.user.id);
+      if (session) fetchUserData(session.user.id, false);
     });
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -330,10 +335,13 @@ export default function App() {
       }
       setSession(session);
       if (session) {
-        fetchUserData(session.user.id);
+        // Do not trigger a full-page reload when the browser tab simply refreshes the token on focus
+        if (event === 'TOKEN_REFRESHED') return;
+        fetchUserData(session.user.id, true);
       } else {
         window.__activeUserId = null;
         window.__fetchingUserId = null;
+        window.__loadedUserId = null;
         setDraftHydratedUserId(null);
         setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
       }
@@ -473,7 +481,68 @@ export default function App() {
     return currency.length > 1 ? `${currency} ${num}` : `${currency}${num}`;
   };
 
-  const parsedSalary = parseFloat(salary) || 0;
+  // Month-Scoped Temporary Income Boosts (e.g. { "2026-11": 500 } — applies only to that month!)
+  const [monthlyIncomeBoosts, setMonthlyIncomeBoosts] = useState(() => {
+    try {
+      const saved = localStorage.getItem('managed_monthly_boosts');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('managed_monthly_boosts', JSON.stringify(monthlyIncomeBoosts));
+    } catch (e) {
+      console.warn('Failed to save monthlyIncomeBoosts:', e);
+    }
+  }, [monthlyIncomeBoosts]);
+
+  // Wealth Objectives (e.g. "Car Chevy" — 240,000 target with auto category pulls & manual top-ups)
+  const [wealthObjectives, setWealthObjectives] = useState(() => {
+    try {
+      const saved = localStorage.getItem('managed_wealth_objectives');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('managed_wealth_objectives', JSON.stringify(wealthObjectives));
+    } catch (e) {
+      console.warn('Failed to save wealthObjectives:', e);
+    }
+  }, [wealthObjectives]);
+
+  const baseSalary = parseFloat(salary) || 0;
+  const currentMonthBoost = parseFloat(monthlyIncomeBoosts[selectedMonth]) || 0;
+  const parsedSalary = baseSalary + currentMonthBoost;
+
+  const handleAddMonthlyBoost = (amountToAdd) => {
+    if (isReadOnly) return;
+    const num = parseFloat(amountToAdd);
+    if (isNaN(num)) return;
+    setMonthlyIncomeBoosts(prev => {
+      const current = parseFloat(prev[selectedMonth]) || 0;
+      const updatedVal = Math.max(0, Number((current + num).toFixed(2)));
+      const next = { ...prev };
+      if (updatedVal === 0) delete next[selectedMonth];
+      else next[selectedMonth] = updatedVal;
+      return next;
+    });
+  };
+
+  const handleClearMonthlyBoost = () => {
+    if (isReadOnly) return;
+    setMonthlyIncomeBoosts(prev => {
+      const next = { ...prev };
+      delete next[selectedMonth];
+      return next;
+    });
+  };
   const monthlyExpenses = expenses.filter(e => e.expense_date && e.expense_date.startsWith(selectedMonth));
   const expenseCategories = categories.filter(c => c.type !== 'asset');
   const assetCategories = categories.filter(c => c.type === 'asset');
@@ -625,12 +694,13 @@ export default function App() {
           return acc;
         }, {});
 
+        const closedMonthEndStamp = `${selectedMonth}-28`;
         for (const [, exps] of Object.entries(grouped)) {
           const sum = exps.reduce((total, e) => total + parseFloat(e.cost), 0);
           newlyAggregated.push({
             user_id: session.user.id, name: `${exps[0].name.trim()} (Batched x${exps.length})`, cost: sum,
             category_id: exps[0].category_id, category: exps[0].category,
-            expense_date: nextMonthStamp,
+            expense_date: closedMonthEndStamp,
             is_recurring: false, is_batched: false
           });
           idsToDelete.push(...exps.map(e => e.id));
@@ -1286,25 +1356,56 @@ export default function App() {
 
   const handleUpdateExpense = async (id, updatedExp) => {
     if (isReadOnly) return;
+    const existingExp = expenses.find(e => e.id === id);
+    if (!existingExp) return;
+
     const cost = parseFloat(updatedExp.cost);
-    if (!updatedExp.name || isNaN(cost) || cost <= 0 || !updatedExp.expense_date) return;
+    if (!updatedExp.name?.trim() || isNaN(cost) || cost <= 0) return;
 
-    const catName = categories.find(c => c.id === updatedExp.category_id)?.name;
+    const targetCat = categories.find(c => c.id === updatedExp.category_id);
+    if (!targetCat) return;
 
+    // Validate against category ceiling (excluding this expense's old cost)
+    if (existingExp.expense_date?.startsWith(selectedMonth)) {
+      const spentByOthers = monthlyExpenses
+        .filter(e => e.category_id === targetCat.id && e.id !== id)
+        .reduce((sum, e) => sum + parseFloat(e.cost), 0);
+      const availableBalance = Math.max(0, (parsedSalary * (targetCat.percentage / 100)) - spentByOthers);
+      if (cost > availableBalance) {
+        setAlertMsg(t('err_exp_exceeds_avail', { category: targetCat.name }));
+        return;
+      }
+    }
+
+    const editedStamp = getToday();
+    const previousExpenses = [...expenses];
+
+    // Original expense_date is strictly preserved; last_edited_at is stamped
     setExpenses(expenses.map(e => e.id === id ? {
-      ...e, name: updatedExp.name, cost, category_id: updatedExp.category_id,
-      category: catName, expense_date: updatedExp.expense_date
+      ...e,
+      name: updatedExp.name.trim(),
+      cost,
+      category_id: targetCat.id,
+      category: targetCat.name,
+      is_recurring: Boolean(updatedExp.is_recurring),
+      is_batched: Boolean(updatedExp.is_batched),
+      last_edited_at: editedStamp
     } : e));
     setEditingExpense(null);
 
     try {
       const { error } = await supabase.from('expenses').update({
-        name: updatedExp.name, cost: cost, category_id: updatedExp.category_id,
-        category: catName, expense_date: updatedExp.expense_date
+        name: updatedExp.name.trim(),
+        cost,
+        category_id: targetCat.id,
+        category: targetCat.name,
+        is_recurring: Boolean(updatedExp.is_recurring),
+        is_batched: Boolean(updatedExp.is_batched)
       }).eq('id', id);
       if (error) throw error;
     } catch {
-      setAlertMsg(t('err_update_exp'));
+      setExpenses(previousExpenses);
+      setAlertMsg(t('err_update_exp', 'Failed to update expense.'));
     }
   };
 
@@ -1535,7 +1636,10 @@ export default function App() {
             setActiveTab={setActiveTab}
             setAlertMsg={setAlertMsg}
             currentStreak={currentStreak}
+            longestStreak={longestStreak}
             userRole={userRole}
+            username={username}
+            handleLogout={handleLogoutRequest}
           />
 
           {activeTab === 'cashflow' && (
@@ -1548,6 +1652,10 @@ export default function App() {
               isReadOnly={isReadOnly}
               totalRemaining={totalRemaining}
               parsedSalary={parsedSalary}
+              baseSalary={baseSalary}
+              currentMonthBoost={currentMonthBoost}
+              handleAddMonthlyBoost={handleAddMonthlyBoost}
+              handleClearMonthlyBoost={handleClearMonthlyBoost}
               globalPercentUsed={globalPercentUsed}
               totalSpent={totalSpent}
               totalAutomatedAssets={totalAutomatedAssets}
@@ -1600,6 +1708,9 @@ export default function App() {
               setExpandedTransactionId={setExpandedTransactionId}
               bundles={bundles}
               handleDeleteExpense={handleDeleteExpense}
+              editingExpense={editingExpense}
+              setEditingExpense={setEditingExpense}
+              handleUpdateExpense={handleUpdateExpense}
               groupedExpenses={groupedExpenses}
             />
           )}
@@ -1654,29 +1765,61 @@ export default function App() {
           )}
 
           {activeTab === 'portfolio' && (
-            <PortfolioTab
-              assetCategories={assetCategories}
-              handleAddAdjustment={handleAddAdjustment}
-              adjCatId={adjCatId}
-              setAdjCatId={setAdjCatId}
-              adjAmount={adjAmount}
-              setAdjAmount={setAdjAmount}
-              adjNote={adjNote}
-              setAdjNote={setAdjNote}
-              adjDate={adjDate}
-              setAdjDate={setAdjDate}
-              assetAdjustments={assetAdjustments}
-              categories={categories}
-              formatCurrency={formatCurrency}
-              wealthHistoryData={wealthHistoryData}
-              theme={theme}
-              currency={currency}
-              parsedSalary={parsedSalary}
-              monthlyExpenses={monthlyExpenses}
-              selectedMonth={selectedMonth}
-              todayMonth={todayMonth}
-              closedMonths={closedMonths}
-            />
+            <>
+              <PortfolioTab
+                assetCategories={assetCategories}
+                handleAddAdjustment={handleAddAdjustment}
+                adjCatId={adjCatId}
+                setAdjCatId={setAdjCatId}
+                adjAmount={adjAmount}
+                setAdjAmount={setAdjAmount}
+                adjNote={adjNote}
+                setAdjNote={setAdjNote}
+                adjDate={adjDate}
+                setAdjDate={setAdjDate}
+                assetAdjustments={assetAdjustments}
+                categories={categories}
+                formatCurrency={formatCurrency}
+                wealthHistoryData={wealthHistoryData}
+                theme={theme}
+                currency={currency}
+                parsedSalary={parsedSalary}
+                monthlyExpenses={monthlyExpenses}
+                selectedMonth={selectedMonth}
+                todayMonth={todayMonth}
+                closedMonths={closedMonths}
+              />
+              <WealthObjectivesSection
+                wealthObjectives={wealthObjectives}
+                setWealthObjectives={setWealthObjectives}
+                categories={categories}
+                parsedSalary={parsedSalary}
+                formatCurrency={formatCurrency}
+                getCategoryAvailablePool={getCategoryAvailablePool}
+                onManualContributeToObjective={async ({ objectiveName, categoryId, amount }) => {
+                  const catObj = categories.find(c => c.id === categoryId);
+                  if (!catObj) return false;
+                  const payload = {
+                    user_id: session.user.id,
+                    name: `Objective: ${objectiveName}`,
+                    cost: amount,
+                    category_id: categoryId,
+                    category: catObj.name,
+                    expense_date: getToday(),
+                    is_recurring: false,
+                    is_batched: false,
+                    bundle_id: null
+                  };
+                  const { data, error } = await supabase.from('expenses').insert([payload]).select();
+                  if (error || !data) {
+                    setAlertMsg('Failed to record manual contribution.');
+                    return false;
+                  }
+                  setExpenses(prev => [data[0], ...prev]);
+                  return true;
+                }}
+              />
+            </>
           )}
 
           {activeTab === 'history' && <HistoryTab historyFeed={historyFeed} />}
@@ -1738,6 +1881,188 @@ export default function App() {
             <OwnerDashboard />
           )}
         </div>
+
+        <AIAssistantDrawer
+          parsedSalary={parsedSalary}
+          salary={salary}
+          setSalary={setSalary}
+          currency={currency}
+          setCurrency={setCurrency}
+          setCurrencyMode={setCurrencyMode}
+          setCustomCurrency={setCustomCurrency}
+          totalSpent={totalSpent}
+          totalRemaining={totalRemaining}
+          totalAutomatedAssets={totalAutomatedAssets}
+          categories={categories}
+          monthlyExpenses={monthlyExpenses}
+          assetAdjustments={assetAdjustments}
+          selectedMonth={selectedMonth}
+          setSelectedMonth={setSelectedMonth}
+          isReadOnly={isReadOnly}
+          formatCurrency={formatCurrency}
+          taxCountry={taxCountry}
+          setTaxCountry={setTaxCountry}
+          taxFilingStatus={taxFilingStatus}
+          setTaxFilingStatus={setTaxFilingStatus}
+          theme={theme}
+          setTheme={setTheme}
+          setActiveTab={setActiveTab}
+          handleSmartLockAll={handleSmartLockAll}
+          handleUnlockAll={handleUnlockAll}
+          handleSliderChange={handleSliderChange}
+          handleDeleteExpense={handleDeleteExpense}
+          handleUpdateExpense={handleUpdateExpense}
+          handleDeleteCategory={handleDeleteCategory}
+          handleUpdateCategory={handleUpdateCategory}
+          lockedCategories={lockedCategories}
+          toggleIndividualLock={toggleIndividualLock}
+          bundles={bundles}
+          handleDeleteBundle={handleDeleteBundle}
+          sandboxSheets={sandboxSheets}
+          handleDeleteSandboxSheet={handleDeleteSandboxSheet}
+          wealthObjectives={wealthObjectives}
+          setWealthObjectives={setWealthObjectives}
+          currentMonthBoost={currentMonthBoost}
+          handleAddMonthlyBoost={handleAddMonthlyBoost}
+          handleClearMonthlyBoost={handleClearMonthlyBoost}
+          onDirectCreateBundle={async ({ name, allocations }) => {
+            if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is closed and read-only.` };
+            for (const [catId, amt] of Object.entries(allocations)) {
+              const avail = getCategoryAvailablePool(catId);
+              const catObj = categories.find(c => c.id === catId);
+              if (amt > avail) {
+                return {
+                  ok: false,
+                  error: `Cannot pull **${formatCurrency(amt)}** from **${catObj?.name || 'Category'}** because it only has **${formatCurrency(avail)}** available.`
+                };
+              }
+            }
+            const newBundle = {
+              id: crypto.randomUUID(),
+              user_id: session.user.id,
+              name: name.trim(),
+              month: selectedMonth,
+              target_budget: allocations,
+              status: 'open',
+              items: []
+            };
+            const { data, error } = await supabase.from('bundles').insert([newBundle]).select();
+            if (error || !data || data.length === 0) {
+              return { ok: false, error: 'Database error while creating Special Occasion bundle.' };
+            }
+            setBundles(prev => [data[0], ...prev]);
+            return { ok: true, bundle: data[0] };
+          }}
+          onDirectCreateSandbox={async ({ title, totalBudget }) => {
+            if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is read-only.` };
+            const tempId = crypto.randomUUID();
+            const newSheet = { id: tempId, title: title.trim(), totalBudget, buckets: [], expenses: [] };
+            const { error } = await supabase.from('sandbox_sheets').insert([{
+              id: tempId,
+              user_id: session.user.id,
+              title: newSheet.title,
+              total_budget: newSheet.totalBudget,
+              buckets: [],
+              expenses: []
+            }]);
+            if (error) return { ok: false, error: 'Database error while creating Sandbox sheet.' };
+            setSandboxSheets(prev => [newSheet, ...prev]);
+            setActiveSheetId(tempId);
+            return { ok: true, sheet: newSheet };
+          }}
+          onPrefillExpense={({ name, cost, categoryId, isRecurring: rec, isBatched: bat }) => {
+            setActiveTab('cashflow');
+            setExpenseName(name);
+            setExpenseCost(cost);
+            if (categoryId) setExpenseCategoryId(categoryId);
+            setIsRecurring(Boolean(rec));
+            setIsBatched(Boolean(bat));
+          }}
+          onDirectLogExpense={async ({ name, cost, categoryId, expenseDate: expDate, isRecurring: rec, isBatched: bat }) => {
+            const catObj = categories.find(c => c.id === categoryId);
+            if (!catObj) return { ok: false, error: 'Could not find a matching category.' };
+
+            const spentSoFar = monthlyExpenses
+              .filter(e => e.category_id === categoryId)
+              .reduce((sum, e) => sum + parseFloat(e.cost), 0);
+            const availableBalance = Math.max(0, (parsedSalary * (catObj.percentage / 100)) - spentSoFar);
+
+            if (cost > availableBalance) {
+              return {
+                ok: false,
+                error: `Cannot log **${formatCurrency(cost)}** because **${catObj.name}** only has **${formatCurrency(availableBalance)}** available this month.`
+              };
+            }
+
+            const payload = {
+              user_id: session.user.id,
+              name,
+              cost,
+              category_id: categoryId,
+              category: catObj.name,
+              expense_date: expDate,
+              is_recurring: Boolean(rec),
+              is_batched: Boolean(bat),
+              bundle_id: null
+            };
+
+            const { data, error } = await supabase.from('expenses').insert([payload]).select();
+            if (error || !data || data.length > 0 === false) {
+              return { ok: false, error: 'Database error while saving expense. Please try again.' };
+            }
+
+            setExpenses(prev => [data[0], ...prev]);
+            return { ok: true, expense: data[0], newRemaining: Math.max(0, availableBalance - cost) };
+          }}
+          onDirectCreateCategory={async ({ name, type = 'expense', percentage = 0, targetGoal = 0 }) => {
+            if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is locked and read-only.` };
+            const cleanName = (name || '').trim();
+            if (!cleanName) return { ok: false, error: 'Please provide a valid category name.' };
+
+            const exists = categories.some(c => c.name.toLowerCase() === cleanName.toLowerCase());
+            if (exists) return { ok: false, error: `A category named **${cleanName}** already exists.` };
+
+            const colors = ['teal-600', 'orange-600', 'cyan-600', 'purple-600', 'rose-600', 'amber-600', 'emerald-600'];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+            const safeGoal = type === 'asset' ? (parseFloat(targetGoal) || 0) : 0;
+            const desiredPct = Math.max(0, Math.min(100, parseFloat(percentage) || 0));
+
+            const { data, error } = await supabase.from('categories').insert([{
+              user_id: session.user.id,
+              name: cleanName,
+              percentage: 0,
+              color: randomColor,
+              type,
+              target_goal: safeGoal
+            }]).select();
+
+            if (error || !data || data.length === 0) {
+              return { ok: false, error: 'Database error while creating category.' };
+            }
+
+            const createdCat = data[0];
+            let updatedList = [...categories, createdCat];
+
+            // If user requested an initial percentage (e.g. "give it 25%"), rebalance unlocked categories proportionally
+            if (desiredPct > 0) {
+              const unlockedOthers = categories.filter(c => !lockedCategories.includes(c.id));
+              const othersTotal = unlockedOthers.reduce((s, c) => s + (Number(c.percentage) || 0), 0);
+              const actualPct = othersTotal > 0 ? Math.min(desiredPct, othersTotal) : desiredPct;
+
+              updatedList = updatedList.map(c => {
+                if (c.id === createdCat.id) return { ...c, percentage: actualPct };
+                if (lockedCategories.includes(c.id)) return c;
+                const reduction = othersTotal > 0 ? actualPct * ((c.percentage || 0) / othersTotal) : 0;
+                return { ...c, percentage: Math.max(0, Number(((c.percentage || 0) - reduction).toFixed(2))) };
+              });
+            }
+
+            setCategories(updatedList);
+            if (type !== 'asset' && !expenseCategoryId) setExpenseCategoryId(createdCat.id);
+            if (type === 'asset' && !adjCatId) setAdjCatId(createdCat.id);
+            return { ok: true, category: updatedList.find(c => c.id === createdCat.id) || createdCat };
+          }}
+        />
       </main>
     </div>
   );
