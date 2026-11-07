@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import './App.css';
 import './i18n';
 import { useTranslation } from 'react-i18next';
@@ -108,6 +108,15 @@ export default function App() {
   const [salary, setSalary] = useState('');
   const [username, setUsername] = useState('');
   const [userRole, setUserRole] = useState('customer');
+  const [subscriptionTier, setSubscriptionTier] = useState('free');
+  const [upgradePromptFeature, setUpgradePromptFeature] = useState(null);
+
+  const hasProAccess = useMemo(() => {
+    const cleanRole = String(userRole || '').trim().toLowerCase();
+    const cleanTier = String(subscriptionTier || 'free').trim().toLowerCase();
+    if (['owner', 'dev', 'special'].includes(cleanRole)) return true;
+    return ['pro', 'pro_monthly', 'pro_yearly', 'enterprise'].includes(cleanTier);
+  }, [userRole, subscriptionTier]);
   const [categories, setCategories] = useState([]);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryType, setNewCategoryType] = useState('expense');
@@ -230,7 +239,9 @@ export default function App() {
 
       if (profile) {
         const loadedRole = profile.role || 'user';
+        const loadedTier = profile.subscription_tier || 'free';
         setUserRole(loadedRole);
+        setSubscriptionTier(loadedTier);
 
         // Validate saved tab access against loaded role safely
         setActiveTab(currentTab => {
@@ -271,6 +282,22 @@ export default function App() {
         if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_country === 'US' ? profile.tax_filing_status : 'single');
         setCurrentStreak(profile.current_streak || 0);
         setLongestStreak(profile.longest_streak || 0);
+
+        // Hydrate monthly income boosts & wealth objectives from Supabase (falling back to localStorage if DB is empty)
+        const localBoosts = readUserStorage('managed_monthly_boosts', userId, {});
+        const dbBoosts =
+          profile.monthly_boosts &&
+          typeof profile.monthly_boosts === 'object' &&
+          !Array.isArray(profile.monthly_boosts)
+            ? profile.monthly_boosts
+            : {};
+        const mergedBoosts = Object.keys(dbBoosts).length > 0 ? dbBoosts : localBoosts;
+        setBoostOverridesByUser(prev => ({ ...prev, [userId]: mergedBoosts }));
+
+        const localObjectives = readUserStorage('managed_wealth_objectives', userId, []);
+        const dbObjectives = Array.isArray(profile.wealth_objectives) ? profile.wealth_objectives : [];
+        const mergedObjectives = dbObjectives.length > 0 ? dbObjectives : localObjectives;
+        setObjectivesByUser(prev => ({ ...prev, [userId]: mergedObjectives }));
       }
 
       let { data: cats } = await supabase.from('categories').select('*').eq('user_id', userId).order('created_at', { ascending: true });
@@ -298,7 +325,24 @@ export default function App() {
 
       let { data: expensesData } = await supabase.from('expenses').select('*').eq('user_id', userId).order('expense_date', { ascending: false });
       if (isStale()) return;
-      setExpenses(expensesData || []);
+      const loadedExpenses = expensesData || [];
+      setExpenses(loadedExpenses);
+
+      const localMeta = readUserStorage('managed_expense_meta', userId, {});
+      const hydratedMeta = { ...localMeta };
+      loadedExpenses.forEach(exp => {
+        if (!exp?.id) return;
+        const existingMeta = hydratedMeta[exp.id] || {};
+        hydratedMeta[exp.id] = {
+          ...existingMeta,
+          recurrenceType: exp.recurrence_type || existingMeta.recurrenceType || 'monthly',
+          skippedPeriods: Array.isArray(exp.skipped_periods)
+            ? exp.skipped_periods
+            : (existingMeta.skippedPeriods || []),
+          lastEditedAt: exp.last_edited_at || existingMeta.lastEditedAt || null
+        };
+      });
+      setMetaOverridesByUser(prev => ({ ...prev, [userId]: hydratedMeta }));
 
       let { data: bundlesData } = await supabase
         .from('bundles')
@@ -369,38 +413,7 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!session || loadingData) return;
-
-    const delayDebounceFn = setTimeout(async () => {
-      try {
-        await supabase.from('profiles').upsert({
-          user_id: session.user.id,
-          salary: parseFloat(salary) || 0,
-          currency: currency,
-          tax_country: taxCountry,
-          tax_filing_status: taxFilingStatus
-        });
-
-        for (const cat of categories) {
-          if (cat.id) await supabase.from('categories').update({ percentage: Number(Number(cat.percentage).toFixed(2)) }).eq('id', cat.id);
-        }
-
-        for (const sheet of sandboxSheets) {
-          if (sheet.id) {
-            await supabase.from('sandbox_sheets').update({
-              buckets: sheet.buckets,
-              expenses: sheet.expenses
-            }).eq('id', sheet.id);
-          }
-        }
-      } catch {
-        setAlertMsg(t('warn_autosave_failed'));
-      }
-    }, 1000);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [salary, categories, sandboxSheets, session, loadingData, currency, taxCountry, taxFilingStatus, t]);
+  
 
   const handleLogoutRequest = () => {
     setShowLogoutConfirm(true);
@@ -417,6 +430,8 @@ export default function App() {
       setAssetAdjustments([]);
       setClosedMonths([]);
       setSalary('');
+      setUserRole('customer');
+      setSubscriptionTier('free');
       setDraftHydratedUserId(null);
       setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
       setBoostOverridesByUser({});
@@ -435,9 +450,10 @@ export default function App() {
   };
 
   // Pure Account-Scoped State Updaters & Persistence Effects
-  const monthlyIncomeBoosts = activeUserId
-    ? (boostOverridesByUser[activeUserId] ?? readUserStorage('managed_monthly_boosts', activeUserId, {}))
-    : {};
+  const monthlyIncomeBoosts = useMemo(() => {
+    if (!activeUserId) return {};
+    return boostOverridesByUser[activeUserId] ?? readUserStorage('managed_monthly_boosts', activeUserId, {});
+  }, [activeUserId, boostOverridesByUser]);
 
   const setMonthlyIncomeBoosts = (updater) => {
     if (!activeUserId) return;
@@ -461,9 +477,10 @@ export default function App() {
     }
   }, [boostOverridesByUser, activeUserId]);
 
-  const wealthObjectives = activeUserId
-    ? (objectivesByUser[activeUserId] ?? readUserStorage('managed_wealth_objectives', activeUserId, []))
-    : [];
+  const wealthObjectives = useMemo(() => {
+    if (!activeUserId) return [];
+    return objectivesByUser[activeUserId] ?? readUserStorage('managed_wealth_objectives', activeUserId, []);
+  }, [activeUserId, objectivesByUser]);
 
   const setWealthObjectives = (updater) => {
     if (!activeUserId) return;
@@ -487,20 +504,86 @@ export default function App() {
     }
   }, [objectivesByUser, activeUserId]);
 
+  useEffect(() => {
+    if (!session || loadingData) return;
+
+    const delayDebounceFn = setTimeout(async () => {
+      try {
+        await supabase.from('profiles').upsert({
+          user_id: session.user.id,
+          salary: parseFloat(salary) || 0,
+          currency: currency,
+          tax_country: taxCountry,
+          tax_filing_status: taxFilingStatus,
+          monthly_boosts: monthlyIncomeBoosts,
+          wealth_objectives: wealthObjectives
+        });
+
+        for (const cat of categories) {
+          if (cat.id) await supabase.from('categories').update({ percentage: Number(Number(cat.percentage).toFixed(2)) }).eq('id', cat.id);
+        }
+
+        for (const sheet of sandboxSheets) {
+          if (sheet.id) {
+            await supabase.from('sandbox_sheets').update({
+              buckets: sheet.buckets,
+              expenses: sheet.expenses
+            }).eq('id', sheet.id);
+          }
+        }
+      } catch {
+        setAlertMsg(t('warn_autosave_failed'));
+      }
+    }, 1000);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [
+    salary,
+    categories,
+    sandboxSheets,
+    session,
+    loadingData,
+    currency,
+    taxCountry,
+    taxFilingStatus,
+    monthlyIncomeBoosts,
+    wealthObjectives,
+    t
+  ]);
+
   const expenseMetaMap = activeUserId
     ? (metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {}))
     : {};
 
-  const updateExpenseMeta = (expId, patch) => {
+  const updateExpenseMeta = (expId, patch, syncToDb = true) => {
     if (!activeUserId || !expId) return;
     setMetaOverridesByUser(prev => {
       const current = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
+      const mergedEntry = { ...(current[expId] || {}), ...patch };
       const next = {
         ...current,
-        [expId]: { ...(current[expId] || {}), ...patch }
+        [expId]: mergedEntry
       };
       return { ...prev, [activeUserId]: next };
     });
+
+    if (syncToDb) {
+      const dbPatch = {};
+      if (patch.recurrenceType !== undefined) dbPatch.recurrence_type = patch.recurrenceType;
+      if (patch.skippedPeriods !== undefined) dbPatch.skipped_periods = patch.skippedPeriods;
+      if (patch.lastEditedAt !== undefined) dbPatch.last_edited_at = patch.lastEditedAt;
+
+      if (Object.keys(dbPatch).length > 0) {
+        supabase
+          .from('expenses')
+          .update(dbPatch)
+          .eq('id', expId)
+          .eq('user_id', activeUserId)
+          .then(({ error }) => {
+            if (error) console.warn('Failed to sync expense metadata to Supabase:', error.message);
+          });
+      }
+    }
   };
 
   useEffect(() => {
@@ -585,6 +668,10 @@ export default function App() {
   const assetCategories = categories.filter(c => c.type === 'asset');
 
   const handleExportData = async (exportFormat) => {
+    if (exportFormat === 'visual' && !hasProAccess) {
+      setUpgradePromptFeature('Visual Dashboard Excel Reports');
+      return;
+    }
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
     const targetPeriod = exportScope === 'month' ? exportMonth : exportDate;
@@ -873,7 +960,9 @@ export default function App() {
             category: e.category,
             expense_date: targetDate,
             is_recurring: true,
-            is_batched: false
+            is_batched: false,
+            recurrence_type: sourceFreq,
+            skipped_periods: []
           };
         });
         const { data, error } = await supabase.from('expenses').insert(recPayloads).select();
@@ -1366,6 +1455,10 @@ export default function App() {
   const handleCreateSandboxSheet = async (e) => {
     e.preventDefault();
     if (isReadOnly) return;
+    if (!hasProAccess && sandboxSheets.length >= 1) {
+      setUpgradePromptFeature('Unlimited Sandbox Calculation Sheets');
+      return;
+    }
     const budget = parseFloat(newSheetBudget);
     if (!newSheetTitle.trim() || isNaN(budget) || budget <= 0) return;
 
@@ -1520,6 +1613,8 @@ export default function App() {
         expense_date: newExpenseObj.expense_date,
         is_recurring: newExpenseObj.is_recurring,
         is_batched: newExpenseObj.is_batched,
+        recurrence_type: newExpenseObj.is_recurring ? (pendingFreq || 'monthly') : 'monthly',
+        skipped_periods: [],
         bundle_id: null
       }]).select();
 
@@ -1585,7 +1680,8 @@ export default function App() {
         category_id: targetCat.id,
         category: targetCat.name,
         is_recurring: Boolean(updatedExp.is_recurring),
-        is_batched: Boolean(updatedExp.is_batched)
+        is_batched: Boolean(updatedExp.is_batched),
+        last_edited_at: editedStamp
       }).eq('id', id);
       if (error) throw error;
       return true;
@@ -1802,6 +1898,51 @@ export default function App() {
         </div>
       )}
 
+      {/* MANAGED Pro Feature Gate Modal */}
+      {upgradePromptFeature && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pro-upgrade-title"
+          onKeyDown={(e) => { if (e.key === 'Escape') setUpgradePromptFeature(null); }}
+        >
+          <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-2xl border border-amber-300 dark:border-amber-500/40 shadow-2xl p-6 text-center">
+            <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto mb-4 font-black text-xl">
+              ★
+            </div>
+            <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 mb-2">
+              MANAGED Pro Feature
+            </span>
+            <h2 id="pro-upgrade-title" className="text-xl font-black text-gray-900 dark:text-white mb-2">
+              Unlock {upgradePromptFeature}
+            </h2>
+            <p className="text-xs text-gray-600 dark:text-zinc-400 mb-6 leading-relaxed">
+              Your account is currently on the <strong>Free Tier</strong>. Upgrade to <strong>MANAGED Pro</strong> (or request a <strong>Special VIP</strong> pass from an administrator in Support) to unlock unlimited Sandbox sheets, Visual Dashboard Excel reports, and multi-goal Wealth Objectives.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setUpgradePromptFeature(null)}
+                className="flex-1 py-2.5 rounded-lg font-bold text-xs bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 transition-colors"
+              >
+                Maybe Later
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setUpgradePromptFeature(null);
+                  setActiveTab('support');
+                }}
+                className="flex-1 py-2.5 rounded-lg font-bold text-xs bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm transition-colors"
+              >
+                Request Pro Access
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -1811,6 +1952,8 @@ export default function App() {
         handleLogout={handleLogoutRequest}
         username={username}
         userRole={userRole}
+        subscriptionTier={subscriptionTier}
+        hasProAccess={hasProAccess}
       />
       <main className="flex-1 overflow-y-auto p-4 md:p-10 relative custom-scrollbar">
         <div className="max-w-7xl mx-auto w-full">
@@ -1830,6 +1973,8 @@ export default function App() {
             userRole={userRole}
             username={username}
             handleLogout={handleLogoutRequest}
+            subscriptionTier={subscriptionTier}
+            hasProAccess={hasProAccess}
           />
 
           {activeTab === 'cashflow' && (
@@ -2168,6 +2313,10 @@ export default function App() {
           }}
           onDirectCreateSandbox={async ({ title, totalBudget }) => {
             if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is read-only.` };
+            if (!hasProAccess && sandboxSheets.length >= 1) {
+              setUpgradePromptFeature('Unlimited Sandbox Calculation Sheets');
+              return { ok: false, error: 'Free accounts include **1 Sandbox Sheet**. Upgrade to **MANAGED Pro** for unlimited Sandbox sheets!' };
+            }
             const tempId = crypto.randomUUID();
             const newSheet = { id: tempId, title: title.trim(), totalBudget, buckets: [], expenses: [] };
             const { error } = await supabase.from('sandbox_sheets').insert([{
