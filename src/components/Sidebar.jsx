@@ -57,7 +57,7 @@ export function BrandWordmark({ size = "md" }) {
   );
 }
 /** ... */
-export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentStreak, longestStreak, handleLogout, username, userRole }) {
+export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentStreak, longestStreak, handleLogout, username, userRole, subscriptionTier = 'free', hasProAccess = false }) {
   const [isCollapsed, setIsCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebarCollapsed') === 'true'; }
     catch { return false; }
@@ -139,7 +139,13 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
               </div>
               <div className="flex flex-col overflow-hidden">
                 <span className="text-xs font-bold text-gray-900 dark:text-white truncate" dir="ltr">@{username}</span>
-                <span className="text-[10px] font-medium text-gray-500 dark:text-zinc-500 uppercase tracking-wider">{userRole}</span>
+                <span className="text-[10px] font-bold text-gray-500 dark:text-zinc-400 uppercase tracking-wider flex items-center gap-1">
+                  <span>{userRole === 'special' ? 'SPECIAL VIP' : userRole}</span>
+                  <span>•</span>
+                  <span className={hasProAccess ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400 dark:text-zinc-500'}>
+                    {userRole === 'special' ? 'FREE PRO' : hasProAccess ? 'PRO' : subscriptionTier.toUpperCase()}
+                  </span>
+                </span>
               </div>
             </div>
             {currentStreak > 0 && (
