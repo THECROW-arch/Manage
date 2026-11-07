@@ -15,12 +15,8 @@ export default function DevDashboard() {
     const [alertMsg, setAlertMsg] = useState('');
     const fetchRequestIdRef = useRef(0);
 
-    useEffect(() => {
-        fetchTickets();
-    }, []);
-
     /**
-     * Fetches all support tickets from the database, ordered by newest first.
+     * Fetches all support tickets ordered by creation date descending.
      * Guards against out-of-order responses overwriting newer state.
      */
     const fetchTickets = async () => {
@@ -32,6 +28,11 @@ export default function DevDashboard() {
         if (requestId !== fetchRequestIdRef.current) return;
         if (!error && data) setTickets(data);
     };
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        fetchTickets();
+    }, []);
 
     /**
      * Updates local state with the staff member's drafted reply for a specific ticket.
@@ -223,7 +224,7 @@ export default function DevDashboard() {
                                         priorityUpdates[ticket.id] === undefined ||
                                         priorityUpdates[ticket.id] === (ticket.priority ?? 'pending')
                                     }
-                                    className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-white rounded font-bold text-xs transition-colors"
+                                    className="shrink-0 whitespace-nowrap px-3.5 py-1.5 rounded font-bold text-xs border transition-all bg-emerald-700 hover:bg-emerald-800 text-white border-emerald-700 shadow-sm disabled:bg-gray-100 dark:disabled:bg-zinc-800 disabled:text-gray-500 dark:disabled:text-zinc-300 disabled:border-gray-300 dark:disabled:border-zinc-700 disabled:shadow-none disabled:cursor-not-allowed"
                                 >
                                     {savingTicketIds[ticket.id] ? 'Saving...' : 'Save Priority'}
                                 </button>

@@ -264,3 +264,25 @@ select option {
     cursor: pointer !important;
 }
 
+/* Ensure all native dropdown lists and options match Light & Dark themes cleanly */
+select {
+  background-color: #f9fafb;
+  color: #111827;
+}
+
+select option {
+  background-color: #ffffff;
+  color: #111827;
+  font-weight: 500;
+}
+
+.dark select {
+  background-color: #09090b;
+  color: #f4f4f5;
+}
+
+.dark select option {
+  background-color: #18181b;
+  color: #f4f4f5;
+  font-weight: 500;
+}
