@@ -12,7 +12,7 @@ const NAV_TABS = [
   { id: 'dev_dashboard', tKey: 'dev_dashboard', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
   { id: 'owner_dashboard', tKey: 'owner_dashboard', fallbackLabel: 'Owner Cmd', icon: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z' }
 ];
-
+/** ... */
 export function BrandEmblem({ className = "w-12 h-12" }) {
   return (
     <div className={`${className} relative flex items-center justify-center shrink-0 overflow-hidden rounded-xl border border-gray-200 dark:border-zinc-700 bg-white shadow-sm`}>
@@ -37,7 +37,7 @@ export function BrandEmblem({ className = "w-12 h-12" }) {
     </div>
   );
 }
-
+/** ... */
 export function BrandWordmark({ size = "md" }) {
   const dimensions = {
     sm: "text-base",
@@ -56,7 +56,7 @@ export function BrandWordmark({ size = "md" }) {
     </div>
   );
 }
-
+/** ... */
 export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentStreak, longestStreak, handleLogout, username, userRole }) {
   const [isCollapsed, setIsCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebarCollapsed') === 'true'; }
@@ -174,7 +174,7 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
     </aside>
   );
 }
-
+/** ... */
 export function MobileHeader({
   activeTab,
   setActiveTab,
@@ -242,9 +242,9 @@ export function MobileHeader({
               title={
                 longestStreak
                   ? t('longest_streak_title', {
-                      longest: longestStreak,
-                      defaultValue: `Longest Streak: ${longestStreak}`
-                    })
+                    longest: longestStreak,
+                    defaultValue: `Longest Streak: ${longestStreak}`
+                  })
                   : undefined
               }
               className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-emerald-200 dark:border-emerald-500/20"
@@ -300,11 +300,10 @@ export function MobileHeader({
                     setActiveTab(tab.id);
                     setIsMobileMenuOpen(false);
                   }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all ${
-                    isActive
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all ${isActive
                       ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 dark:shadow-[inset_2px_0_0_0_#10B981]'
                       : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-800/60 font-medium'
-                  }`}
+                    }`}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={isActive ? 2 : 1.5} stroke="currentColor" className="w-5 h-5 shrink-0">
                     <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />

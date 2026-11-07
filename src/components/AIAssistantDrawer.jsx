@@ -14,9 +14,13 @@ const DEFAULT_WELCOME_MESSAGE = {
         'When will I reach my Savings goal?'
     ]
 };
-
+/**
+ * Returns the account-scoped localStorage key for AI chat history.
+ */
 const getChatStorageKey = (uid) => (uid ? `managed_ai_chat_history_${uid}` : null);
-
+/**
+ * Loads the saved AI conversation history for a specific authenticated user ID.
+ */
 const loadAccountChatHistory = (uid) => {
     const key = getChatStorageKey(uid);
     if (!key) return [DEFAULT_WELCOME_MESSAGE];
@@ -28,7 +32,7 @@ const loadAccountChatHistory = (uid) => {
         return [DEFAULT_WELCOME_MESSAGE];
     }
 };
-
+/** ... */
 export default function AIAssistantDrawer(props) {
     const { userId } = props;
     const { t } = useTranslation();
@@ -62,7 +66,7 @@ export default function AIAssistantDrawer(props) {
     const processorRef = useRef(null);
     const mediaStreamRef = useRef(null);
     const audioChunksRef = useRef([]);
-
+    /** ... */
     const releaseMic = useCallback(() => {
         micAttemptRef.current += 1;
         isRecordingRef.current = false;
@@ -73,7 +77,7 @@ export default function AIAssistantDrawer(props) {
             processorRef.current = null;
         }
         if (audioContextRef.current) {
-            audioContextRef.current.close().catch(() => {});
+            audioContextRef.current.close().catch(() => { });
             audioContextRef.current = null;
         }
         if (mediaStreamRef.current) {
@@ -114,7 +118,7 @@ export default function AIAssistantDrawer(props) {
             releaseMic();
         };
     }, [releaseMic]);
-
+    /** ... */
     const handleCloseDrawer = () => {
         releaseMic();
         setIsStartingMic(false);
@@ -122,7 +126,7 @@ export default function AIAssistantDrawer(props) {
         setIsTranscribing(false);
         setIsOpen(false);
     };
-
+    /** ... */
     const handleSendPrompt = async (promptText) => {
         const cleanPrompt = (promptText ?? input).trim();
         if (!cleanPrompt || isProcessing) return;
@@ -161,7 +165,7 @@ export default function AIAssistantDrawer(props) {
             setIsProcessing(false);
         }
     };
-
+    /** ... */
     const toggleAssistantVoice = async () => {
         if (isTranscribing) return;
 
@@ -255,7 +259,7 @@ export default function AIAssistantDrawer(props) {
             }
         }
     };
-
+    /** ... */
     const renderFormattedText = (raw) => {
         return raw.split('\n').map((line, i) => {
             const parts = line.split(/(\*\*.*?\*\*|\*.*?\*)/g);
@@ -336,11 +340,10 @@ export default function AIAssistantDrawer(props) {
                                     </span>
                                 )}
                                 <div
-                                    className={`max-w-[88%] px-3.5 py-2.5 rounded-xl text-xs ${
-                                        msg.role === 'user'
+                                    className={`max-w-[88%] px-3.5 py-2.5 rounded-xl text-xs ${msg.role === 'user'
                                             ? 'bg-emerald-700 text-white rounded-br-none'
                                             : 'bg-white dark:bg-zinc-900 text-gray-700 dark:text-zinc-300 border border-gray-200 dark:border-zinc-800 rounded-bl-none shadow-sm'
-                                    }`}
+                                        }`}
                                 >
                                     {renderFormattedText(msg.text)}
                                 </div>
@@ -384,23 +387,22 @@ export default function AIAssistantDrawer(props) {
                                 isRecording
                                     ? 'Stop voice command'
                                     : isStartingMic
-                                    ? 'Cancel microphone startup'
-                                    : 'Speak to AI Assistant'
+                                        ? 'Cancel microphone startup'
+                                        : 'Speak to AI Assistant'
                             }
                             title={
                                 isRecording
                                     ? 'Click to stop recording'
                                     : isStartingMic
-                                    ? 'Starting microphone... Click to cancel'
-                                    : 'Speak a command'
+                                        ? 'Starting microphone... Click to cancel'
+                                        : 'Speak a command'
                             }
-                            className={`px-2.5 py-2 rounded-lg text-xs font-bold transition-all focus:outline-none focus:ring-2 focus:ring-emerald-600/30 ${
-                                isRecording
+                            className={`px-2.5 py-2 rounded-lg text-xs font-bold transition-all focus:outline-none focus:ring-2 focus:ring-emerald-600/30 ${isRecording
                                     ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse'
                                     : isStartingMic
-                                    ? 'bg-amber-500 hover:bg-amber-600 text-white'
-                                    : 'bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 hover:bg-emerald-50 dark:hover:bg-zinc-700'
-                            }`}
+                                        ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                                        : 'bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 hover:bg-emerald-50 dark:hover:bg-zinc-700'
+                                }`}
                         >
                             {isTranscribing ? '⏳' : isRecording ? 'Stop' : isStartingMic ? 'Cancel' : '🎤'}
                         </button>
@@ -413,8 +415,8 @@ export default function AIAssistantDrawer(props) {
                                 isRecording
                                     ? 'Recording... Click Stop when done'
                                     : isStartingMic
-                                    ? 'Waiting for microphone permission...'
-                                    : 'Ask or command (e.g. "How many expenses?")'
+                                        ? 'Waiting for microphone permission...'
+                                        : 'Ask or command (e.g. "How many expenses?")'
                             }
                             aria-label="Message MANAGED AI Assistant"
                             className="flex-1 px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-xs text-gray-900 dark:text-white focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30"

@@ -4,6 +4,8 @@ import { getToday } from '../utils/constants';
 /**
  * Sums only completed, recorded contributions for a wealth objective.
  * Configured auto-pull rules do not count as funded until they are executed and charged.
+ * @param {object} obj - Wealth objective item.
+ * @returns {number} Total funded amount.
  */
 function getObjectiveFundedTotal(obj) {
     if (!obj) return 0;
@@ -18,6 +20,7 @@ function getObjectiveFundedTotal(obj) {
 /**
  * Renders the Wealth Objectives manager inside the Portfolio tab.
  * Supports multi-category automated monthly pulls plus manual contributions from any category.
+ * @param {object} props - Component props.
  */
 export default function WealthObjectivesSection({
     wealthObjectives = [],
@@ -46,6 +49,11 @@ export default function WealthObjectivesSection({
 
     const activeMonthKey = selectedMonth || getToday().slice(0, 7);
 
+    /**
+     * Updates the in-flight request lock for a specific wealth objective.
+     * @param {string} objId - Target objective ID.
+     * @param {boolean} inFlight - Whether a contribution request is currently running.
+     */
     const markObjectiveInFlight = (objId, inFlight) => {
         if (inFlight) {
             fundingIdsRef.current.add(objId);
@@ -55,6 +63,9 @@ export default function WealthObjectivesSection({
         setFundingObjectiveIds(new Set(fundingIdsRef.current));
     };
 
+    /**
+     * Adds or increments a monthly category auto-pull rule on the new objective form.
+     */
     const handleAddAutoPullRule = () => {
         const catId = tempAutoCatId || categories[0]?.id;
         const amt = parseFloat(tempAutoAmount);
@@ -66,6 +77,10 @@ export default function WealthObjectivesSection({
         setTempAutoAmount('');
     };
 
+    /**
+     * Creates a new wealth objective with optional multi-category monthly auto-pull rules.
+     * @param {Event} e - Form submit event.
+     */
     const handleCreateObjective = (e) => {
         e.preventDefault();
         const targetNum = parseFloat(objTarget);
@@ -98,6 +113,11 @@ export default function WealthObjectivesSection({
         setStatusMsg(`Created objective "${newObjective.name}" (${formatCurrency(targetNum)}).`);
     };
 
+    /**
+     * Processes a one-off manual contribution from any selected category into an objective.
+     * Guards against concurrent duplicate clicks.
+     * @param {object} obj - Target wealth objective.
+     */
     const handleManualDeposit = async (obj) => {
         if (isReadOnly || fundingIdsRef.current.has(obj.id)) return;
 
@@ -133,7 +153,15 @@ export default function WealthObjectivesSection({
                 prev.map(item => {
                     if (item.id !== obj.id) return item;
                     const nextHistory = [
-                        { id: crypto.randomUUID(), date: stamp, categoryName: catObj.name, amount: amt, type: 'manual' },
+                        {
+                            id: crypto.randomUUID(),
+                            date: stamp,
+                            categoryId: catId,
+                            categoryName: catObj.name,
+                            amount: amt,
+                            type: 'manual',
+                            month: activeMonthKey
+                        },
                         ...(item.history || [])
                     ];
                     const nextTotal = nextHistory.reduce((s, h) => s + (parseFloat(h.amount) || 0), 0);
@@ -152,19 +180,35 @@ export default function WealthObjectivesSection({
         }
     };
 
+    /**
+     * Applies uncharged monthly auto-pulls for the active month without double-charging
+     * categories that already succeeded in an earlier partial attempt.
+     * @param {object} obj - Target wealth objective.
+     */
     const handleApplyMonthlyAutoPulls = async (obj) => {
         if (isReadOnly || fundingIdsRef.current.has(obj.id)) return;
-        const entries = Object.entries(obj.autoPulls || {}).filter(([, amt]) => parseFloat(amt) > 0);
-        if (entries.length === 0) return;
+        const allEntries = Object.entries(obj.autoPulls || {}).filter(([, amt]) => parseFloat(amt) > 0);
+        if (allEntries.length === 0) return;
 
-        const alreadyApplied = Array.isArray(obj.appliedMonths) && obj.appliedMonths.includes(activeMonthKey);
+        // Identify categories already charged for this objective in activeMonthKey
+        const alreadyChargedCatIds = new Set(
+            (obj.history || [])
+                .filter(h => h.type === 'auto' && h.month === activeMonthKey && h.categoryId)
+                .map(h => h.categoryId)
+        );
+
+        const pendingEntries = allEntries.filter(([catId]) => !alreadyChargedCatIds.has(catId));
+        const alreadyApplied =
+            (Array.isArray(obj.appliedMonths) && obj.appliedMonths.includes(activeMonthKey)) ||
+            pendingEntries.length === 0;
+
         if (alreadyApplied) {
             setStatusMsg(`Auto-pulls for "${obj.name}" have already been applied for ${activeMonthKey}.`);
             return;
         }
 
-        // Validate category availability before charging any category
-        for (const [catId, rawAmt] of entries) {
+        // Validate category availability for remaining uncharged categories
+        for (const [catId, rawAmt] of pendingEntries) {
             const amt = parseFloat(rawAmt);
             const catObj = categories.find(c => c.id === catId);
             if (!catObj) {
@@ -185,7 +229,7 @@ export default function WealthObjectivesSection({
             const completedEntries = [];
             const stamp = getToday();
 
-            for (const [catId, rawAmt] of entries) {
+            for (const [catId, rawAmt] of pendingEntries) {
                 const amt = parseFloat(rawAmt);
                 const catObj = categories.find(c => c.id === catId);
                 if (!catObj) continue;
@@ -202,6 +246,7 @@ export default function WealthObjectivesSection({
                 completedEntries.push({
                     id: crypto.randomUUID(),
                     date: stamp,
+                    categoryId: catId,
                     categoryName: catObj.name,
                     amount: amt,
                     type: 'auto',
@@ -211,16 +256,19 @@ export default function WealthObjectivesSection({
 
             if (completedEntries.length > 0) {
                 const addedSum = completedEntries.reduce((s, e) => s + e.amount, 0);
+                const allCompletedNow = completedEntries.length === pendingEntries.length;
                 setWealthObjectives(prev =>
                     prev.map(item => {
                         if (item.id !== obj.id) return item;
                         const nextHistory = [...completedEntries, ...(item.history || [])];
                         const nextTotal = nextHistory.reduce((s, h) => s + (parseFloat(h.amount) || 0), 0);
-                        const nextApplied = Array.from(new Set([...(item.appliedMonths || []), activeMonthKey]));
+                        const nextApplied = allCompletedNow
+                            ? Array.from(new Set([...(item.appliedMonths || []), activeMonthKey]))
+                            : (item.appliedMonths || []);
                         return {
                             ...item,
                             manualSaved: Number(nextTotal.toFixed(2)),
-                            appliedMonths: completedEntries.length === entries.length ? nextApplied : (item.appliedMonths || []),
+                            appliedMonths: nextApplied,
                             history: nextHistory
                         };
                     })
@@ -232,6 +280,10 @@ export default function WealthObjectivesSection({
         }
     };
 
+    /**
+     * Deletes a wealth objective by ID when the month is writable and not in flight.
+     * @param {string} id - Objective UUID to delete.
+     */
     const handleDeleteObjective = (id) => {
         if (isReadOnly || fundingIdsRef.current.has(id)) return;
         setWealthObjectives(prev => prev.filter(o => o.id !== id));
@@ -356,12 +408,24 @@ export default function WealthObjectivesSection({
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {wealthObjectives.map((obj) => {
-                        // Funded total counts ONLY completed contributions, never uncharged autoPull config
                         const totalAccumulated = getObjectiveFundedTotal(obj);
                         const progressPct = obj.targetAmount > 0 ? Math.min(100, (totalAccumulated / obj.targetAmount) * 100) : 0;
                         const remainingNeeded = Math.max(0, obj.targetAmount - totalAccumulated);
-                        const configuredMonthlyAuto = Object.values(obj.autoPulls || {}).reduce((s, v) => s + (parseFloat(v) || 0), 0);
-                        const isAutoAppliedThisMonth = Array.isArray(obj.appliedMonths) && obj.appliedMonths.includes(activeMonthKey);
+
+                        const allAutoEntries = Object.entries(obj.autoPulls || {}).filter(([, amt]) => parseFloat(amt) > 0);
+                        const chargedIdsThisMonth = new Set(
+                            (obj.history || [])
+                                .filter(h => h.type === 'auto' && h.month === activeMonthKey && h.categoryId)
+                                .map(h => h.categoryId)
+                        );
+                        const pendingAutoAmount = allAutoEntries
+                            .filter(([cId]) => !chargedIdsThisMonth.has(cId))
+                            .reduce((s, [, v]) => s + (parseFloat(v) || 0), 0);
+                        const configuredMonthlyAuto = allAutoEntries.reduce((s, [, v]) => s + (parseFloat(v) || 0), 0);
+                        const isAutoAppliedThisMonth =
+                            (Array.isArray(obj.appliedMonths) && obj.appliedMonths.includes(activeMonthKey)) ||
+                            (configuredMonthlyAuto > 0 && pendingAutoAmount === 0);
+
                         const isFundingThis = fundingObjectiveIds.has(obj.id);
                         const mInput = manualInputs[obj.id] || { catId: categories[0]?.id || '', amount: '' };
 
@@ -401,7 +465,6 @@ export default function WealthObjectivesSection({
                                         />
                                     </div>
 
-                                    {/* Configured Automated Pulls + Apply Button */}
                                     {configuredMonthlyAuto > 0 && (
                                         <div className="space-y-2 mb-3">
                                             <div className="flex flex-wrap gap-1.5">
@@ -424,8 +487,8 @@ export default function WealthObjectivesSection({
                                                     {isFundingThis
                                                         ? 'Processing...'
                                                         : isAutoAppliedThisMonth
-                                                        ? `✓ ${activeMonthKey} Auto-Pull Applied (${formatCurrency(configuredMonthlyAuto)})`
-                                                        : `Apply ${activeMonthKey} Auto-Pull (${formatCurrency(configuredMonthlyAuto)})`}
+                                                            ? `✓ ${activeMonthKey} Auto-Pull Applied (${formatCurrency(configuredMonthlyAuto)})`
+                                                            : `Apply ${activeMonthKey} Auto-Pull (${formatCurrency(pendingAutoAmount)})`}
                                                 </button>
                                             )}
                                         </div>

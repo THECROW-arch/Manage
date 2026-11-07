@@ -1,5 +1,10 @@
 import { calculateProgressiveTax, getToday } from './constants';
 
+/**
+ * Normalizes common user spelling typos so natural language commands match their intended handlers.
+ * @param {string} str - Raw user input string.
+ * @returns {string} Lowercased, typo-normalized string.
+ */
 function normalizeTypos(str) {
     return str
         .toLowerCase()
@@ -24,77 +29,93 @@ function normalizeTypos(str) {
         .trim();
 }
 
+/**
+ * Escapes special regular expression metacharacters in a literal string.
+ * @param {string} str - Input string to escape.
+ * @returns {string} Escaped regex-safe string.
+ */
 function escapeRegExp(str) {
     return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
  * Parses a complete monetary token without accepting partial matches or truncating decimals.
- * Handles thousands separators ("1,000" -> 1000, "8,000" -> 8000, "2,000" -> 2000)
- * and decimal commas/dots ("1,5" -> 1.5, "12.50" -> 12.5).
- * Returns NaN if the token has >2 decimal places (e.g. "1000.567") or invalid grouping.
+ * Supports thousands separators ("1,000" -> 1000), decimal commas/dots ("1,5" -> 1.5),
+ * and shorthand k/m suffixes ("120k" -> 120000, "1.5k" -> 1500, "2m" -> 2000000).
+ * @param {string|number} rawNumberStr - Raw numeric token captured from user input.
+ * @returns {number} Parsed numeric amount or NaN if invalid.
  */
 export function parseMoneyAmount(rawNumberStr) {
     if (rawNumberStr === null || rawNumberStr === undefined) return NaN;
-    const s = String(rawNumberStr).trim().replace(/^[$€£]\s*/, '');
+    let s = String(rawNumberStr).trim().replace(/^[$€£]\s*/, '');
     if (!s) return NaN;
+
+    let multiplier = 1;
+    const suffixMatch = s.match(/^(.+?)\s*([km])\b$/i);
+    if (suffixMatch) {
+        s = suffixMatch[1].trim();
+        multiplier = suffixMatch[2].toLowerCase() === 'm' ? 1000000 : 1000;
+    }
 
     const hasComma = s.includes(',');
     const hasDot = s.includes('.');
+    let baseValue = NaN;
 
     if (hasComma && hasDot) {
         const lastComma = s.lastIndexOf(',');
         const lastDot = s.lastIndexOf('.');
         if (lastComma < lastDot) {
-            // Format: 1,234.56
             if (!/^\d{1,3}(,\d{3})+(\.\d{1,2})?$/.test(s)) return NaN;
-            return Number(s.replace(/,/g, ''));
+            baseValue = Number(s.replace(/,/g, ''));
         } else {
-            // Format: 1.234,56
             if (!/^\d{1,3}(\.\d{3})+(,\d{1,2})?$/.test(s)) return NaN;
-            return Number(s.replace(/\./g, '').replace(',', '.'));
+            baseValue = Number(s.replace(/\./g, '').replace(',', '.'));
         }
-    }
-
-    if (hasComma) {
-        // Thousands grouping: "1,000", "8,000", "240,000"
+    } else if (hasComma) {
         if (/^\d{1,3}(,\d{3})+$/.test(s)) {
-            return Number(s.replace(/,/g, ''));
+            baseValue = Number(s.replace(/,/g, ''));
+        } else if (/^\d+,\d{1,2}$/.test(s)) {
+            baseValue = Number(s.replace(',', '.'));
+        } else {
+            return NaN;
         }
-        // Decimal comma with 1 or 2 fractional digits: "1,5", "45,50"
-        if (/^\d+,\d{1,2}$/.test(s)) {
-            return Number(s.replace(',', '.'));
-        }
-        return NaN;
-    }
-
-    if (hasDot) {
-        // Reject more than 2 decimal places (e.g. "1000.567" or ambiguous "1.200") instead of truncating
+    } else if (hasDot) {
         if (!/^\d+\.\d{1,2}$/.test(s)) return NaN;
-        return Number(s);
+        baseValue = Number(s);
+    } else if (/^\d+$/.test(s)) {
+        baseValue = Number(s);
     }
 
-    if (/^\d+$/.test(s)) {
-        return Number(s);
-    }
-
-    return NaN;
+    if (Number.isNaN(baseValue)) return NaN;
+    return Number((baseValue * multiplier).toFixed(2));
 }
 
 export const MONEY_PARSER_TEST_CASES = [
     { input: '1,000', expected: 1000 },
     { input: '8,000', expected: 8000 },
     { input: '2,000', expected: 2000 },
-    { input: '1,5', expected: 1.5 }
+    { input: '1,5', expected: 1.5 },
+    { input: '120k', expected: 120000 },
+    { input: '1.5k', expected: 1500 }
 ];
 
+/**
+ * Runs a self-test on parseMoneyAmount against canonical thousands, decimal, and suffix cases.
+ * @returns {boolean} True when all test cases pass.
+ */
 export function runMoneyParserSelfTest() {
     return MONEY_PARSER_TEST_CASES.every(({ input, expected }) => parseMoneyAmount(input) === expected);
 }
 
-// Captures the complete contiguous numeric token so partial prefixes are never extracted
-const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)/;
+// Captures the complete contiguous numeric token including optional k/m shorthand suffix
+const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/i;
 
+/**
+ * Processes a conversational or action turn for the Sterling AI Financial Assistant.
+ * @param {string} rawInput - The user's chat or voice transcript prompt.
+ * @param {object} ctx - Workspace state and action callbacks passed from App.
+ * @returns {Promise<{reply: string, actionBadge?: string, suggestions?: string[]}>} Assistant response payload.
+ */
 export async function processAIAgentTurn(rawInput, ctx) {
     const text = (rawInput || '').trim();
     if (!text) {
@@ -148,12 +169,17 @@ export async function processAIAgentTurn(rawInput, ctx) {
         onDirectCreateCategory,
         wealthObjectives = [],
         setWealthObjectives,
+        currentMonthBoost = 0,
         handleAddMonthlyBoost,
         handleClearMonthlyBoost,
         onDirectCreateBundle,
         onDirectCreateSandbox
     } = ctx;
 
+    /**
+     * Returns an ISO date string guaranteed to fall within the active selectedMonth.
+     * @returns {string} YYYY-MM-DD date string.
+     */
     const getExpenseDateForActiveMonth = () => {
         const today = getToday();
         if (selectedMonth && !today.startsWith(selectedMonth)) {
@@ -162,6 +188,12 @@ export async function processAIAgentTurn(rawInput, ctx) {
         return today;
     };
 
+    /**
+     * Matches a user-referenced category name or alias inside an input phrase,
+     * excluding leading logging verbs such as "save" so they do not false-match "Savings".
+     * @param {string} inputStr - Input text to search.
+     * @returns {object|null} Matched category object or null.
+     */
     const findCategoryInText = (inputStr) => {
         if (!Array.isArray(categories) || categories.length === 0) return null;
         const cleanedLookup = String(inputStr || '').replace(
@@ -188,6 +220,11 @@ export async function processAIAgentTurn(rawInput, ctx) {
         return null;
     };
 
+    /**
+     * Computes allocated, spent, and remaining amounts for a given category in the active month.
+     * @param {object} cat - Category object.
+     * @returns {{allocated: number, spent: number, remaining: number}} Category budget metrics.
+     */
     const getCategoryStats = (cat) => {
         const allocated = parsedSalary * ((cat.percentage || 0) / 100);
         const spent = monthlyExpenses
@@ -237,9 +274,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 suggestions: ['Change my currency to MAD', 'Open Settings']
             };
         }
-        if (/\b(salary|income|paycheck)\b/i.test(lower)) {
+        if (/\b(salary|income|paycheck|boost|bonus|extra\s+income)\b/i.test(lower)) {
             return {
-                reply: `You can update your monthly **Salary** in the **Settings** tab—or tell me *"Set my salary to 12000"* and I will update it right here!`,
+                reply: `You can update your base **Salary** in the **Settings** tab, or click **+ ${selectedMonth} Income Boost** on the **Cash Flow** tab to add temporary extra income for **${selectedMonth}** only!`,
                 suggestions: ['Open Settings', 'Audit my budget']
             };
         }
@@ -388,7 +425,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
         const allocations = {};
         const splitSummary = [];
-        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)\s*(?:dollars?|mad|dhs?|euros?)?\s*(?:from|in|out\s+of|off)\s+([a-zA-Z]+)\b/gi;
+        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:dollars?|mad|dhs?|euros?)?\s*(?:from|in|out\s+of|off)\s+([a-zA-Z]+)\b/gi;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
             const amt = parseMoneyAmount(match[1]);
@@ -472,7 +509,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const rawObjTitle = nameMatch?.[1]?.trim() || 'Wealth Objective';
         const objTitle = rawObjTitle.charAt(0).toUpperCase() + rawObjTitle.slice(1);
 
-        const rawTokens = [...text.matchAll(/[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)/g)].map(m => m[1]);
+        const rawTokens = [...text.matchAll(/[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/gi)].map(m => m[1]);
         const targetCost = rawTokens.length > 0 ? parseMoneyAmount(rawTokens[0]) : NaN;
 
         if (isNaN(targetCost) || targetCost <= 0) {
@@ -480,7 +517,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const autoPulls = {};
-        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)\s*(?:from|in)\s+([a-zA-Z]+)\b/gi;
+        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:from|in)\s+([a-zA-Z]+)\b/gi;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
             const amt = parseMoneyAmount(match[1]);
@@ -512,7 +549,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 8. ONE-MONTH INCOME BOOST (Distinguishes gift expenses from income boosts!)
+    // 8. ONE-MONTH INCOME BOOST (Distinguishes questions & gift expenses from income boosts!)
     // =========================================================================
     if (/\b(clear|remove|reset)\b.*\b(boost|bonus|extra\s+income|income\s+gift)\b/i.test(lower) && handleClearMonthlyBoost) {
         if (isReadOnly) {
@@ -528,47 +565,71 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     const mentionsBoostWord = /\b(gift|bonus|boost|extra\s+income|extra\s+money)\b/i.test(lower);
     if (mentionsBoostWord && handleAddMonthlyBoost) {
-        const hasExplicitIncomeContext =
-            /\b(income\s+boost|salary\s+boost|boost\s+(?:my\s+)?(?:income|salary)|extra\s+income|extra\s+money|(?:to|into|for)\s+(?:my\s+|this\s+month'?s?\s+)?(?:income|salary|paycheck)|gifted\s+me)\b/i.test(lower) ||
-            (/\b(?:boost|bonus|gift)\b/i.test(lower) && /\b(?:income|salary|paycheck)\b/i.test(lower));
+        // Check if the user is asking an informational/hypothetical question rather than issuing a command
+        const isDirectBoostCommand = /^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:add|boost|apply|give|include|put|log|record|set|increase)\b/i.test(lower);
+        const isQuestionAboutBoost =
+            !isDirectBoostCommand &&
+            (/\?$/.test(text) ||
+                /^(?:what|how|why|where|when|who|which|is|are|do|did|does|have|has|can\s+i|should\s+i|would\s+i|will\s+i|if\s+i|what\s+if)\b/i.test(lower) ||
+                /\b(?:how\s+much|what\s+is|do\s+i\s+have|can\s+i\s+afford)\b/i.test(lower));
 
-        const hasExpensePurchaseVerb = /\b(spent|paid|bought|purchase|purchased|log|record|save|fill|prefill)\b/i.test(lower);
-        const strippedForCatCheck = lower.replace(/^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b\s*/i, '');
-        const hasCategoryTarget = Boolean(findCategoryInText(strippedForCatCheck));
-        const isClearGiftExpense = !hasExplicitIncomeContext && (hasExpensePurchaseVerb || hasCategoryTarget);
-
-        if (!isClearGiftExpense) {
-            if (isReadOnly) {
-                return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
-            }
-            const amtMatch = text.match(MONEY_TOKEN_REGEX);
-            const boostVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
-
-            if (hasExplicitIncomeContext) {
-                if (!isNaN(boostVal) && boostVal > 0) {
-                    handleAddMonthlyBoost(boostVal);
-                    return {
-                        reply: `Added a temporary **+${formatCurrency(boostVal)}** income boost for **${selectedMonth} only**! Your total income for **${selectedMonth}** is now **${formatCurrency(parsedSalary + boostVal)}**, and next month will automatically revert to your base salary.`,
-                        actionBadge: `+${formatCurrency(boostVal)} (${selectedMonth} Only)`,
-                        suggestions: ["Clear this month's income boost", 'Audit my budget']
-                    };
-                }
-            } else if (/\b(gift|bonus)\b/i.test(lower) && !isNaN(boostVal) && boostVal > 0) {
-                // Ambiguous gift/bonus command: ask for clarification before altering income or expenses
-                const defaultExpCat = categories.find(c => c.type !== 'asset')?.name || 'Wants';
+        if (isQuestionAboutBoost) {
+            // If it's an affordability question ("Can I afford 500 if I have extra income?"), let it fall through to the affordability handler
+            if (!/\b(afford)\b/i.test(lower)) {
                 return {
-                    reply: `Would you like me to add **${formatCurrency(boostVal)}** as a **temporary income boost** for **${selectedMonth}**, or log it as a **gift expense**?\n\n• For income: *"Add a ${boostVal} gift to my income for this month"*\n• For an expense: *"Log ${boostVal} for gift in ${defaultExpCat}"*`,
+                    reply:
+                        currentMonthBoost > 0
+                            ? `You currently have a temporary **+${formatCurrency(currentMonthBoost)}** income boost active for **${selectedMonth}**, bringing your total **${selectedMonth}** income to **${formatCurrency(parsedSalary)}**.`
+                            : `You currently have **${formatCurrency(0)}** in extra income boosts for **${selectedMonth}** (your active income is **${formatCurrency(parsedSalary)}**). To add one, say: *"Add a 500 gift to my income for this month"*.`,
+                    actionBadge: `Boost (${selectedMonth}): ${formatCurrency(currentMonthBoost)}`,
                     suggestions: [
-                        `Add a ${boostVal} gift to my income for this month`,
-                        `Log ${boostVal} for gift in ${defaultExpCat}`
+                        'Add a 500 gift to my income for this month',
+                        'Audit my budget'
                     ]
                 };
+            }
+        } else {
+            const hasExplicitIncomeContext =
+                /\b(income\s+boost|salary\s+boost|boost\s+(?:my\s+)?(?:income|salary)|extra\s+income|extra\s+money|(?:to|into|for)\s+(?:my\s+|this\s+month'?s?\s+)?(?:income|salary|paycheck)|gifted\s+me)\b/i.test(lower) ||
+                (/\b(?:boost|bonus|gift)\b/i.test(lower) && /\b(?:income|salary|paycheck)\b/i.test(lower));
+
+            const hasExpensePurchaseVerb = /\b(spent|paid|bought|purchase|purchased|log|record|save|fill|prefill)\b/i.test(lower);
+            const strippedForCatCheck = lower.replace(/^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b\s*/i, '');
+            const hasCategoryTarget = Boolean(findCategoryInText(strippedForCatCheck));
+            const isClearGiftExpense = !hasExplicitIncomeContext && (hasExpensePurchaseVerb || hasCategoryTarget);
+
+            if (!isClearGiftExpense) {
+                if (isReadOnly) {
+                    return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+                }
+                const amtMatch = text.match(MONEY_TOKEN_REGEX);
+                const boostVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
+
+                if (hasExplicitIncomeContext) {
+                    if (!isNaN(boostVal) && boostVal > 0) {
+                        handleAddMonthlyBoost(boostVal);
+                        return {
+                            reply: `Added a temporary **+${formatCurrency(boostVal)}** income boost for **${selectedMonth} only**! Your total income for **${selectedMonth}** is now **${formatCurrency(parsedSalary + boostVal)}**, and next month will automatically revert to your base salary.`,
+                            actionBadge: `+${formatCurrency(boostVal)} (${selectedMonth} Only)`,
+                            suggestions: ["Clear this month's income boost", 'Audit my budget']
+                        };
+                    }
+                } else if (/\b(gift|bonus)\b/i.test(lower) && !isNaN(boostVal) && boostVal > 0) {
+                    const defaultExpCat = categories.find(c => c.type !== 'asset')?.name || 'Wants';
+                    return {
+                        reply: `Would you like me to add **${formatCurrency(boostVal)}** as a **temporary income boost** for **${selectedMonth}**, or log it as a **gift expense**?\n\n• For income: *"Add a ${boostVal} gift to my income for this month"*\n• For an expense: *"Log ${boostVal} for gift in ${defaultExpCat}"*`,
+                        suggestions: [
+                            `Add a ${boostVal} gift to my income for this month`,
+                            `Log ${boostVal} for gift in ${defaultExpCat}`
+                        ]
+                    };
+                }
             }
         }
     }
 
     // =========================================================================
-    // 9. CREATE / DELETE / RENAME A CATEGORY (Strictly separated from expense commands!)
+    // 9. CREATE / DELETE / RENAME A CATEGORY
     // =========================================================================
     const isExplicitCreateCategory =
         /\b(?:create|add|make|new)\s+(?:a\s+)?(?:new\s+)?(?:wealth\s+asset\s+|asset\s+|expense\s+)?category\b/i.test(lower) &&
@@ -583,7 +644,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const pctMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:%|percent)/i);
         const requestedPct = pctMatch ? parseFloat(pctMatch[1]) : 0;
 
-        const goalMatch = text.match(/\b(?:goal|target)\s*(?:of|is|to|:)?\s*[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)/i);
+        const goalMatch = text.match(/\b(?:goal|target)\s*(?:of|is|to|:)?\s*[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/i);
         const requestedGoal = goalMatch ? parseMoneyAmount(goalMatch[1]) : 0;
 
         let extractedName = '';
@@ -627,7 +688,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
         };
     }
 
-    // Only delete a category when the command explicitly targets a category and does NOT mention an expense/item
     const isExplicitDeleteCategory =
         /\b(?:delete|remove)\s+(?:the\s+)?(?:category\b|[a-z0-9\s&'+!-]+?\s+category\b)/i.test(lower) &&
         !/\b(?:expense|expenses|transaction|item|purchase|from\s+category|in\s+category|under\s+category)\b/i.test(lower);
@@ -676,7 +736,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     // =========================================================================
     // 10. REMOVE / DELETE / UNDO AN EXPENSE
-    // Distinguishes cross-month lastAddedExpenseId and verifies created_at timestamps
     // =========================================================================
     if (/\b(remove|delete|undo|erase|cancel)\b.*\b(expense|expenses|transaction|item|purchase|last|latest|recent)\b/i.test(lower) || /\b(remove|delete)\s+the\s+last\b/i.test(lower)) {
         if (isReadOnly) {
@@ -705,7 +764,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
             }
 
             if (!targetExp) {
-                // Verify all monthlyExpenses have valid created_at timestamps before using creation-order fallback
                 const allHaveValidCreatedAt = monthlyExpenses.every(
                     e => Boolean(e.created_at) && !Number.isNaN(Date.parse(e.created_at))
                 );
@@ -805,7 +863,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
     }
 
-    const salaryCmdMatch = text.match(/\b(?:set|change|update|make)\s+(?:my\s+)?(?:monthly\s+)?(?:salary|income|paycheck)\s+(?:to|as|at)?\s*[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)/i);
+    const salaryCmdMatch = text.match(/\b(?:set|change|update|make)\s+(?:my\s+)?(?:monthly\s+)?(?:salary|income|paycheck)\s+(?:to|as|at)?\s*[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/i);
     if (salaryCmdMatch && setSalary) {
         const newSal = parseMoneyAmount(salaryCmdMatch[1]);
         if (isNaN(newSal) || newSal < 0) {
@@ -922,7 +980,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 13. LOG OR PRE-FILL AN EXPENSE (Allows category qualifiers like "category Needs")
+    // 13. LOG OR PRE-FILL AN EXPENSE
     // =========================================================================
     const isLogIntent = /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b/i.test(lower);
     const hasNumber = /\d+/.test(lower);
@@ -935,7 +993,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const recFlag = /\b(recurring|monthly|daily|yearly|every\s+month)\b/i.test(lower);
         const batchFlag = /\b(batch|batched|month\s+end)\b/i.test(lower);
 
-        // Exclude leading logging verb (e.g. "save") before looking up category
         const categoryText = lower.replace(/^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b\s*/i, '');
         const matchedCat = findCategoryInText(categoryText) || categories.find(c => c.type !== 'asset') || categories[0];
         const amtMatch = text.match(MONEY_TOKEN_REGEX);
@@ -1173,7 +1230,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     // =========================================================================
     // 20. ANALYST ENGINE: SAVINGS / PORTFOLIO GOAL PROJECTION & OBJECTIVES
-    // Uses completed contributions only for Wealth Objectives
     // =========================================================================
     if (/\b(goal|goals|target|portfolio|wealth|net\s+worth|when\s+will\s+i\s+reach|objectives?)\b/i.test(lower)) {
         const assetCats = categories.filter(c => c.type === 'asset');
@@ -1203,7 +1259,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
         if (Array.isArray(wealthObjectives) && wealthObjectives.length > 0) {
             const objLines = wealthObjectives.map(o => {
                 const autoMo = Object.values(o.autoPulls || {}).reduce((s, v) => s + (parseFloat(v) || 0), 0);
-                // Count only completed contributions (history / manualSaved), never unexecuted autoPull config
                 const completedFunded = Array.isArray(o.history) && o.history.length > 0
                     ? o.history.reduce((s, h) => s + (parseFloat(h.amount) || 0), 0)
                     : (parseFloat(o.manualSaved) || 0);
@@ -1228,7 +1283,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 21. ANALYST ENGINE: ACCURATE PROGRESSIVE TAX ESTIMATOR (Reads rawRes.owed first)
+    // 21. ANALYST ENGINE: ACCURATE PROGRESSIVE TAX ESTIMATOR
     // =========================================================================
     if (/\b(tax|taxes)\b/i.test(lower)) {
         const withoutYear = text.replace(/\b20\d{2}\b/g, ' ');

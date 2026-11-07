@@ -525,19 +525,19 @@ export default function App() {
     const periodKey = freq === 'daily'
       ? targetDay
       : freq === 'yearly'
-      ? mKey.slice(0, 4)
-      : mKey;
+        ? mKey.slice(0, 4)
+        : mKey;
     return meta.skippedPeriods.includes(periodKey);
   };
 
   const lastAddedExpenseId = activeUserId
     ? (lastExpenseByUser[activeUserId] ?? (() => {
-        try {
-          return localStorage.getItem(`managed_last_expense_${activeUserId}`) || null;
-        } catch {
-          return null;
-        }
-      })())
+      try {
+        return localStorage.getItem(`managed_last_expense_${activeUserId}`) || null;
+      } catch {
+        return null;
+      }
+    })())
     : null;
 
   const recordLastAddedExpenseId = (expId) => {
@@ -857,16 +857,25 @@ export default function App() {
         }
       }
 
-      // 2. FORWARD RECURRING EXPENSES TO NEXT MONTH (Preserves each expense's recurrenceType metadata)
+      // 2. FORWARD RECURRING EXPENSES (Monthly/Daily -> nextMonthStamp; Yearly -> nextYearStamp)
       const recurringExpenses = monthlyExpenses.filter(e => e.is_recurring);
       let newRecurring = [];
       if (recurringExpenses.length > 0) {
-        const recPayloads = recurringExpenses.map(e => ({
-          user_id: session.user.id, name: e.name, cost: e.cost,
-          category_id: e.category_id, category: e.category,
-          expense_date: nextMonthStamp,
-          is_recurring: true, is_batched: false
-        }));
+        const nextYearStamp = `${Number(year) + 1}-${String(month).padStart(2, '0')}-01`;
+        const recPayloads = recurringExpenses.map(e => {
+          const sourceFreq = expenseMetaMap[e.id]?.recurrenceType || 'monthly';
+          const targetDate = sourceFreq === 'yearly' ? nextYearStamp : nextMonthStamp;
+          return {
+            user_id: session.user.id,
+            name: e.name,
+            cost: e.cost,
+            category_id: e.category_id,
+            category: e.category,
+            expense_date: targetDate,
+            is_recurring: true,
+            is_batched: false
+          };
+        });
         const { data, error } = await supabase.from('expenses').insert(recPayloads).select();
         if (error) throw error;
         newRecurring = data || [];

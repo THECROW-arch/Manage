@@ -20,7 +20,7 @@ function encodeSafeCSVCell(rawVal) {
     const neutralized = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
     return `"${neutralized.replace(/"/g, '""')}"`;
 }
-
+/** ... */
 export default function OwnerDashboard() {
     const [users, setUsers] = useState([]);
     const [tickets, setTickets] = useState([]);
@@ -37,7 +37,7 @@ export default function OwnerDashboard() {
     const [savingUserIds, setSavingUserIds] = useState(() => new Set());
 
     const fetchRequestIdRef = useRef(0);
-
+    /** ... */
     const fetchCommandCenterData = useCallback(async () => {
         const reqId = ++fetchRequestIdRef.current;
         await Promise.resolve();
@@ -78,8 +78,8 @@ export default function OwnerDashboard() {
                     ? Array.isArray(rpcRes.data?.users)
                         ? rpcRes.data.users
                         : Array.isArray(rpcRes.data)
-                        ? rpcRes.data
-                        : []
+                            ? rpcRes.data
+                            : []
                     : [];
 
                 const profileRows = !ownerProfilesRes.error && Array.isArray(ownerProfilesRes.data)
@@ -159,7 +159,7 @@ export default function OwnerDashboard() {
         const timer = setTimeout(() => setToastMsg(''), 3500);
         return () => clearTimeout(timer);
     }, [toastMsg]);
-
+    /** ... */
     const handleUpdateUserAccess = async (targetUserId, updates) => {
         const targetUser = users.find((u) => u.user_id === targetUserId);
         if (!targetUser) return;
@@ -199,10 +199,10 @@ export default function OwnerDashboard() {
                             prev.map((u) =>
                                 u.user_id === targetUserId
                                     ? {
-                                          ...u,
-                                          role: String(serverRow.role || updates.role).trim().toLowerCase(),
-                                          subscription_tier: reconciledTier
-                                      }
+                                        ...u,
+                                        role: String(serverRow.role || updates.role).trim().toLowerCase(),
+                                        subscription_tier: reconciledTier
+                                    }
                                     : u
                             )
                         );
@@ -238,7 +238,7 @@ export default function OwnerDashboard() {
             });
         }
     };
-
+    /** ... */
     const handleExportUsersCSV = () => {
         if (users.length === 0) return;
         const headers = ['Username', 'User ID', 'Role', 'Subscription Tier', 'Status', 'Current Streak', 'Joined Date'];
@@ -279,8 +279,8 @@ export default function OwnerDashboard() {
     const resolutionRate = ticketsUnavailable
         ? null
         : totalTickets > 0
-        ? Math.round((resolvedTickets / totalTickets) * 100)
-        : 100;
+            ? Math.round((resolvedTickets / totalTickets) * 100)
+            : 100;
 
     const filteredUsers = users.filter((u) => {
         const matchesSearch =
@@ -409,13 +409,12 @@ export default function OwnerDashboard() {
                         <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-400">
                             Support SLA Health
                         </span>
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            ticketsUnavailable
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${ticketsUnavailable
                                 ? 'bg-gray-100 text-gray-600 dark:bg-zinc-800 dark:text-zinc-400'
                                 : openTickets === 0
-                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
-                                : 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300'
-                        }`}>
+                                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+                                    : 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300'
+                            }`}>
                             {ticketsUnavailable ? 'Unavailable' : `${openTickets} Open`}
                         </span>
                     </div>
@@ -480,13 +479,12 @@ export default function OwnerDashboard() {
                                             @{tk.username || 'user'} • {tk.category || 'general'}
                                         </p>
                                     </div>
-                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${
-                                        tk.status === 'resolved'
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0 ${tk.status === 'resolved'
                                             ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300'
                                             : tk.status === 'in_progress'
-                                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
-                                            : 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300'
-                                    }`}>
+                                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
+                                                : 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300'
+                                        }`}>
                                         {tk.status || 'open'}
                                     </span>
                                 </div>
@@ -572,10 +570,10 @@ export default function OwnerDashboard() {
                                         u.role === 'owner'
                                             ? 'bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-500/20 dark:text-purple-300 dark:border-purple-500/30'
                                             : u.role === 'dev'
-                                            ? 'bg-sky-100 text-sky-800 border-sky-300 dark:bg-sky-500/20 dark:text-sky-300 dark:border-sky-500/30'
-                                            : u.role === 'special'
-                                            ? 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30'
-                                            : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-700';
+                                                ? 'bg-sky-100 text-sky-800 border-sky-300 dark:bg-sky-500/20 dark:text-sky-300 dark:border-sky-500/30'
+                                                : u.role === 'special'
+                                                    ? 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30'
+                                                    : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-700';
 
                                     return (
                                         <tr
@@ -624,10 +622,10 @@ export default function OwnerDashboard() {
                                             <td className="py-4 px-4 text-gray-600 dark:text-zinc-400 font-medium">
                                                 {u.created_at
                                                     ? new Date(u.created_at).toLocaleDateString(undefined, {
-                                                          year: 'numeric',
-                                                          month: 'short',
-                                                          day: 'numeric'
-                                                      })
+                                                        year: 'numeric',
+                                                        month: 'short',
+                                                        day: 'numeric'
+                                                    })
                                                     : 'Verified Member'}
                                             </td>
 

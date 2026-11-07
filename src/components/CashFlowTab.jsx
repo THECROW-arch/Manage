@@ -97,7 +97,7 @@ export default function CashFlowTab({
     });
 
     const expenseMetaMap = externalMetaMap ?? localMetaMap;
-
+    /** ... */
     const updateExpenseMeta = (expId, patch) => {
         if (externalUpdateMeta) {
             externalUpdateMeta(expId, patch);
@@ -120,7 +120,7 @@ export default function CashFlowTab({
     };
 
     const todayDateStr = getToday();
-
+    /** ... */
     const isExpenseSkippedForCurrentPeriod = (exp) => {
         if (externalIsSkipped) {
             return externalIsSkipped(exp);
@@ -132,19 +132,19 @@ export default function CashFlowTab({
         const periodKey = freq === 'daily'
             ? todayDateStr
             : freq === 'yearly'
-            ? selectedMonth.slice(0, 4)
-            : selectedMonth;
+                ? selectedMonth.slice(0, 4)
+                : selectedMonth;
         return meta.skippedPeriods.includes(periodKey);
     };
-
+    /** ... */
     const togglePeriodConfirmation = (exp) => {
         const meta = expenseMetaMap[exp.id] || {};
         const freq = meta.recurrenceType || 'monthly';
         const periodKey = freq === 'daily'
             ? todayDateStr
             : freq === 'yearly'
-            ? selectedMonth.slice(0, 4)
-            : selectedMonth;
+                ? selectedMonth.slice(0, 4)
+                : selectedMonth;
         const currentSkipped = Array.isArray(meta.skippedPeriods) ? meta.skippedPeriods : [];
         const isSkipped = currentSkipped.includes(periodKey);
         const nextSkipped = isSkipped
@@ -165,7 +165,7 @@ export default function CashFlowTab({
     const mediaStreamRef = useRef(null);
     const audioChunksRef = useRef([]);
     const recordingTimeoutRef = useRef(null);
-
+    /** ... */
     const releaseAudioHardware = async () => {
         clearTimeout(recordingTimeoutRef.current);
         micAttemptRef.current += 1;
@@ -177,7 +177,7 @@ export default function CashFlowTab({
             processorRef.current = null;
         }
         if (audioContextRef.current) {
-            await audioContextRef.current.close().catch(() => {});
+            await audioContextRef.current.close().catch(() => { });
             audioContextRef.current = null;
         }
         if (mediaStreamRef.current) {
@@ -193,7 +193,7 @@ export default function CashFlowTab({
             releaseAudioHardware();
         };
     }, []);
-
+    /** ... */
     const cancelVoiceRecording = async () => {
         audioChunksRef.current = [];
         await releaseAudioHardware();
@@ -201,7 +201,7 @@ export default function CashFlowTab({
         setIsTranscribing(false);
         setVoiceFeedback(null);
     };
-
+    /** ... */
     const parseVoiceExpense = (rawTranscript) => {
         const text = rawTranscript.trim();
         if (!text) return;
@@ -218,6 +218,14 @@ export default function CashFlowTab({
         while (/(\d),(\d{3})(?!\d)/.test(working)) {
             working = working.replace(/(\d),(\d{3})(?!\d)/g, '$1$2');
         }
+
+        // Expand shorthand 'k' (thousand) and 'm' (million) suffixes (e.g. "120k" -> "120000", "1.5k" -> "1500")
+        working = working.replace(/\b(\d+(?:[.,]\d+)?)\s*([km])\b/gi, (_, numPart, suffix) => {
+            const val = parseFloat(numPart.replace(',', '.'));
+            if (Number.isNaN(val)) return _;
+            const mult = suffix.toLowerCase() === 'm' ? 1000000 : 1000;
+            return String(Number((val * mult).toFixed(2)));
+        });
 
         // 0. EXPLICIT FORM RESET / CLEAR COMMAND
         const clearFormRegex = /\b(?:clear|reset|empty|wipe)\s+(?:the\s+)?(?:form|fields|inputs|everything|all|expense)\b/i;
@@ -418,7 +426,7 @@ export default function CashFlowTab({
             message: `${t('voice_captured', 'Heard')}: "${text}" — ${t('voice_review_prompt', 'Review fields below and click Save.')}`
         });
     };
-
+    /** ... */
     const stopAndProcessRecording = async () => {
         if (!isRecordingRef.current) return;
         const sampleRate = audioContextRef.current?.sampleRate || 16000;
@@ -474,7 +482,7 @@ export default function CashFlowTab({
             setIsTranscribing(false);
         }
     };
-
+    /** ... */
     const toggleVoiceRecording = async () => {
         if (isReadOnly || isTranscribing) return;
 
@@ -1098,8 +1106,8 @@ export default function CashFlowTab({
                                             aria-pressed={isListening}
                                             aria-label={isListening ? t('stop_voice_input', 'Stop recording and transcribe') : t('start_voice_input', 'Fill expense by voice')}
                                             className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 transition-all focus:outline-none focus:ring-2 focus:ring-emerald-600/30 disabled:opacity-60 ${isListening
-                                                    ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse shadow-sm'
-                                                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:hover:bg-emerald-500/25 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30'
+                                                ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse shadow-sm'
+                                                : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:hover:bg-emerald-500/25 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30'
                                                 }`}
                                         >
                                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-3.5 h-3.5">
@@ -1138,10 +1146,10 @@ export default function CashFlowTab({
                                 role="status"
                                 aria-live="polite"
                                 className={`mb-4 px-3 py-2 rounded-md text-xs font-medium flex items-center justify-between gap-2 border ${voiceFeedback.type === 'error'
-                                        ? 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300'
-                                        : voiceFeedback.type === 'listening'
-                                            ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-300'
-                                            : 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300'
+                                    ? 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300'
+                                    : voiceFeedback.type === 'listening'
+                                        ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-300'
+                                        : 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300'
                                     }`}
                             >
                                 <span>{voiceFeedback.message}</span>
@@ -1227,11 +1235,10 @@ export default function CashFlowTab({
                                                         key={freqOpt}
                                                         type="button"
                                                         onClick={() => setRecurrenceType(freqOpt)}
-                                                        className={`px-2.5 py-1 rounded text-[11px] font-bold capitalize transition-all ${
-                                                            recurrenceType === freqOpt
-                                                                ? 'bg-emerald-700 text-white shadow-sm'
-                                                                : 'text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
-                                                        }`}
+                                                        className={`px-2.5 py-1 rounded text-[11px] font-bold capitalize transition-all ${recurrenceType === freqOpt
+                                                            ? 'bg-emerald-700 text-white shadow-sm'
+                                                            : 'text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
+                                                            }`}
                                                     >
                                                         {freqOpt}
                                                     </button>
@@ -1309,13 +1316,12 @@ export default function CashFlowTab({
                                                     setExpandedTransactionId(isExpanded ? null : exp.bundle_id);
                                                 }
                                             }}
-                                            className={`p-3 rounded-md border flex flex-col group transition-all ${
-                                                exp.bundle_id
-                                                    ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-500/30 cursor-pointer hover:border-emerald-300 dark:hover:border-emerald-500/50'
-                                                    : isSkippedThisPeriod
+                                            className={`p-3 rounded-md border flex flex-col group transition-all ${exp.bundle_id
+                                                ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-500/30 cursor-pointer hover:border-emerald-300 dark:hover:border-emerald-500/50'
+                                                : isSkippedThisPeriod
                                                     ? 'bg-gray-100/60 dark:bg-zinc-900/40 border-gray-200 dark:border-zinc-800/60 opacity-60'
                                                     : 'bg-gray-50 dark:bg-zinc-950 border-gray-100 dark:border-zinc-800'
-                                            }`}
+                                                }`}
                                         >
                                             {isEditingThis ? (
                                                 <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
@@ -1433,11 +1439,10 @@ export default function CashFlowTab({
                                                                         togglePeriodConfirmation(exp);
                                                                     }}
                                                                     title="Toggle whether you paid this recurring expense during this period"
-                                                                    className={`text-[10px] px-2 py-0.5 rounded font-bold border transition-colors ${
-                                                                        isSkippedThisPeriod
-                                                                            ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-300'
-                                                                            : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300'
-                                                                    }`}
+                                                                    className={`text-[10px] px-2 py-0.5 rounded font-bold border transition-colors ${isSkippedThisPeriod
+                                                                        ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-300'
+                                                                        : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300'
+                                                                        }`}
                                                                 >
                                                                     {isSkippedThisPeriod
                                                                         ? `Skipped (${freq === 'daily' ? 'Today' : freq === 'yearly' ? 'This Year' : 'This Month'})`
