@@ -8,11 +8,11 @@ const NAV_TABS = [
   { id: 'taxes', tKey: 'tax_center', icon: 'M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z' },
   { id: 'history', tKey: 'history_logs', icon: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z' },
   { id: 'settings', tKey: 'settings', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z' },
-  { id: 'support', tKey: 'support_hub_title', icon: 'M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z' },
+  { id: 'support', tKey: 'support_hub_title', icon: 'M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636l3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z' },
   { id: 'dev_dashboard', tKey: 'dev_dashboard', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
   { id: 'owner_dashboard', tKey: 'owner_dashboard', fallbackLabel: 'Owner Cmd', icon: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z' }
 ];
-/** ... */
+
 export function BrandEmblem({ className = "w-12 h-12" }) {
   return (
     <div className={`${className} relative flex items-center justify-center shrink-0 overflow-hidden rounded-xl border border-gray-200 dark:border-zinc-700 bg-white shadow-sm`}>
@@ -37,7 +37,7 @@ export function BrandEmblem({ className = "w-12 h-12" }) {
     </div>
   );
 }
-/** ... */
+
 export function BrandWordmark({ size = "md" }) {
   const dimensions = {
     sm: "text-base",
@@ -56,7 +56,7 @@ export function BrandWordmark({ size = "md" }) {
     </div>
   );
 }
-/** ... */
+
 export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentStreak, longestStreak, handleLogout, username, userRole, subscriptionTier = 'free', hasProAccess = false }) {
   const [isCollapsed, setIsCollapsed] = useState(() => {
     try { return localStorage.getItem('sidebarCollapsed') === 'true'; }
@@ -140,10 +140,14 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
               <div className="flex flex-col overflow-hidden">
                 <span className="text-xs font-bold text-gray-900 dark:text-white truncate" dir="ltr">@{username}</span>
                 <span className="text-[10px] font-bold text-gray-500 dark:text-zinc-400 uppercase tracking-wider flex items-center gap-1">
-                  <span>{userRole === 'special' ? 'SPECIAL VIP' : userRole}</span>
+                  <span>{userRole === 'special' ? t('role_vip', 'VIP') : userRole}</span>
                   <span>•</span>
                   <span className={hasProAccess ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400 dark:text-zinc-500'}>
-                    {userRole === 'special' ? 'FREE PRO' : hasProAccess ? 'PRO' : subscriptionTier.toUpperCase()}
+                    {userRole === 'special'
+                      ? t('tier_free_pro', 'Free Pro')
+                      : hasProAccess
+                      ? t('tier_pro', 'Pro')
+                      : t(`tier_${subscriptionTier}`, subscriptionTier.toUpperCase())}
                   </span>
                 </span>
               </div>
@@ -180,7 +184,7 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
     </aside>
   );
 }
-/** ... */
+
 export function MobileHeader({
   activeTab,
   setActiveTab,
@@ -189,7 +193,9 @@ export function MobileHeader({
   longestStreak,
   userRole,
   username,
-  handleLogout
+  handleLogout,
+  subscriptionTier = 'free',
+  hasProAccess = false
 }) {
   const { t } = useTranslation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -248,9 +254,9 @@ export function MobileHeader({
               title={
                 longestStreak
                   ? t('longest_streak_title', {
-                    longest: longestStreak,
-                    defaultValue: `Longest Streak: ${longestStreak}`
-                  })
+                      longest: longestStreak,
+                      defaultValue: `Longest Streak: ${longestStreak}`
+                    })
                   : undefined
               }
               className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-emerald-200 dark:border-emerald-500/20"
@@ -306,10 +312,11 @@ export function MobileHeader({
                     setActiveTab(tab.id);
                     setIsMobileMenuOpen(false);
                   }}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all ${isActive
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                    isActive
                       ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 dark:shadow-[inset_2px_0_0_0_#10B981]'
                       : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-800/60 font-medium'
-                    }`}
+                  }`}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={isActive ? 2 : 1.5} stroke="currentColor" className="w-5 h-5 shrink-0">
                     <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
@@ -332,7 +339,17 @@ export function MobileHeader({
                   </div>
                   <div className="flex flex-col min-w-0">
                     <span className="text-xs font-bold text-gray-900 dark:text-white truncate" dir="ltr">@{username}</span>
-                    <span className="text-[9px] font-medium text-gray-500 dark:text-zinc-500 uppercase tracking-wider">{userRole}</span>
+                    <span className="text-[9px] font-bold text-gray-500 dark:text-zinc-400 uppercase tracking-wider flex items-center gap-1">
+                      <span>{userRole === 'special' ? t('role_vip', 'VIP') : userRole}</span>
+                      <span>•</span>
+                      <span className={hasProAccess ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400 dark:text-zinc-500'}>
+                        {userRole === 'special'
+                          ? t('tier_free_pro', 'Free Pro')
+                          : hasProAccess
+                          ? t('tier_pro', 'Pro')
+                          : t(`tier_${subscriptionTier}`, subscriptionTier.toUpperCase())}
+                      </span>
+                    </span>
                   </div>
                 </div>
               )}
