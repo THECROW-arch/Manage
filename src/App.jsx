@@ -11,11 +11,23 @@ import TaxCenterTab from './components/TaxCenterTab';
 import SettingsTab from './components/SettingsTab';
 import Sidebar, { MobileHeader } from './components/Sidebar';
 import PortfolioTab from './components/PortfolioTab';
+import WealthObjectivesSection from './components/WealthObjectivesSection';
 import OccasionsSandboxTab from './components/OccasionsSandboxTab';
 import CashFlowTab from './components/CashFlowTab';
 import SupportTab from './components/SupportTab';
 import DevDashboard from './components/DevDashboard';
 import OwnerDashboard from './components/OwnerDashboard';
+import AIAssistantDrawer from './components/AIAssistantDrawer';
+
+const readUserStorage = (prefix, uid, fallback) => {
+  if (!uid) return fallback;
+  try {
+    const saved = localStorage.getItem(`${prefix}_${uid}`);
+    return saved ? JSON.parse(saved) : fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 /**
  * Main application component orchestrating global state, data fetching, and tab routing.
@@ -24,7 +36,7 @@ export default function App() {
   const { t, i18n } = useTranslation();
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryPassword, setRecoveryPassword] = useState('');
-  
+
   // Logout Confirmation State
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const logoutDialogRef = useRef(null);
@@ -50,7 +62,7 @@ export default function App() {
   });
 
   useEffect(() => {
-    try { localStorage.setItem('theme', theme); } catch (e) { console.warn(e); };
+    try { localStorage.setItem('theme', theme); } catch (e) { console.warn(e); }
     if (theme === 'dark') {
       document.documentElement.classList.add('dark');
       document.documentElement.style.colorScheme = 'dark';
@@ -75,7 +87,7 @@ export default function App() {
   });
 
   const [closedMonths, setClosedMonths] = useState([]);
-  
+
   // Persisted Active Tab State (Survives Refreshes)
   const [activeTab, setActiveTab] = useState(() => {
     try { return localStorage.getItem('activeTab') || 'cashflow'; }
@@ -87,12 +99,11 @@ export default function App() {
     catch (e) { console.warn('Failed to persist activeTab:', e); }
   }, [activeTab]);
 
-  const [plannerSubTab, setPlannerSubTab] = useState('occasions'); 
+  const [plannerSubTab, setPlannerSubTab] = useState('occasions');
 
   // Support Tab Persisted Draft & Submission State (Isolated by authenticated user ID)
   const [supportDraft, setSupportDraft] = useState({ userId: null, subject: '', category: 'general', message: '' });
   const [submittingTicketUserId, setSubmittingTicketUserId] = useState(null);
-
 
   const [salary, setSalary] = useState('');
   const [username, setUsername] = useState('');
@@ -102,7 +113,7 @@ export default function App() {
   const [newCategoryType, setNewCategoryType] = useState('expense');
   const [newCategoryGoal, setNewCategoryGoal] = useState('');
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
-  const [exportScope, setExportScope] = useState('month'); 
+  const [exportScope, setExportScope] = useState('month');
   const [exportMonth, setExportMonth] = useState(getCurrentMonth());
   const [exportDate, setExportDate] = useState(getToday());
   const [expenses, setExpenses] = useState([]);
@@ -116,7 +127,6 @@ export default function App() {
   const [adjDate, setAdjDate] = useState(getToday());
   const [adjNote, setAdjNote] = useState('');
   const [adjCatId, setAdjCatId] = useState('');
-  const [editingAdj, setEditingAdj] = useState(null);
 
   const [currency, setCurrency] = useState('$');
   const [currencyMode, setCurrencyMode] = useState('$');
@@ -156,6 +166,13 @@ export default function App() {
   const [sandboxExpCost, setSandboxExpCost] = useState('');
   const [sandboxExpBucketId, setSandboxExpBucketId] = useState('MAIN');
 
+  // Account-Scoped States for Income Boosts, Wealth Objectives, Expense Metadata, & Last-Added Expense
+  const activeUserId = session?.user?.id || null;
+  const [boostOverridesByUser, setBoostOverridesByUser] = useState({});
+  const [objectivesByUser, setObjectivesByUser] = useState({});
+  const [lastExpenseByUser, setLastExpenseByUser] = useState({});
+  const [metaOverridesByUser, setMetaOverridesByUser] = useState({});
+
   // Read-Only Locking Logic
   const todayMonth = getCurrentMonth();
   const isPastMonth = selectedMonth < todayMonth;
@@ -172,8 +189,6 @@ export default function App() {
     catch (e) { console.warn('Failed to save lockedCats:', e); }
   }, [lockedCategories]);
 
-  
-
   useEffect(() => {
     if (alertMsg) {
       const timer = setTimeout(() => setAlertMsg(''), 4000);
@@ -183,13 +198,16 @@ export default function App() {
 
   const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
 
-  const fetchUserData = async (userId) => {
+  const fetchUserData = async (userId, isBackgroundSync = false) => {
     window.__activeUserId = userId;
     if (window.__fetchingUserId === userId) return;
+    if (isBackgroundSync && window.__loadedUserId === userId) return;
     window.__fetchingUserId = userId;
     const isStale = () => window.__activeUserId !== userId;
 
-    setLoadingData(true);
+    if (window.__loadedUserId !== userId) {
+      setLoadingData(true);
+    }
     try {
       let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
       if (isStale()) return;
@@ -197,7 +215,7 @@ export default function App() {
       if (!profile) {
         const { data: authData } = await supabase.auth.getUser();
         if (isStale()) return;
-        const registeredUsername = authData?.user?.user_metadata?.username || `user_${Date.now()}`;
+        const registeredUsername = authData?.user?.user_metadata?.username || `user_${userId.slice(0, 8)}`;
 
         const { data: newProfile } = await supabase.from('profiles').insert([{
           user_id: userId,
@@ -213,7 +231,7 @@ export default function App() {
       if (profile) {
         const loadedRole = profile.role || 'user';
         setUserRole(loadedRole);
-        
+
         // Validate saved tab access against loaded role safely
         setActiveTab(currentTab => {
           if (currentTab === 'dev_dashboard' && loadedRole !== 'dev' && loadedRole !== 'owner') return 'cashflow';
@@ -310,6 +328,7 @@ export default function App() {
       if (isStale()) return;
       setClosedMonths(closedData || []);
 
+      window.__loadedUserId = userId;
       setLoadingData(false);
     } finally {
       if (window.__fetchingUserId === userId) {
@@ -321,7 +340,7 @@ export default function App() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) fetchUserData(session.user.id);
+      if (session) fetchUserData(session.user.id, false);
     });
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -330,12 +349,18 @@ export default function App() {
       }
       setSession(session);
       if (session) {
-        fetchUserData(session.user.id);
+        if (event === 'TOKEN_REFRESHED') return;
+        fetchUserData(session.user.id, true);
       } else {
         window.__activeUserId = null;
         window.__fetchingUserId = null;
+        window.__loadedUserId = null;
         setDraftHydratedUserId(null);
         setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
+        setBoostOverridesByUser({});
+        setObjectivesByUser({});
+        setLastExpenseByUser({});
+        setMetaOverridesByUser({});
       }
     });
 
@@ -377,8 +402,6 @@ export default function App() {
     return () => clearTimeout(delayDebounceFn);
   }, [salary, categories, sandboxSheets, session, loadingData, currency, taxCountry, taxFilingStatus, t]);
 
-
-  // Request Confirmation before actual logout
   const handleLogoutRequest = () => {
     setShowLogoutConfirm(true);
   };
@@ -396,11 +419,170 @@ export default function App() {
       setSalary('');
       setDraftHydratedUserId(null);
       setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
+      setBoostOverridesByUser({});
+      setObjectivesByUser({});
+      setLastExpenseByUser({});
+      setMetaOverridesByUser({});
       setShowLogoutConfirm(false);
     } catch (error) {
-      console.error("Logout failed:", error);
+      console.error('Logout failed:', error);
     }
   };
+
+  const formatCurrency = (amount) => {
+    const num = Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return currency.length > 1 ? `${currency} ${num}` : `${currency}${num}`;
+  };
+
+  // Pure Account-Scoped State Updaters & Persistence Effects
+  const monthlyIncomeBoosts = activeUserId
+    ? (boostOverridesByUser[activeUserId] ?? readUserStorage('managed_monthly_boosts', activeUserId, {}))
+    : {};
+
+  const setMonthlyIncomeBoosts = (updater) => {
+    if (!activeUserId) return;
+    setBoostOverridesByUser(prev => {
+      const current = prev[activeUserId] ?? readUserStorage('managed_monthly_boosts', activeUserId, {});
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return { ...prev, [activeUserId]: next };
+    });
+  };
+
+  useEffect(() => {
+    if (!activeUserId) return;
+    if (!Object.prototype.hasOwnProperty.call(boostOverridesByUser, activeUserId)) return;
+    try {
+      localStorage.setItem(
+        `managed_monthly_boosts_${activeUserId}`,
+        JSON.stringify(boostOverridesByUser[activeUserId])
+      );
+    } catch (e) {
+      console.warn('Failed to save monthlyIncomeBoosts:', e);
+    }
+  }, [boostOverridesByUser, activeUserId]);
+
+  const wealthObjectives = activeUserId
+    ? (objectivesByUser[activeUserId] ?? readUserStorage('managed_wealth_objectives', activeUserId, []))
+    : [];
+
+  const setWealthObjectives = (updater) => {
+    if (!activeUserId) return;
+    setObjectivesByUser(prev => {
+      const current = prev[activeUserId] ?? readUserStorage('managed_wealth_objectives', activeUserId, []);
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return { ...prev, [activeUserId]: next };
+    });
+  };
+
+  useEffect(() => {
+    if (!activeUserId) return;
+    if (!Object.prototype.hasOwnProperty.call(objectivesByUser, activeUserId)) return;
+    try {
+      localStorage.setItem(
+        `managed_wealth_objectives_${activeUserId}`,
+        JSON.stringify(objectivesByUser[activeUserId])
+      );
+    } catch (e) {
+      console.warn('Failed to save wealthObjectives:', e);
+    }
+  }, [objectivesByUser, activeUserId]);
+
+  const expenseMetaMap = activeUserId
+    ? (metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {}))
+    : {};
+
+  const updateExpenseMeta = (expId, patch) => {
+    if (!activeUserId || !expId) return;
+    setMetaOverridesByUser(prev => {
+      const current = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
+      const next = {
+        ...current,
+        [expId]: { ...(current[expId] || {}), ...patch }
+      };
+      return { ...prev, [activeUserId]: next };
+    });
+  };
+
+  useEffect(() => {
+    if (!activeUserId) return;
+    if (!Object.prototype.hasOwnProperty.call(metaOverridesByUser, activeUserId)) return;
+    try {
+      localStorage.setItem(
+        `managed_expense_meta_${activeUserId}`,
+        JSON.stringify(metaOverridesByUser[activeUserId])
+      );
+    } catch (e) {
+      console.warn('Failed to save expense metadata:', e);
+    }
+  }, [metaOverridesByUser, activeUserId]);
+
+  const isExpenseSkippedForCurrentPeriod = (exp, targetMonth = selectedMonth, targetDay = getToday()) => {
+    if (!exp?.is_recurring) return false;
+    const meta = expenseMetaMap[exp.id];
+    if (!meta || !Array.isArray(meta.skippedPeriods)) return false;
+    const freq = meta.recurrenceType || 'monthly';
+    const mKey = targetMonth || selectedMonth;
+    const periodKey = freq === 'daily'
+      ? targetDay
+      : freq === 'yearly'
+      ? mKey.slice(0, 4)
+      : mKey;
+    return meta.skippedPeriods.includes(periodKey);
+  };
+
+  const lastAddedExpenseId = activeUserId
+    ? (lastExpenseByUser[activeUserId] ?? (() => {
+        try {
+          return localStorage.getItem(`managed_last_expense_${activeUserId}`) || null;
+        } catch {
+          return null;
+        }
+      })())
+    : null;
+
+  const recordLastAddedExpenseId = (expId) => {
+    if (!activeUserId || !expId) return;
+    setLastExpenseByUser(prev => ({ ...prev, [activeUserId]: String(expId) }));
+  };
+
+  useEffect(() => {
+    if (!activeUserId) return;
+    if (!Object.prototype.hasOwnProperty.call(lastExpenseByUser, activeUserId)) return;
+    try {
+      localStorage.setItem(`managed_last_expense_${activeUserId}`, String(lastExpenseByUser[activeUserId]));
+    } catch { /* ignore */ }
+  }, [lastExpenseByUser, activeUserId]);
+
+  const baseSalary = parseFloat(salary) || 0;
+  const currentMonthBoost = parseFloat(monthlyIncomeBoosts[selectedMonth]) || 0;
+  const parsedSalary = baseSalary + currentMonthBoost;
+
+  const handleAddMonthlyBoost = (amountToAdd) => {
+    if (isReadOnly) return;
+    const num = parseFloat(amountToAdd);
+    if (isNaN(num)) return;
+    setMonthlyIncomeBoosts(prev => {
+      const current = parseFloat(prev[selectedMonth]) || 0;
+      const updatedVal = Math.max(0, Number((current + num).toFixed(2)));
+      const next = { ...prev };
+      if (updatedVal === 0) delete next[selectedMonth];
+      else next[selectedMonth] = updatedVal;
+      return next;
+    });
+  };
+
+  const handleClearMonthlyBoost = () => {
+    if (isReadOnly) return;
+    setMonthlyIncomeBoosts(prev => {
+      const next = { ...prev };
+      delete next[selectedMonth];
+      return next;
+    });
+  };
+
+  const monthlyExpenses = expenses.filter(e => e.expense_date && e.expense_date.startsWith(selectedMonth));
+  const activeMonthlyExpenses = monthlyExpenses.filter(e => !isExpenseSkippedForCurrentPeriod(e, selectedMonth));
+  const assetCategories = categories.filter(c => c.type === 'asset');
 
   const handleExportData = async (exportFormat) => {
     const todayStr = getToday();
@@ -413,9 +595,26 @@ export default function App() {
     }
 
     const periodMonth = targetPeriod.substring(0, 7);
-    const scopedExps = expenses.filter(e => e.expense_date && (exportScope === 'month' ? e.expense_date.startsWith(exportMonth) : e.expense_date === exportDate));
-    const scopedAdjs = assetAdjustments.filter(a => a.adjustment_date && (exportScope === 'month' ? a.adjustment_date.startsWith(exportMonth) : a.adjustment_date === exportDate));
-    const cumulativeMonthExps = expenses.filter(e => e.expense_date && e.expense_date.startsWith(periodMonth) && (exportScope === 'month' ? true : e.expense_date <= exportDate));
+    const periodDay = exportScope === 'day' ? exportDate : todayStr;
+    const exportMonthBoost = parseFloat(monthlyIncomeBoosts[periodMonth]) || 0;
+    const exportSalary = baseSalary + exportMonthBoost;
+
+    const scopedExps = expenses.filter(
+      e =>
+        e.expense_date &&
+        !isExpenseSkippedForCurrentPeriod(e, periodMonth, periodDay) &&
+        (exportScope === 'month' ? e.expense_date.startsWith(exportMonth) : e.expense_date === exportDate)
+    );
+    const scopedAdjs = assetAdjustments.filter(
+      a => a.adjustment_date && (exportScope === 'month' ? a.adjustment_date.startsWith(exportMonth) : a.adjustment_date === exportDate)
+    );
+    const cumulativeMonthExps = expenses.filter(
+      e =>
+        e.expense_date &&
+        !isExpenseSkippedForCurrentPeriod(e, periodMonth, periodDay) &&
+        e.expense_date.startsWith(periodMonth) &&
+        (exportScope === 'month' ? true : e.expense_date <= exportDate)
+    );
 
     if (scopedExps.length === 0 && scopedAdjs.length === 0) {
       setAlertMsg(t('err_export_empty', { period: targetPeriod }));
@@ -428,7 +627,15 @@ export default function App() {
       if (e.bundle_id) {
         if (!bundleMap[e.bundle_id]) {
           const parentBundle = bundles.find(b => b.id === e.bundle_id);
-          bundleMap[e.bundle_id] = { id: `bundle_${e.bundle_id}`, bundle_id: e.bundle_id, name: parentBundle ? ` ${parentBundle.name}` : e.name, expense_date: e.expense_date, cost: 0, categorySplits: [], items: parentBundle?.items || [] };
+          bundleMap[e.bundle_id] = {
+            id: `bundle_${e.bundle_id}`,
+            bundle_id: e.bundle_id,
+            name: parentBundle ? ` ${parentBundle.name}` : e.name,
+            expense_date: e.expense_date,
+            cost: 0,
+            categorySplits: [],
+            items: parentBundle?.items || []
+          };
           groupedScopedExps.push(bundleMap[e.bundle_id]);
         }
         bundleMap[e.bundle_id].cost += parseFloat(e.cost);
@@ -439,19 +646,34 @@ export default function App() {
     });
 
     const assetCategoriesList = categories.filter(c => c.type === 'asset');
-    const expenseCategoryIds = categories.filter(c => c.type !== 'asset').map(c => c.id);
-    const periodSpent = scopedExps.filter(e => expenseCategoryIds.includes(e.category_id)).reduce((s, e) => s + parseFloat(e.cost), 0);
-    const cumulativeMonthSpent = cumulativeMonthExps
-      .filter(e => expenseCategoryIds.includes(e.category_id))
+    const expenseCategoryIdsForExport = categories.filter(c => c.type !== 'asset').map(c => c.id);
+    const periodSpent = scopedExps
+      .filter(e => expenseCategoryIdsForExport.includes(e.category_id))
       .reduce((s, e) => s + parseFloat(e.cost), 0);
-    const monthlyAssetsAllocated = assetCategoriesList.reduce((s, c) => s + (parsedSalary * (c.percentage / 100)), 0);
-    const cumulativeExpenseCatSpent = cumulativeMonthExps.filter(e => categories.find(c => c.id === e.category_id)?.type !== 'asset').reduce((s, e) => s + parseFloat(e.cost), 0);
-    const trueMonthRemaining = Math.max(0, parsedSalary - cumulativeExpenseCatSpent - monthlyAssetsAllocated);
+    const cumulativeMonthSpent = cumulativeMonthExps
+      .filter(e => expenseCategoryIdsForExport.includes(e.category_id))
+      .reduce((s, e) => s + parseFloat(e.cost), 0);
+    const monthlyAssetsAllocated = assetCategoriesList.reduce((s, c) => s + (exportSalary * (c.percentage / 100)), 0);
+    const cumulativeExpenseCatSpent = cumulativeMonthExps
+      .filter(e => categories.find(c => c.id === e.category_id)?.type !== 'asset')
+      .reduce((s, e) => s + parseFloat(e.cost), 0);
+    const trueMonthRemaining = Math.max(0, exportSalary - cumulativeExpenseCatSpent - monthlyAssetsAllocated);
 
     const reportData = {
-      targetPeriod, exportScope, currency: currency === 'none' ? '' : currency,
-      parsedSalary, periodSpent, cumulativeMonthSpent, monthlyAssetsAllocated, trueMonthRemaining,
-      categories, groupedScopedExps, scopedExps, cumulativeMonthExps, scopedAdjs, closedMonths
+      targetPeriod,
+      exportScope,
+      currency: currency === 'none' ? '' : currency,
+      parsedSalary: exportSalary,
+      periodSpent,
+      cumulativeMonthSpent,
+      monthlyAssetsAllocated,
+      trueMonthRemaining,
+      categories,
+      groupedScopedExps,
+      scopedExps,
+      cumulativeMonthExps,
+      scopedAdjs,
+      closedMonths
     };
 
     try {
@@ -468,16 +690,6 @@ export default function App() {
     }
   };
 
-  const formatCurrency = (amount) => {
-    const num = Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return currency.length > 1 ? `${currency} ${num}` : `${currency}${num}`;
-  };
-
-  const parsedSalary = parseFloat(salary) || 0;
-  const monthlyExpenses = expenses.filter(e => e.expense_date && e.expense_date.startsWith(selectedMonth));
-  const expenseCategories = categories.filter(c => c.type !== 'asset');
-  const assetCategories = categories.filter(c => c.type === 'asset');
-
   const historyFeed = [
     ...closedMonths.map(record => {
       const [year, month] = record.month.split('-');
@@ -487,7 +699,7 @@ export default function App() {
         id: `cm-${record.month}`,
         type: 'ledger',
         date: nextMonthStr,
-        title: `Ledger Closed`,
+        title: 'Ledger Closed',
         desc: `Finalized budget and executed wealth sweep for ${record.month}`
       };
     }),
@@ -612,7 +824,7 @@ export default function App() {
 
     try {
       // 1. AGGREGATE BATCHED EXPENSES
-      const batchedExpenses = monthlyExpenses.filter(e => e.is_batched);
+      const batchedExpenses = activeMonthlyExpenses.filter(e => e.is_batched);
       let newlyAggregated = [];
       let idsToDelete = [];
 
@@ -625,12 +837,13 @@ export default function App() {
           return acc;
         }, {});
 
+        const closedMonthEndStamp = `${selectedMonth}-28`;
         for (const [, exps] of Object.entries(grouped)) {
           const sum = exps.reduce((total, e) => total + parseFloat(e.cost), 0);
           newlyAggregated.push({
             user_id: session.user.id, name: `${exps[0].name.trim()} (Batched x${exps.length})`, cost: sum,
             category_id: exps[0].category_id, category: exps[0].category,
-            expense_date: nextMonthStamp,
+            expense_date: closedMonthEndStamp,
             is_recurring: false, is_batched: false
           });
           idsToDelete.push(...exps.map(e => e.id));
@@ -644,26 +857,33 @@ export default function App() {
         }
       }
 
-      // 2. FORWARD RECURRING EXPENSES TO NEXT MONTH
+      // 2. FORWARD RECURRING EXPENSES TO NEXT MONTH (Preserves each expense's recurrenceType metadata)
       const recurringExpenses = monthlyExpenses.filter(e => e.is_recurring);
       let newRecurring = [];
       if (recurringExpenses.length > 0) {
-        newRecurring = recurringExpenses.map(e => ({
+        const recPayloads = recurringExpenses.map(e => ({
           user_id: session.user.id, name: e.name, cost: e.cost,
           category_id: e.category_id, category: e.category,
           expense_date: nextMonthStamp,
           is_recurring: true, is_batched: false
         }));
-        const { data, error } = await supabase.from('expenses').insert(newRecurring).select();
+        const { data, error } = await supabase.from('expenses').insert(recPayloads).select();
         if (error) throw error;
-        newRecurring = data;
+        newRecurring = data || [];
+        newRecurring.forEach((insertedRow, idx) => {
+          const sourceExp = recurringExpenses[idx];
+          const sourceFreq = sourceExp ? expenseMetaMap[sourceExp.id]?.recurrenceType : null;
+          if (insertedRow?.id && sourceFreq) {
+            updateExpenseMeta(insertedRow.id, { recurrenceType: sourceFreq });
+          }
+        });
       }
 
       // 3. WEALTH SWEEP
       const newAdjustments = [];
       assetCategories.forEach(cat => {
         const allocated = parsedSalary * (cat.percentage / 100);
-        const spentFromAsset = monthlyExpenses.filter(e => e.category_id === cat.id).reduce((sum, e) => sum + parseFloat(e.cost), 0);
+        const spentFromAsset = activeMonthlyExpenses.filter(e => e.category_id === cat.id).reduce((sum, e) => sum + parseFloat(e.cost), 0);
         const amountToSweep = Math.max(0, allocated - spentFromAsset);
 
         if (amountToSweep > 0) {
@@ -681,12 +901,12 @@ export default function App() {
         setAssetAdjustments([...data, ...assetAdjustments]);
       }
 
-      // 4. GAMIFICATION
+      // 4. GAMIFICATION (Excludes skipped recurring expenses from the perfect-month check)
       let isPerfectMonth = true;
       const expenseCategoriesForCheck = categories.filter(c => c.type !== 'asset');
       expenseCategoriesForCheck.forEach(cat => {
         const categoryBase = parsedSalary * (cat.percentage / 100);
-        const spent = monthlyExpenses.filter(e => e.category_id === cat.id).reduce((sum, e) => sum + parseFloat(e.cost), 0);
+        const spent = activeMonthlyExpenses.filter(e => e.category_id === cat.id).reduce((sum, e) => sum + parseFloat(e.cost), 0);
         if (categoryBase > 0 && spent > categoryBase) isPerfectMonth = false;
       });
 
@@ -705,7 +925,6 @@ export default function App() {
       const updatedExpenses = expenses.filter(e => !idsToDelete.includes(e.id));
       setExpenses([...newRecurring, ...newlyAggregated, ...updatedExpenses]);
 
-      // Automatically advance the user to the newly opened month (e.g., 2026-11)
       const nextMonthYYYYMM = nextMonthStamp.slice(0, 7);
       setSelectedMonth(nextMonthYYYYMM);
 
@@ -726,7 +945,7 @@ export default function App() {
 
     const goalVal = newCategoryType === 'asset' ? (parseFloat(newCategoryGoal) || 0) : 0;
     const colors = ['teal-600', 'orange-600', 'cyan-600', 'purple-600', 'rose-600', 'amber-600'];
-    const tempId = Date.now().toString();
+    const tempId = crypto.randomUUID();
     const previousCategories = [...categories];
     const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
@@ -754,7 +973,7 @@ export default function App() {
   };
 
   const handleUpdateCategory = async (id, newName, newGoal = 0) => {
-    if (isReadOnly || !newName.trim()) return;
+    if (isReadOnly || !newName.trim()) return false;
     const previousCategories = [...categories];
     const safeGoal = parseFloat(newGoal) || 0;
 
@@ -764,17 +983,19 @@ export default function App() {
     try {
       const { error } = await supabase.from('categories').update({ name: newName.trim(), target_goal: safeGoal }).eq('id', id);
       if (error) throw error;
+      return true;
     } catch {
       setAlertMsg(t('err_update_cat'));
       setCategories(previousCategories);
+      return false;
     }
   };
 
   const handleDeleteCategory = async (id, percentage) => {
-    if (isReadOnly) return;
+    if (isReadOnly) return false;
     if (categories.length <= 1) {
       setAlertMsg(t('err_min_one_cat', 'You must keep at least one category in your budget. You can rename it instead!'));
-      return;
+      return false;
     }
     const previousCategories = [...categories];
     const previousExpenses = [...expenses];
@@ -790,10 +1011,12 @@ export default function App() {
     try {
       const { error } = await supabase.from('categories').delete().eq('id', id);
       if (error) throw error;
+      return true;
     } catch {
       setAlertMsg(t('err_db_delete_cat'));
       setCategories(previousCategories);
       setExpenses(previousExpenses);
+      return false;
     }
   };
 
@@ -810,7 +1033,7 @@ export default function App() {
       const manualAdjTotal = assetAdjustments
         .filter(a => a.category_id === cat.id)
         .reduce((sum, a) => sum + parseFloat(a.amount), 0);
-      const spentThisMonth = monthlyExpenses
+      const spentThisMonth = activeMonthlyExpenses
         .filter(e => e.category_id === cat.id)
         .reduce((sum, e) => sum + parseFloat(e.cost), 0);
       const previewDeposit = (selectedMonth === todayMonth && !closedMonths.some(c => c.month === todayMonth))
@@ -821,7 +1044,7 @@ export default function App() {
       return Math.max(0, parseFloat((totalLifetimeWealth - reservedInOpenBundles).toFixed(2)));
     } else {
       const categoryBase = parsedSalary * (cat.percentage / 100);
-      const spentThisMonth = monthlyExpenses
+      const spentThisMonth = activeMonthlyExpenses
         .filter(e => e.category_id === cat.id)
         .reduce((sum, e) => sum + parseFloat(e.cost), 0);
       return Math.max(0, parseFloat((categoryBase - spentThisMonth - reservedInOpenBundles).toFixed(2)));
@@ -897,16 +1120,12 @@ export default function App() {
       setBundles(current => current.map(b => b.id === tempId ? data[0] : b));
       setAlertMsg(t('succ_occasion_created', { name: newBundle.name }));
     } catch (error) {
-      console.error("Supabase Bundle Error:", error);
-      setAlertMsg(t('err_db_save_bundle', { error: error.message || "Failed to save bundle." }));
+      console.error('Supabase Bundle Error:', error);
+      setAlertMsg(t('err_db_save_bundle', { error: error.message || 'Failed to save bundle.' }));
       setBundles(current => current.filter(b => b.id !== tempId));
     }
   };
 
-  /**
-   * Appends an itemized receipt to an open Special Occasion bundle and validates budget ceilings.
-   * @param {string} bundleId - The UUID of the target occasion bundle.
-   */
   const handleAddOccasionItem = async (bundleId) => {
     if (isReadOnly) return;
     const input = occasionItemInputs[bundleId] || { name: '', allocations: {} };
@@ -983,9 +1202,9 @@ export default function App() {
   const handleLockAndFinalizeBundle = async (bundle) => {
     if (isReadOnly || bundle.status === 'locked') return;
     const items = Array.isArray(bundle.items) ? bundle.items : [];
-    const totalSpent = items.reduce((s, i) => s + parseFloat(i.cost), 0);
+    const totalSpentInBundle = items.reduce((s, i) => s + parseFloat(i.cost), 0);
 
-    if (totalSpent <= 0) {
+    if (totalSpentInBundle <= 0) {
       setAlertMsg(t('err_add_one_expense_before_lock'));
       return;
     }
@@ -1010,7 +1229,7 @@ export default function App() {
 
       if (isAsset) {
         const monthlyAssetBase = parsedSalary * ((catObj.percentage || 0) / 100);
-        const alreadySpentThisMonth = monthlyExpenses
+        const alreadySpentThisMonth = activeMonthlyExpenses
           .filter(e => e.category_id === catId)
           .reduce((s, e) => s + parseFloat(e.cost), 0);
         const unspentMonthlyAsset = Math.max(0, monthlyAssetBase - alreadySpentThisMonth);
@@ -1081,56 +1300,59 @@ export default function App() {
       setBundles(bundles.map(b => b.id === bundle.id ? { ...b, status: 'locked' } : b));
       setAlertMsg(t('succ_bundle_locked', { name: bundle.name }));
     } catch (error) {
-      setAlertMsg(t('err_locking_occasion', { error: error.message || "Database error" }));
+      setAlertMsg(t('err_locking_occasion', { error: error.message || 'Database error' }));
     }
   };
 
   const handleDeleteBundle = async (bundleId) => {
-    if (isReadOnly) return;
-    setBundles(bundles.filter(b => b.id !== bundleId));
-    setExpenses(expenses.filter(e => e.bundle_id !== bundleId));
+    if (isReadOnly) return false;
+    const prevBundles = [...bundles];
+    setBundles(current => current.filter(b => b.id !== bundleId));
     try {
-      await supabase.from('expenses').delete().eq('bundle_id', bundleId);
-      await supabase.from('bundles').delete().eq('id', bundleId);
+      const { error } = await supabase.from('bundles').delete().eq('id', bundleId);
+      if (error) throw error;
+      return true;
     } catch {
-      setAlertMsg(t('err_deleting_occasion'));
+      setBundles(prevBundles);
+      setAlertMsg(t('err_del_bundle', 'Failed to delete special occasion.'));
+      return false;
     }
   };
 
-  // --- SANDBOX / TEMPORARY CALCULATIONS LOGIC ---
-  const activeSheet = sandboxSheets.find(s => s.id === activeSheetId) || sandboxSheets[0] || null;
-
-  /**
-   * Deletes a sandbox calculation sheet from both local state and the Supabase database.
-   * @param {string} sheetId - The UUID of the sandbox sheet to delete.
-   */
   const handleDeleteSandboxSheet = async (sheetId) => {
-    if (isReadOnly) {
-      setAlertMsg(t('err_delete_sandbox_locked'));
-      return;
-    }
-    const previousIndex = sandboxSheets.findIndex(sheet => sheet.id === sheetId);
+    if (isReadOnly) return false;
+    const previousIndex = sandboxSheets.findIndex(s => s.id === sheetId);
     const deletedSheet = sandboxSheets[previousIndex];
-    if (!deletedSheet) return;
+    if (!deletedSheet) return false;
+
     const previousActiveSheetId = activeSheetId;
-    setSandboxSheets(current => current.filter(x => x.id !== sheetId));
-    if (activeSheetId === sheetId) setActiveSheetId(null);
+    const nextFallbackId = sandboxSheets.find(s => s.id !== sheetId)?.id ?? null;
+
+    setSandboxSheets(current => current.filter(s => s.id !== sheetId));
+    if (previousActiveSheetId === sheetId) {
+      setActiveSheetId(nextFallbackId);
+    }
+
     try {
       const { error } = await supabase.from('sandbox_sheets').delete().eq('id', sheetId);
       if (error) throw error;
+      return true;
     } catch {
       setSandboxSheets(current => {
-        if (current.some(sheet => sheet.id === sheetId)) return current;
+        if (current.some(s => s.id === sheetId)) return current;
         const restored = [...current];
         restored.splice(previousIndex, 0, deletedSheet);
         return restored;
       });
       if (previousActiveSheetId === sheetId) {
-        setActiveSheetId(current => current === null ? previousActiveSheetId : current);
+        setActiveSheetId(current => (current === nextFallbackId ? previousActiveSheetId : current));
       }
-      setAlertMsg(t('err_delete_sandbox_db'));
+      setAlertMsg(t('err_del_sheet'));
+      return false;
     }
   };
+
+  const activeSheet = sandboxSheets.find(s => s.id === activeSheetId) || sandboxSheets[0] || null;
 
   const handleCreateSandboxSheet = async (e) => {
     e.preventDefault();
@@ -1205,12 +1427,12 @@ export default function App() {
 
   const handleExportSandboxCSV = (sheet) => {
     if (!sheet) return;
-    const totalSpent = sheet.expenses.reduce((s, e) => s + e.cost, 0);
+    const totalSpentInSheet = sheet.expenses.reduce((s, e) => s + e.cost, 0);
     const rows = [
       [t('csv_calc_title'), sheet.title],
       [t('csv_total_master_budget'), sheet.totalBudget],
-      [t('csv_total_imaginary_spent'), totalSpent],
-      [t('csv_remaining_balance'), sheet.totalBudget - totalSpent],
+      [t('csv_total_imaginary_spent'), totalSpentInSheet],
+      [t('csv_remaining_balance'), sheet.totalBudget - totalSpentInSheet],
       [],
       [t('csv_sub_budget_bucket'), t('csv_allocated_limit'), t('spent'), t('remaining')],
       ...sheet.buckets.map(b => {
@@ -1225,43 +1447,53 @@ export default function App() {
       })
     ];
 
-    const csvContent = rows.map(r => r.join(",")).join("\n");
+    const csvContent = rows.map(r => r.join(',')).join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
+    const link = document.createElement('a');
     link.href = url;
-    link.setAttribute("download", `sandbox_${sheet.title.toLowerCase().replace(/\s+/g, '_')}.csv`);
+    link.setAttribute('download', `sandbox_${sheet.title.toLowerCase().replace(/\s+/g, '_')}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
   // --- STANDARD EXPENSE HANDLERS ---
-  const handleAddExpense = async (e) => {
+  const handleAddExpense = async (e, pendingFreq = null) => {
     e.preventDefault();
-    if (isReadOnly) return;
+    if (isReadOnly) return null;
 
     const cost = parseFloat(expenseCost);
-    if (!expenseName || isNaN(cost) || cost <= 0 || !expenseCategoryId || !expenseDate) return;
+    if (!expenseName || isNaN(cost) || cost <= 0 || !expenseCategoryId || !expenseDate) return null;
+
+    const selectedCatObj = categories.find(c => c.id === expenseCategoryId);
+    if (!selectedCatObj) return null;
 
     if (expenseDate.startsWith(selectedMonth)) {
-      const category = categories.find(c => c.id === expenseCategoryId);
-      const spentSoFar = monthlyExpenses.filter(e => e.category_id === expenseCategoryId).reduce((sum, e) => sum + parseFloat(e.cost), 0);
-      const availableBalance = Math.max(0, (parsedSalary * (category.percentage / 100)) - spentSoFar);
-
+      const availableBalance = getCategoryAvailablePool(expenseCategoryId);
       if (cost > availableBalance) {
-        setAlertMsg(t('err_exp_exceeds_avail', { category: category.name }));
-        return;
+        setAlertMsg(t('err_exp_exceeds_avail', { category: selectedCatObj.name }));
+        return null;
       }
     }
 
-    const tempId = Date.now().toString();
+    const tempId = crypto.randomUUID();
     const newExpenseObj = {
-      id: tempId, user_id: session.user.id, name: expenseName, cost: cost,
-      category_id: expenseCategoryId, category: categories.find(c => c.id === expenseCategoryId).name,
-      expense_date: expenseDate, is_recurring: isRecurring, is_batched: isBatched,
+      id: tempId,
+      user_id: session.user.id,
+      name: expenseName,
+      cost: cost,
+      category_id: expenseCategoryId,
+      category: selectedCatObj.name,
+      expense_date: expenseDate,
+      is_recurring: isRecurring,
+      is_batched: isBatched,
       bundle_id: null
     };
+
+    if (isRecurring && pendingFreq) {
+      updateExpenseMeta(tempId, { recurrenceType: pendingFreq });
+    }
 
     setExpenses([newExpenseObj, ...expenses]);
     setExpenseName('');
@@ -1271,51 +1503,102 @@ export default function App() {
 
     try {
       const { data, error } = await supabase.from('expenses').insert([{
-        user_id: newExpenseObj.user_id, name: newExpenseObj.name, cost: newExpenseObj.cost,
-        category_id: newExpenseObj.category_id, category: newExpenseObj.category,
-        expense_date: newExpenseObj.expense_date, is_recurring: newExpenseObj.is_recurring,
-        is_batched: newExpenseObj.is_batched, bundle_id: null
+        user_id: newExpenseObj.user_id,
+        name: newExpenseObj.name,
+        cost: newExpenseObj.cost,
+        category_id: newExpenseObj.category_id,
+        category: newExpenseObj.category,
+        expense_date: newExpenseObj.expense_date,
+        is_recurring: newExpenseObj.is_recurring,
+        is_batched: newExpenseObj.is_batched,
+        bundle_id: null
       }]).select();
 
       if (error) throw error;
-      setExpenses(current => current.map(exp => exp.id === tempId ? data[0] : exp));
+      if (data && data.length > 0) {
+        const savedRow = data[0];
+        if (isRecurring && pendingFreq) {
+          updateExpenseMeta(savedRow.id, { recurrenceType: pendingFreq });
+        }
+        recordLastAddedExpenseId(savedRow.id);
+        setExpenses(current => current.map(exp => exp.id === tempId ? savedRow : exp));
+        return savedRow;
+      }
+      return null;
     } catch {
+      setExpenses(current => current.filter(exp => exp.id !== tempId));
       setAlertMsg(t('err_db_save_exp'));
+      return null;
     }
   };
 
   const handleUpdateExpense = async (id, updatedExp) => {
-    if (isReadOnly) return;
-    const cost = parseFloat(updatedExp.cost);
-    if (!updatedExp.name || isNaN(cost) || cost <= 0 || !updatedExp.expense_date) return;
+    if (isReadOnly) return false;
+    const existingExp = expenses.find(e => e.id === id);
+    if (!existingExp) return false;
 
-    const catName = categories.find(c => c.id === updatedExp.category_id)?.name;
+    const cost = parseFloat(updatedExp.cost);
+    if (!updatedExp.name?.trim() || isNaN(cost) || cost <= 0) return false;
+
+    const targetCat = categories.find(c => c.id === updatedExp.category_id);
+    if (!targetCat) return false;
+
+    if (existingExp.expense_date?.startsWith(selectedMonth)) {
+      const spentByOthers = activeMonthlyExpenses
+        .filter(e => e.category_id === targetCat.id && e.id !== id)
+        .reduce((sum, e) => sum + parseFloat(e.cost), 0);
+      const availableBalance = Math.max(0, (parsedSalary * (targetCat.percentage / 100)) - spentByOthers);
+      if (cost > availableBalance) {
+        setAlertMsg(t('err_exp_exceeds_avail', { category: targetCat.name }));
+        return false;
+      }
+    }
+
+    const editedStamp = getToday();
+    const previousExpenses = [...expenses];
 
     setExpenses(expenses.map(e => e.id === id ? {
-      ...e, name: updatedExp.name, cost, category_id: updatedExp.category_id,
-      category: catName, expense_date: updatedExp.expense_date
+      ...e,
+      name: updatedExp.name.trim(),
+      cost,
+      category_id: targetCat.id,
+      category: targetCat.name,
+      is_recurring: Boolean(updatedExp.is_recurring),
+      is_batched: Boolean(updatedExp.is_batched),
+      last_edited_at: editedStamp
     } : e));
     setEditingExpense(null);
 
     try {
       const { error } = await supabase.from('expenses').update({
-        name: updatedExp.name, cost: cost, category_id: updatedExp.category_id,
-        category: catName, expense_date: updatedExp.expense_date
+        name: updatedExp.name.trim(),
+        cost,
+        category_id: targetCat.id,
+        category: targetCat.name,
+        is_recurring: Boolean(updatedExp.is_recurring),
+        is_batched: Boolean(updatedExp.is_batched)
       }).eq('id', id);
       if (error) throw error;
+      return true;
     } catch {
-      setAlertMsg(t('err_update_exp'));
+      setExpenses(previousExpenses);
+      setAlertMsg(t('err_update_exp', 'Failed to update expense.'));
+      return false;
     }
   };
 
   const handleDeleteExpense = async (id) => {
-    if (isReadOnly) return;
-    setExpenses(expenses.filter(e => e.id !== id));
+    if (isReadOnly) return false;
+    const prevExpenses = [...expenses];
+    setExpenses(expenses.filter(exp => exp.id !== id));
     try {
       const { error } = await supabase.from('expenses').delete().eq('id', id);
       if (error) throw error;
+      return true;
     } catch {
-      setAlertMsg(t('err_db_delete_exp'));
+      setExpenses(prevExpenses);
+      setAlertMsg(t('err_del_exp', 'Failed to delete expense.'));
+      return false;
     }
   };
 
@@ -1324,7 +1607,7 @@ export default function App() {
     const amt = parseFloat(adjAmount);
     if (!adjCatId || isNaN(amt) || !adjDate) return;
 
-    const tempId = Date.now().toString();
+    const tempId = crypto.randomUUID();
     const newAdj = { id: tempId, user_id: session.user.id, category_id: adjCatId, amount: amt, adjustment_date: adjDate, note: adjNote };
 
     setAssetAdjustments([newAdj, ...assetAdjustments]);
@@ -1343,16 +1626,13 @@ export default function App() {
     }
   };
 
-  /**
-   * Calculates progressive annual tax liability based on regional brackets and filing status.
-   */
   const calculateTaxEstimate = () => {
     const income = parseFloat(taxIncomeInput) || 0;
     setTaxEstimateResult(calculateProgressiveTax(income, taxCountry, taxFilingStatus));
   };
 
   const expenseCategoryIds = categories.filter(c => c.type !== 'asset').map(c => c.id);
-  const totalSpent = monthlyExpenses
+  const totalSpent = activeMonthlyExpenses
     .filter(e => expenseCategoryIds.includes(e.category_id))
     .reduce((sum, e) => sum + parseFloat(e.cost), 0);
 
@@ -1407,14 +1687,17 @@ export default function App() {
     wealthHistoryMap[month] += parseFloat(adj.amount);
   });
 
-  let runningWealth = 0;
-  const wealthHistoryData = Object.keys(wealthHistoryMap).sort().map(month => {
-    runningWealth += wealthHistoryMap[month];
-    return {
-      month: new Date(month + '-01').toLocaleString(i18n.language || 'default', { month: 'short', year: '2-digit' }),
-      wealth: runningWealth
-    };
-  });
+  const wealthHistoryData = Object.keys(wealthHistoryMap)
+    .sort()
+    .reduce((acc, month) => {
+      const prevWealth = acc.length > 0 ? acc[acc.length - 1].wealth : 0;
+      const nextWealth = prevWealth + wealthHistoryMap[month];
+      acc.push({
+        month: new Date(month + '-01').toLocaleString(i18n.language || 'default', { month: 'short', year: '2-digit' }),
+        wealth: nextWealth
+      });
+      return acc;
+    }, []);
 
   if (!session) return <Auth />;
   if (loadingData) {
@@ -1427,7 +1710,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-zinc-950 text-gray-900 dark:text-zinc-300 font-sans overflow-hidden transition-colors duration-300">
-      
+
       {/* Logout Confirmation Modal */}
       {showLogoutConfirm && (
         <div
@@ -1452,15 +1735,15 @@ export default function App() {
               {t('confirm_sign_out_prompt', 'Are you sure you want to securely sign out of your account?')}
             </p>
             <div className="flex gap-3 justify-center">
-              <button 
+              <button
                 autoFocus
-                onClick={() => setShowLogoutConfirm(false)} 
+                onClick={() => setShowLogoutConfirm(false)}
                 className="px-5 py-2.5 rounded-lg font-bold text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 transition-colors w-1/2"
               >
                 {t('cancel', 'Cancel')}
               </button>
-              <button 
-                onClick={confirmLogout} 
+              <button
+                onClick={confirmLogout}
                 className="px-5 py-2.5 rounded-lg font-bold text-sm bg-rose-600 text-white hover:bg-rose-700 transition-colors w-1/2 shadow-sm"
               >
                 {t('sign_out', 'Sign Out')}
@@ -1473,51 +1756,50 @@ export default function App() {
       {/* Password Recovery Forced Modal */}
       {showRecoveryModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in" role="dialog" aria-modal="true">
-            <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6">
-               <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">
-                   {t('auth_subtitle_recovery', 'Reset Your Password')}
-               </h2>
-               <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">
-                   {t('auth_recovery_prompt', 'Please enter a new, secure password to complete your recovery.')}
-               </p>
-               <form onSubmit={async (e) => {
-                   e.preventDefault();
-                   // Add a basic loading state check here if you want to use a local state variable
-                   const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
-                   if (error) {
-                       alert(t('err_password_update', 'Failed to update password: ') + error.message);
-                   } else {
-                       alert(t('succ_password_update', 'Password updated successfully!'));
-                       setShowRecoveryModal(false);
-                   }
-               }}>
-                   <input 
-                       type="password" 
-                       value={recoveryPassword}
-                       onChange={(e) => setRecoveryPassword(e.target.value)}
-                       className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
-                       placeholder={t('new_password', 'New Password')}
-                       aria-label={t('new_password', 'New Password')}
-                       required minLength={6}
-                   />
-                   <button 
-                       type="submit" 
-                       className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold shadow-md"
-                   >
-                      {t('save_password', 'Save Password')}
-                   </button>
-               </form>
-            </div>
+          <div className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-2xl p-6">
+            <h2 className="text-xl font-black text-gray-900 dark:text-white mb-2">
+              {t('auth_subtitle_recovery', 'Reset Your Password')}
+            </h2>
+            <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">
+              {t('auth_recovery_prompt', 'Please enter a new, secure password to complete your recovery.')}
+            </p>
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
+              if (error) {
+                alert(t('err_password_update', 'Failed to update password: ') + error.message);
+              } else {
+                alert(t('succ_password_update', 'Password updated successfully!'));
+                setShowRecoveryModal(false);
+              }
+            }}>
+              <input
+                type="password"
+                value={recoveryPassword}
+                onChange={(e) => setRecoveryPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 mb-4 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-gray-900 dark:text-white"
+                placeholder={t('new_password', 'New Password')}
+                aria-label={t('new_password', 'New Password')}
+                required minLength={6}
+              />
+              <button
+                type="submit"
+                className="w-full py-3 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold shadow-md"
+              >
+                {t('save_password', 'Save Password')}
+              </button>
+            </form>
+          </div>
         </div>
       )}
-      
+
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         setAlertMsg={setAlertMsg}
         currentStreak={currentStreak}
         longestStreak={longestStreak}
-        handleLogout={handleLogoutRequest} 
+        handleLogout={handleLogoutRequest}
         username={username}
         userRole={userRole}
       />
@@ -1535,11 +1817,19 @@ export default function App() {
             setActiveTab={setActiveTab}
             setAlertMsg={setAlertMsg}
             currentStreak={currentStreak}
+            longestStreak={longestStreak}
             userRole={userRole}
+            username={username}
+            handleLogout={handleLogoutRequest}
           />
 
           {activeTab === 'cashflow' && (
             <CashFlowTab
+              key={activeUserId || 'guest'}
+              userId={activeUserId}
+              expenseMetaMap={expenseMetaMap}
+              updateExpenseMeta={updateExpenseMeta}
+              isExpenseSkippedForCurrentPeriod={isExpenseSkippedForCurrentPeriod}
               isPastMonth={isPastMonth}
               closedMonths={closedMonths}
               selectedMonth={selectedMonth}
@@ -1548,6 +1838,10 @@ export default function App() {
               isReadOnly={isReadOnly}
               totalRemaining={totalRemaining}
               parsedSalary={parsedSalary}
+              baseSalary={baseSalary}
+              currentMonthBoost={currentMonthBoost}
+              handleAddMonthlyBoost={handleAddMonthlyBoost}
+              handleClearMonthlyBoost={handleClearMonthlyBoost}
               globalPercentUsed={globalPercentUsed}
               totalSpent={totalSpent}
               totalAutomatedAssets={totalAutomatedAssets}
@@ -1600,6 +1894,9 @@ export default function App() {
               setExpandedTransactionId={setExpandedTransactionId}
               bundles={bundles}
               handleDeleteExpense={handleDeleteExpense}
+              editingExpense={editingExpense}
+              setEditingExpense={setEditingExpense}
+              handleUpdateExpense={handleUpdateExpense}
               groupedExpenses={groupedExpenses}
             />
           )}
@@ -1654,29 +1951,75 @@ export default function App() {
           )}
 
           {activeTab === 'portfolio' && (
-            <PortfolioTab
-              assetCategories={assetCategories}
-              handleAddAdjustment={handleAddAdjustment}
-              adjCatId={adjCatId}
-              setAdjCatId={setAdjCatId}
-              adjAmount={adjAmount}
-              setAdjAmount={setAdjAmount}
-              adjNote={adjNote}
-              setAdjNote={setAdjNote}
-              adjDate={adjDate}
-              setAdjDate={setAdjDate}
-              assetAdjustments={assetAdjustments}
-              categories={categories}
-              formatCurrency={formatCurrency}
-              wealthHistoryData={wealthHistoryData}
-              theme={theme}
-              currency={currency}
-              parsedSalary={parsedSalary}
-              monthlyExpenses={monthlyExpenses}
-              selectedMonth={selectedMonth}
-              todayMonth={todayMonth}
-              closedMonths={closedMonths}
-            />
+            <>
+              <PortfolioTab
+                assetCategories={assetCategories}
+                handleAddAdjustment={handleAddAdjustment}
+                adjCatId={adjCatId}
+                setAdjCatId={setAdjCatId}
+                adjAmount={adjAmount}
+                setAdjAmount={setAdjAmount}
+                adjNote={adjNote}
+                setAdjNote={setAdjNote}
+                adjDate={adjDate}
+                setAdjDate={setAdjDate}
+                assetAdjustments={assetAdjustments}
+                categories={categories}
+                formatCurrency={formatCurrency}
+                wealthHistoryData={wealthHistoryData}
+                theme={theme}
+                currency={currency}
+                parsedSalary={parsedSalary}
+                monthlyExpenses={activeMonthlyExpenses}
+                selectedMonth={selectedMonth}
+                todayMonth={todayMonth}
+                closedMonths={closedMonths}
+              />
+              <WealthObjectivesSection
+                wealthObjectives={wealthObjectives}
+                setWealthObjectives={setWealthObjectives}
+                categories={categories}
+                parsedSalary={parsedSalary}
+                selectedMonth={selectedMonth}
+                isReadOnly={isReadOnly}
+                formatCurrency={formatCurrency}
+                getCategoryAvailablePool={getCategoryAvailablePool}
+                onManualContributeToObjective={async ({ objectiveName, categoryId, amount }) => {
+                  if (isReadOnly) {
+                    setAlertMsg(t('err_month_locked', 'This month is closed and read-only.'));
+                    return false;
+                  }
+                  const catObj = categories.find(c => c.id === categoryId);
+                  if (!catObj) return false;
+                  const avail = getCategoryAvailablePool(categoryId);
+                  if (amount > avail) {
+                    setAlertMsg(t('err_exp_exceeds_avail', { category: catObj.name }));
+                    return false;
+                  }
+                  const today = getToday();
+                  const alignedDate = today.startsWith(selectedMonth) ? today : `${selectedMonth}-01`;
+                  const payload = {
+                    user_id: session.user.id,
+                    name: `Objective: ${objectiveName}`,
+                    cost: amount,
+                    category_id: categoryId,
+                    category: catObj.name,
+                    expense_date: alignedDate,
+                    is_recurring: false,
+                    is_batched: false,
+                    bundle_id: null
+                  };
+                  const { data, error } = await supabase.from('expenses').insert([payload]).select();
+                  if (error || !data || data.length === 0) {
+                    setAlertMsg('Failed to record manual contribution.');
+                    return false;
+                  }
+                  recordLastAddedExpenseId(data[0].id);
+                  setExpenses(prev => [data[0], ...prev]);
+                  return true;
+                }}
+              />
+            </>
           )}
 
           {activeTab === 'history' && <HistoryTab historyFeed={historyFeed} />}
@@ -1738,6 +2081,212 @@ export default function App() {
             <OwnerDashboard />
           )}
         </div>
+
+        <AIAssistantDrawer
+          key={activeUserId || 'guest'}
+          userId={activeUserId}
+          lastAddedExpenseId={lastAddedExpenseId}
+          parsedSalary={parsedSalary}
+          salary={salary}
+          setSalary={setSalary}
+          currency={currency}
+          setCurrency={setCurrency}
+          setCurrencyMode={setCurrencyMode}
+          setCustomCurrency={setCustomCurrency}
+          totalSpent={totalSpent}
+          totalRemaining={totalRemaining}
+          totalAutomatedAssets={totalAutomatedAssets}
+          categories={categories}
+          expenses={expenses}
+          monthlyExpenses={activeMonthlyExpenses}
+          assetAdjustments={assetAdjustments}
+          selectedMonth={selectedMonth}
+          setSelectedMonth={setSelectedMonth}
+          isReadOnly={isReadOnly}
+          formatCurrency={formatCurrency}
+          taxCountry={taxCountry}
+          setTaxCountry={setTaxCountry}
+          taxFilingStatus={taxFilingStatus}
+          setTaxFilingStatus={setTaxFilingStatus}
+          theme={theme}
+          setTheme={setTheme}
+          setActiveTab={setActiveTab}
+          handleSmartLockAll={handleSmartLockAll}
+          handleUnlockAll={handleUnlockAll}
+          handleSliderChange={handleSliderChange}
+          handleDeleteExpense={handleDeleteExpense}
+          handleUpdateExpense={handleUpdateExpense}
+          handleDeleteCategory={handleDeleteCategory}
+          handleUpdateCategory={handleUpdateCategory}
+          lockedCategories={lockedCategories}
+          toggleIndividualLock={toggleIndividualLock}
+          bundles={bundles}
+          handleDeleteBundle={handleDeleteBundle}
+          sandboxSheets={sandboxSheets}
+          handleDeleteSandboxSheet={handleDeleteSandboxSheet}
+          wealthObjectives={wealthObjectives}
+          setWealthObjectives={setWealthObjectives}
+          currentMonthBoost={currentMonthBoost}
+          handleAddMonthlyBoost={handleAddMonthlyBoost}
+          handleClearMonthlyBoost={handleClearMonthlyBoost}
+          onDirectCreateBundle={async ({ name, allocations }) => {
+            if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is closed and read-only.` };
+            for (const [catId, amt] of Object.entries(allocations)) {
+              const avail = getCategoryAvailablePool(catId);
+              const catObj = categories.find(c => c.id === catId);
+              if (amt > avail) {
+                return {
+                  ok: false,
+                  error: `Cannot pull **${formatCurrency(amt)}** from **${catObj?.name || 'Category'}** because it only has **${formatCurrency(avail)}** available.`
+                };
+              }
+            }
+            const newBundle = {
+              id: crypto.randomUUID(),
+              user_id: session.user.id,
+              name: name.trim(),
+              month: selectedMonth,
+              target_budget: allocations,
+              status: 'open',
+              items: []
+            };
+            const { data, error } = await supabase.from('bundles').insert([newBundle]).select();
+            if (error || !data || data.length === 0) {
+              return { ok: false, error: 'Database error while creating Special Occasion bundle.' };
+            }
+            setBundles(prev => [data[0], ...prev]);
+            return { ok: true, bundle: data[0] };
+          }}
+          onDirectCreateSandbox={async ({ title, totalBudget }) => {
+            if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is read-only.` };
+            const tempId = crypto.randomUUID();
+            const newSheet = { id: tempId, title: title.trim(), totalBudget, buckets: [], expenses: [] };
+            const { error } = await supabase.from('sandbox_sheets').insert([{
+              id: tempId,
+              user_id: session.user.id,
+              title: newSheet.title,
+              total_budget: newSheet.totalBudget,
+              buckets: [],
+              expenses: []
+            }]);
+            if (error) return { ok: false, error: 'Database error while creating Sandbox sheet.' };
+            setSandboxSheets(prev => [newSheet, ...prev]);
+            setActiveSheetId(tempId);
+            return { ok: true, sheet: newSheet };
+          }}
+          onPrefillExpense={({ name, cost, categoryId, isRecurring: rec, isBatched: bat }) => {
+            setActiveTab('cashflow');
+            setExpenseName(name);
+            setExpenseCost(cost);
+            if (categoryId) setExpenseCategoryId(categoryId);
+            setIsRecurring(Boolean(rec));
+            setIsBatched(Boolean(bat));
+          }}
+          onDirectLogExpense={async ({ name, cost, categoryId, expenseDate: expDate, isRecurring: rec, isBatched: bat }) => {
+            if (isReadOnly) {
+              return { ok: false, error: `The ledger for **${selectedMonth}** is closed and read-only.` };
+            }
+            if (!expDate || !expDate.startsWith(selectedMonth)) {
+              return { ok: false, error: `Expense date must belong to the active month (**${selectedMonth}**).` };
+            }
+
+            const catObj = categories.find(c => c.id === categoryId);
+            if (!catObj) return { ok: false, error: 'Could not find a matching category.' };
+
+            const availableBalance = getCategoryAvailablePool(categoryId);
+            if (cost > availableBalance) {
+              return {
+                ok: false,
+                error: `Cannot log **${formatCurrency(cost)}** because **${catObj.name}** only has **${formatCurrency(availableBalance)}** available this month.`
+              };
+            }
+
+            const payload = {
+              user_id: session.user.id,
+              name,
+              cost,
+              category_id: categoryId,
+              category: catObj.name,
+              expense_date: expDate,
+              is_recurring: Boolean(rec),
+              is_batched: Boolean(bat),
+              bundle_id: null
+            };
+
+            const { data, error } = await supabase.from('expenses').insert([payload]).select();
+            if (error || !data || data.length === 0) {
+              return { ok: false, error: 'Database error while saving expense. Please try again.' };
+            }
+
+            setExpenses(prev => [data[0], ...prev]);
+            recordLastAddedExpenseId(data[0].id);
+            return { ok: true, expense: data[0], newRemaining: Math.max(0, availableBalance - cost) };
+          }}
+          onDirectCreateCategory={async ({ name, type = 'expense', percentage = 0, targetGoal = 0 }) => {
+            if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is locked and read-only.` };
+            const cleanName = (name || '').trim();
+            if (!cleanName) return { ok: false, error: 'Please provide a valid category name.' };
+
+            const exists = categories.some(c => c.name.toLowerCase() === cleanName.toLowerCase());
+            if (exists) return { ok: false, error: `A category named **${cleanName}** already exists.` };
+
+            const colors = ['teal-600', 'orange-600', 'cyan-600', 'purple-600', 'rose-600', 'amber-600', 'emerald-600'];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+            const safeGoal = type === 'asset' ? (parseFloat(targetGoal) || 0) : 0;
+            const desiredPct = Math.max(0, Math.min(100, parseFloat(percentage) || 0));
+
+            const { data, error } = await supabase.from('categories').insert([{
+              user_id: session.user.id,
+              name: cleanName,
+              percentage: 0,
+              color: randomColor,
+              type,
+              target_goal: safeGoal
+            }]).select();
+
+            if (error || !data || data.length === 0) {
+              return { ok: false, error: 'Database error while creating category.' };
+            }
+
+            const createdCat = data[0];
+            let updatedList = [...categories, createdCat];
+
+            if (desiredPct > 0) {
+              const totalExistingPct = categories.reduce((s, c) => s + (Number(c.percentage) || 0), 0);
+              const unallocatedRoom = Math.max(0, Number((100 - totalExistingPct).toFixed(2)));
+              const unlockedOthers = categories.filter(c => !lockedCategories.includes(c.id));
+              const othersTotal = unlockedOthers.reduce((s, c) => s + (Number(c.percentage) || 0), 0);
+
+              const actualPct = othersTotal > 0
+                ? Math.min(desiredPct, othersTotal + unallocatedRoom)
+                : Math.min(desiredPct, unallocatedRoom);
+
+              const pctToTakeFromUnlocked = Math.max(0, actualPct - unallocatedRoom);
+
+              updatedList = updatedList.map(c => {
+                if (c.id === createdCat.id) return { ...c, percentage: Number(actualPct.toFixed(2)) };
+                if (lockedCategories.includes(c.id) || othersTotal <= 0) return c;
+                const reduction = pctToTakeFromUnlocked * ((Number(c.percentage) || 0) / othersTotal);
+                return { ...c, percentage: Math.max(0, Number(((Number(c.percentage) || 0) - reduction).toFixed(2))) };
+              });
+
+              const newTotal = updatedList.reduce((s, c) => s + (Number(c.percentage) || 0), 0);
+              if (newTotal > 100) {
+                const excess = Number((newTotal - 100).toFixed(2));
+                updatedList = updatedList.map(c =>
+                  c.id === createdCat.id
+                    ? { ...c, percentage: Math.max(0, Number((c.percentage - excess).toFixed(2))) }
+                    : c
+                );
+              }
+            }
+
+            setCategories(updatedList);
+            if (type !== 'asset' && !expenseCategoryId) setExpenseCategoryId(createdCat.id);
+            if (type === 'asset' && !adjCatId) setAdjCatId(createdCat.id);
+            return { ok: true, category: updatedList.find(c => c.id === createdCat.id) || createdCat };
+          }}
+        />
       </main>
     </div>
   );

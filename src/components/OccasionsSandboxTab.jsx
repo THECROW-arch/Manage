@@ -30,7 +30,6 @@ export default function OccasionsSandboxTab({
     setNewSheetBudget,
     sandboxSheets,
     setSandboxSheets,
-    activeSheetId,
     setActiveSheetId,
     activeSheet,
     handleExportSandboxCSV,

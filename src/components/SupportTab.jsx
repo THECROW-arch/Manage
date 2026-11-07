@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient';
 
@@ -21,9 +21,7 @@ export default function SupportTab({
     const [successMsg, setSuccessMsg] = useState('');
     const loading = isSubmittingTicket || localSubmitting;
 
-    useEffect(() => {
-        if (session) fetchTickets();
-    }, [session]);
+    
 
     // Only persist draft after hydration for the active user has completed and draft belongs to this user
     useEffect(() => {
@@ -49,16 +47,25 @@ export default function SupportTab({
     }, [supportDraft, session?.user?.id, draftHydratedUserId]);
 
     const fetchRequestIdRef = useRef(0);
-    const fetchTickets = async () => {
+    const userId = session?.user?.id;
+    const accessToken = session?.access_token;
+
+    const fetchTickets = useCallback(async () => {
+        if (!userId) return;
         const reqId = ++fetchRequestIdRef.current;
         const { data, error } = await supabase
             .from('support_tickets')
             .select('*')
-            .eq('user_id', session.user.id)
+            .eq('user_id', userId)
             .order('created_at', { ascending: false });
-            if (reqId !== fetchRequestIdRef.current) return;
+        if (reqId !== fetchRequestIdRef.current) return;
         if (!error && data) setTickets(data);
-    };
+    }, [userId]);
+
+    useEffect(() => {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        if (userId) fetchTickets();
+    }, [userId, accessToken, fetchTickets]);
 
     const handleCreateTicket = async (e) => {
         e.preventDefault();
