@@ -48,6 +48,7 @@ export default function SupportTab({
 
     const fetchRequestIdRef = useRef(0);
     const userId = session?.user?.id;
+    const accessToken = session?.access_token;
 
     const fetchTickets = useCallback(async () => {
         if (!userId) return;
@@ -64,7 +65,7 @@ export default function SupportTab({
     useEffect(() => {
         // eslint-disable-next-line react-hooks/set-state-in-effect
         if (userId) fetchTickets();
-    }, [userId, fetchTickets]);
+    }, [userId, accessToken, fetchTickets]);
 
     const handleCreateTicket = async (e) => {
         e.preventDefault();

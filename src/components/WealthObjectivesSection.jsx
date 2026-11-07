@@ -1,4 +1,19 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
+import { getToday } from '../utils/constants';
+
+/**
+ * Sums only completed, recorded contributions for a wealth objective.
+ * Configured auto-pull rules do not count as funded until they are executed and charged.
+ */
+function getObjectiveFundedTotal(obj) {
+    if (!obj) return 0;
+    if (Array.isArray(obj.history) && obj.history.length > 0) {
+        return Number(
+            obj.history.reduce((sum, entry) => sum + (parseFloat(entry.amount) || 0), 0).toFixed(2)
+        );
+    }
+    return Number((parseFloat(obj.manualSaved) || 0).toFixed(2));
+}
 
 /**
  * Renders the Wealth Objectives manager inside the Portfolio tab.
@@ -9,6 +24,8 @@ export default function WealthObjectivesSection({
     setWealthObjectives,
     categories = [],
     parsedSalary = 0,
+    selectedMonth,
+    isReadOnly = false,
     formatCurrency,
     getCategoryAvailablePool,
     onManualContributeToObjective
@@ -22,6 +39,21 @@ export default function WealthObjectivesSection({
     // Manual top-up inputs keyed by objective ID
     const [manualInputs, setManualInputs] = useState({});
     const [statusMsg, setStatusMsg] = useState('');
+
+    // In-flight guard per objective ID to prevent duplicate concurrent submissions
+    const [fundingObjectiveIds, setFundingObjectiveIds] = useState(() => new Set());
+    const fundingIdsRef = useRef(new Set());
+
+    const activeMonthKey = selectedMonth || getToday().slice(0, 7);
+
+    const markObjectiveInFlight = (objId, inFlight) => {
+        if (inFlight) {
+            fundingIdsRef.current.add(objId);
+        } else {
+            fundingIdsRef.current.delete(objId);
+        }
+        setFundingObjectiveIds(new Set(fundingIdsRef.current));
+    };
 
     const handleAddAutoPullRule = () => {
         const catId = tempAutoCatId || categories[0]?.id;
@@ -40,8 +72,11 @@ export default function WealthObjectivesSection({
         if (!objName.trim() || isNaN(targetNum) || targetNum <= 0) return;
 
         const finalAutoPulls = { ...autoPulls };
-        if (tempAutoCatId && parseFloat(tempAutoAmount) > 0) {
-            finalAutoPulls[tempAutoCatId] = (finalAutoPulls[tempAutoCatId] || 0) + parseFloat(tempAutoAmount);
+        const pendingCatId = tempAutoCatId || categories[0]?.id;
+        if (pendingCatId && parseFloat(tempAutoAmount) > 0) {
+            finalAutoPulls[pendingCatId] = Number(
+                ((finalAutoPulls[pendingCatId] || 0) + parseFloat(tempAutoAmount)).toFixed(2)
+            );
         }
 
         const newObjective = {
@@ -50,8 +85,9 @@ export default function WealthObjectivesSection({
             targetAmount: targetNum,
             manualSaved: 0,
             autoPulls: finalAutoPulls,
+            appliedMonths: [],
             history: [],
-            createdAt: new Date().toISOString().slice(0, 10)
+            createdAt: getToday()
         };
 
         setWealthObjectives(prev => [newObjective, ...prev]);
@@ -63,6 +99,8 @@ export default function WealthObjectivesSection({
     };
 
     const handleManualDeposit = async (obj) => {
+        if (isReadOnly || fundingIdsRef.current.has(obj.id)) return;
+
         const input = manualInputs[obj.id] || {};
         const catId = input.catId || categories[0]?.id;
         const amt = parseFloat(input.amount);
@@ -79,36 +117,123 @@ export default function WealthObjectivesSection({
             }
         }
 
-        if (onManualContributeToObjective) {
-            const ok = await onManualContributeToObjective({
-                objectiveName: obj.name,
-                categoryId: catId,
-                amount: amt
-            });
-            if (!ok) return;
+        markObjectiveInFlight(obj.id, true);
+        try {
+            if (onManualContributeToObjective) {
+                const ok = await onManualContributeToObjective({
+                    objectiveName: obj.name,
+                    categoryId: catId,
+                    amount: amt
+                });
+                if (!ok) return;
+            }
+
+            const stamp = getToday();
+            setWealthObjectives(prev =>
+                prev.map(item => {
+                    if (item.id !== obj.id) return item;
+                    const nextHistory = [
+                        { id: crypto.randomUUID(), date: stamp, categoryName: catObj.name, amount: amt, type: 'manual' },
+                        ...(item.history || [])
+                    ];
+                    const nextTotal = nextHistory.reduce((s, h) => s + (parseFloat(h.amount) || 0), 0);
+                    return {
+                        ...item,
+                        manualSaved: Number(nextTotal.toFixed(2)),
+                        history: nextHistory
+                    };
+                })
+            );
+
+            setManualInputs(prev => ({ ...prev, [obj.id]: { ...input, amount: '' } }));
+            setStatusMsg(`Added ${formatCurrency(amt)} from ${catObj.name} to "${obj.name}"!`);
+        } finally {
+            markObjectiveInFlight(obj.id, false);
+        }
+    };
+
+    const handleApplyMonthlyAutoPulls = async (obj) => {
+        if (isReadOnly || fundingIdsRef.current.has(obj.id)) return;
+        const entries = Object.entries(obj.autoPulls || {}).filter(([, amt]) => parseFloat(amt) > 0);
+        if (entries.length === 0) return;
+
+        const alreadyApplied = Array.isArray(obj.appliedMonths) && obj.appliedMonths.includes(activeMonthKey);
+        if (alreadyApplied) {
+            setStatusMsg(`Auto-pulls for "${obj.name}" have already been applied for ${activeMonthKey}.`);
+            return;
         }
 
-        const stamp = new Date().toISOString().slice(0, 10);
-        setWealthObjectives(prev =>
-            prev.map(item =>
-                item.id === obj.id
-                    ? {
-                          ...item,
-                          manualSaved: Number(((item.manualSaved || 0) + amt).toFixed(2)),
-                          history: [
-                              { id: crypto.randomUUID(), date: stamp, categoryName: catObj.name, amount: amt, type: 'manual' },
-                              ...(item.history || [])
-                          ]
-                      }
-                    : item
-            )
-        );
+        // Validate category availability before charging any category
+        for (const [catId, rawAmt] of entries) {
+            const amt = parseFloat(rawAmt);
+            const catObj = categories.find(c => c.id === catId);
+            if (!catObj) {
+                setStatusMsg(`Configured category for "${obj.name}" no longer exists.`);
+                return;
+            }
+            if (getCategoryAvailablePool) {
+                const avail = getCategoryAvailablePool(catId);
+                if (amt > avail) {
+                    setStatusMsg(`Cannot auto-pull ${formatCurrency(amt)} from ${catObj.name} (only ${formatCurrency(avail)} available).`);
+                    return;
+                }
+            }
+        }
 
-        setManualInputs(prev => ({ ...prev, [obj.id]: { ...input, amount: '' } }));
-        setStatusMsg(`Added ${formatCurrency(amt)} from ${catObj.name} to "${obj.name}"!`);
+        markObjectiveInFlight(obj.id, true);
+        try {
+            const completedEntries = [];
+            const stamp = getToday();
+
+            for (const [catId, rawAmt] of entries) {
+                const amt = parseFloat(rawAmt);
+                const catObj = categories.find(c => c.id === catId);
+                if (!catObj) continue;
+
+                if (onManualContributeToObjective) {
+                    const ok = await onManualContributeToObjective({
+                        objectiveName: `${obj.name} (Auto-Pull)`,
+                        categoryId: catId,
+                        amount: amt
+                    });
+                    if (!ok) break;
+                }
+
+                completedEntries.push({
+                    id: crypto.randomUUID(),
+                    date: stamp,
+                    categoryName: catObj.name,
+                    amount: amt,
+                    type: 'auto',
+                    month: activeMonthKey
+                });
+            }
+
+            if (completedEntries.length > 0) {
+                const addedSum = completedEntries.reduce((s, e) => s + e.amount, 0);
+                setWealthObjectives(prev =>
+                    prev.map(item => {
+                        if (item.id !== obj.id) return item;
+                        const nextHistory = [...completedEntries, ...(item.history || [])];
+                        const nextTotal = nextHistory.reduce((s, h) => s + (parseFloat(h.amount) || 0), 0);
+                        const nextApplied = Array.from(new Set([...(item.appliedMonths || []), activeMonthKey]));
+                        return {
+                            ...item,
+                            manualSaved: Number(nextTotal.toFixed(2)),
+                            appliedMonths: completedEntries.length === entries.length ? nextApplied : (item.appliedMonths || []),
+                            history: nextHistory
+                        };
+                    })
+                );
+                setStatusMsg(`Applied ${formatCurrency(addedSum)} in ${activeMonthKey} auto-pulls to "${obj.name}"!`);
+            }
+        } finally {
+            markObjectiveInFlight(obj.id, false);
+        }
     };
 
     const handleDeleteObjective = (id) => {
+        if (isReadOnly || fundingIdsRef.current.has(id)) return;
         setWealthObjectives(prev => prev.filter(o => o.id !== id));
     };
 
@@ -216,7 +341,8 @@ export default function WealthObjectivesSection({
 
                 <button
                     type="submit"
-                    className="w-full py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs shadow-sm transition-colors"
+                    disabled={isReadOnly}
+                    className="w-full py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-bold text-xs shadow-sm transition-colors"
                 >
                     Create Wealth Objective
                 </button>
@@ -230,10 +356,13 @@ export default function WealthObjectivesSection({
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {wealthObjectives.map((obj) => {
-                        const monthlyAutoTotal = Object.values(obj.autoPulls || {}).reduce((s, v) => s + (parseFloat(v) || 0), 0);
-                        const totalAccumulated = (parseFloat(obj.manualSaved) || 0) + monthlyAutoTotal;
+                        // Funded total counts ONLY completed contributions, never uncharged autoPull config
+                        const totalAccumulated = getObjectiveFundedTotal(obj);
                         const progressPct = obj.targetAmount > 0 ? Math.min(100, (totalAccumulated / obj.targetAmount) * 100) : 0;
                         const remainingNeeded = Math.max(0, obj.targetAmount - totalAccumulated);
+                        const configuredMonthlyAuto = Object.values(obj.autoPulls || {}).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+                        const isAutoAppliedThisMonth = Array.isArray(obj.appliedMonths) && obj.appliedMonths.includes(activeMonthKey);
+                        const isFundingThis = fundingObjectiveIds.has(obj.id);
                         const mInput = manualInputs[obj.id] || { catId: categories[0]?.id || '', amount: '' };
 
                         return (
@@ -248,9 +377,10 @@ export default function WealthObjectivesSection({
                                         </div>
                                         <button
                                             type="button"
+                                            disabled={isReadOnly || isFundingThis}
                                             onClick={() => handleDeleteObjective(obj.id)}
                                             aria-label={`Delete ${obj.name}`}
-                                            className="text-gray-400 hover:text-rose-500 text-xs font-bold p-1"
+                                            className="text-gray-400 hover:text-rose-500 disabled:opacity-40 text-xs font-bold p-1"
                                         >
                                             ✕
                                         </button>
@@ -271,17 +401,33 @@ export default function WealthObjectivesSection({
                                         />
                                     </div>
 
-                                    {/* Active Automated Pulls */}
-                                    {Object.keys(obj.autoPulls || {}).length > 0 && (
-                                        <div className="flex flex-wrap gap-1.5 mb-3">
-                                            {Object.entries(obj.autoPulls).map(([cId, amt]) => {
-                                                const cName = categories.find(c => c.id === cId)?.name || 'Category';
-                                                return (
-                                                    <span key={cId} className="text-[10px] px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 font-semibold">
-                                                        Auto Pull: {cName} ({formatCurrency(amt)}/mo)
-                                                    </span>
-                                                );
-                                            })}
+                                    {/* Configured Automated Pulls + Apply Button */}
+                                    {configuredMonthlyAuto > 0 && (
+                                        <div className="space-y-2 mb-3">
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {Object.entries(obj.autoPulls).map(([cId, amt]) => {
+                                                    const cName = categories.find(c => c.id === cId)?.name || 'Category';
+                                                    return (
+                                                        <span key={cId} className="text-[10px] px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 font-semibold">
+                                                            Auto Rule: {cName} ({formatCurrency(amt)}/mo)
+                                                        </span>
+                                                    );
+                                                })}
+                                            </div>
+                                            {!isReadOnly && (
+                                                <button
+                                                    type="button"
+                                                    disabled={isFundingThis || isAutoAppliedThisMonth}
+                                                    onClick={() => handleApplyMonthlyAutoPulls(obj)}
+                                                    className="w-full py-1.5 px-3 rounded bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 text-[11px] font-bold disabled:opacity-50 transition-colors"
+                                                >
+                                                    {isFundingThis
+                                                        ? 'Processing...'
+                                                        : isAutoAppliedThisMonth
+                                                        ? `✓ ${activeMonthKey} Auto-Pull Applied (${formatCurrency(configuredMonthlyAuto)})`
+                                                        : `Apply ${activeMonthKey} Auto-Pull (${formatCurrency(configuredMonthlyAuto)})`}
+                                                </button>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -298,7 +444,8 @@ export default function WealthObjectivesSection({
                                                 ...prev,
                                                 [obj.id]: { ...mInput, catId: e.target.value }
                                             }))}
-                                            className="sm:w-2/5 px-2.5 py-1.5 rounded bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white"
+                                            disabled={isReadOnly || isFundingThis}
+                                            className="sm:w-2/5 px-2.5 py-1.5 rounded bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white disabled:opacity-50"
                                         >
                                             {categories.map(cat => (
                                                 <option key={cat.id} value={cat.id}>{cat.name}</option>
@@ -313,15 +460,17 @@ export default function WealthObjectivesSection({
                                                 ...prev,
                                                 [obj.id]: { ...mInput, amount: e.target.value }
                                             }))}
+                                            disabled={isReadOnly || isFundingThis}
                                             placeholder="Amount (e.g. 1500)"
-                                            className="flex-1 px-2.5 py-1.5 rounded bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white"
+                                            className="flex-1 px-2.5 py-1.5 rounded bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white disabled:opacity-50"
                                         />
                                         <button
                                             type="button"
+                                            disabled={isReadOnly || isFundingThis}
                                             onClick={() => handleManualDeposit(obj)}
-                                            className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold shrink-0"
+                                            className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-bold shrink-0"
                                         >
-                                            + Fund
+                                            {isFundingThis ? 'Funding...' : '+ Fund'}
                                         </button>
                                     </div>
                                 </div>

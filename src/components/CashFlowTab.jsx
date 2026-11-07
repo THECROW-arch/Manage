@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { PieChart, Pie, Tooltip, ResponsiveContainer } from 'recharts';
-import { hexColorMap } from '../utils/constants';
+import { hexColorMap, getToday } from '../utils/constants';
 import { getLocalTranscriber, mergeAndResampleTo16kHz } from '../utils/voiceTranscriber';
 import { useTranslation } from 'react-i18next';
 /**
@@ -75,6 +75,9 @@ export default function CashFlowTab({
     setEditingExpense,
     handleUpdateExpense,
     userId,
+    expenseMetaMap: externalMetaMap,
+    updateExpenseMeta: externalUpdateMeta,
+    isExpenseSkippedForCurrentPeriod: externalIsSkipped,
     groupedExpenses
 }) {
     const { t, i18n } = useTranslation();
@@ -83,7 +86,7 @@ export default function CashFlowTab({
     const [boostAmountInput, setBoostAmountInput] = useState('');
     const metaStorageKey = userId ? `managed_expense_meta_${userId}` : null;
 
-    const [expenseMetaMap, setExpenseMetaMap] = useState(() => {
+    const [localMetaMap, setLocalMetaMap] = useState(() => {
         if (!metaStorageKey) return {};
         try {
             const saved = localStorage.getItem(metaStorageKey);
@@ -93,8 +96,14 @@ export default function CashFlowTab({
         }
     });
 
+    const expenseMetaMap = externalMetaMap ?? localMetaMap;
+
     const updateExpenseMeta = (expId, patch) => {
-        setExpenseMetaMap(prev => {
+        if (externalUpdateMeta) {
+            externalUpdateMeta(expId, patch);
+            return;
+        }
+        setLocalMetaMap(prev => {
             const next = {
                 ...prev,
                 [expId]: { ...(prev[expId] || {}), ...patch }
@@ -110,19 +119,21 @@ export default function CashFlowTab({
         });
     };
 
-    const todayDateStr = new Date().toISOString().slice(0, 10);
+    const todayDateStr = getToday();
 
-    // Helper: Checks if a recurring expense was marked "Not Bought / Skipped" for its current period
     const isExpenseSkippedForCurrentPeriod = (exp) => {
-        if (!exp.is_recurring) return false;
+        if (externalIsSkipped) {
+            return externalIsSkipped(exp);
+        }
+        if (!exp?.is_recurring) return false;
         const meta = expenseMetaMap[exp.id];
         if (!meta || !Array.isArray(meta.skippedPeriods)) return false;
         const freq = meta.recurrenceType || 'monthly';
         const periodKey = freq === 'daily'
             ? todayDateStr
             : freq === 'yearly'
-                ? selectedMonth.slice(0, 4)
-                : selectedMonth;
+            ? selectedMonth.slice(0, 4)
+            : selectedMonth;
         return meta.skippedPeriods.includes(periodKey);
     };
 
@@ -132,8 +143,8 @@ export default function CashFlowTab({
         const periodKey = freq === 'daily'
             ? todayDateStr
             : freq === 'yearly'
-                ? selectedMonth.slice(0, 4)
-                : selectedMonth;
+            ? selectedMonth.slice(0, 4)
+            : selectedMonth;
         const currentSkipped = Array.isArray(meta.skippedPeriods) ? meta.skippedPeriods : [];
         const isSkipped = currentSkipped.includes(periodKey);
         const nextSkipped = isSkipped
@@ -147,6 +158,8 @@ export default function CashFlowTab({
     const [voiceFeedback, setVoiceFeedback] = useState(null);
 
     const isRecordingRef = useRef(false);
+    const isStartingMicRef = useRef(false);
+    const micAttemptRef = useRef(0);
     const audioContextRef = useRef(null);
     const processorRef = useRef(null);
     const mediaStreamRef = useRef(null);
@@ -155,18 +168,22 @@ export default function CashFlowTab({
 
     const releaseAudioHardware = async () => {
         clearTimeout(recordingTimeoutRef.current);
+        micAttemptRef.current += 1;
+        isStartingMicRef.current = false;
         isRecordingRef.current = false;
 
         if (processorRef.current) {
-            processorRef.current.disconnect();
+            try { processorRef.current.disconnect(); } catch { /* ignore */ }
             processorRef.current = null;
         }
         if (audioContextRef.current) {
-            await audioContextRef.current.close().catch(() => { });
+            await audioContextRef.current.close().catch(() => {});
             audioContextRef.current = null;
         }
         if (mediaStreamRef.current) {
-            mediaStreamRef.current.getTracks().forEach(track => track.stop());
+            mediaStreamRef.current.getTracks().forEach(track => {
+                try { track.stop(); } catch { /* ignore */ }
+            });
             mediaStreamRef.current = null;
         }
     };
@@ -189,11 +206,18 @@ export default function CashFlowTab({
         const text = rawTranscript.trim();
         if (!text) return;
 
+        // Preserve decimal points and commas inside numbers; strip only non-numeric punctuation
         let working = text
-            .replace(/[.,!?;:]+/g, ' ')
+            .replace(/[!?;:]+/g, ' ')
+            .replace(/(?<!\d)[.,]|[.,](?!\d)/g, ' ')
             .replace(/[-]+/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
+
+        // Remove thousands separators (e.g. "1,500" -> "1500", "240,000" -> "240000") BEFORE cost & name matchers
+        while (/(\d),(\d{3})(?!\d)/.test(working)) {
+            working = working.replace(/(\d),(\d{3})(?!\d)/g, '$1$2');
+        }
 
         // 0. EXPLICIT FORM RESET / CLEAR COMMAND
         const clearFormRegex = /\b(?:clear|reset|empty|wipe)\s+(?:the\s+)?(?:form|fields|inputs|everything|all|expense)\b/i;
@@ -213,7 +237,6 @@ export default function CashFlowTab({
         let explicitTargetName = null;
 
         // 1. EXPLICIT NAME CHANGE COMMANDS
-        // Matches: "change the name from whatever it is now to rent", "set name to coffee", "rename it to groceries"
         const explicitNameToRegex = /\b(?:change|set|update|rename|edit|make|call)\s+(?:the\s+)?(?:expense\s+|item\s+)?(?:name|title|description|it)\b.*?\b(?:to|as|into)\s+([a-z0-9\s']+?)(?=\s+(?:and\s+)?(?:change|set|update|check|uncheck|in\s+|under\s+|category\s+|cost\s+|price\s+|amount\s+|recurring|monthly|batch)|$)/i;
         const explicitNameDirectRegex = /\b(?:change|set|update|rename|edit)\s+(?:the\s+)?(?:expense\s+|item\s+)?(?:name|title|description)\s+([a-z0-9\s']+?)(?=\s+(?:and\s+)?(?:change|set|update|check|uncheck|in\s+|under\s+|category\s+|cost\s+|price\s+|amount\s+|recurring|monthly|batch)|$)/i;
 
@@ -232,9 +255,8 @@ export default function CashFlowTab({
             working = working.replace(nameDirectMatch[0], ' ');
         }
 
-        // 2. EXPLICIT COST / PRICE CHANGE COMMANDS
-        // Matches: "change the cost to 3000", "set price to 45.50", "update amount from 10 to 25"
-        const explicitCostRegex = /\b(?:change|set|update|edit|make)\s+(?:the\s+)?(?:expense\s+|item\s+)?(?:cost|price|amount|money|value)\b(?:.*?\b(?:to|as|into)\s*|\s*)[$€£]?\s*(\d+(?:[.,]\d{1,2})?)\s*(?:dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks)?/i;
+        // 2. EXPLICIT COST / PRICE CHANGE COMMANDS (supports decimals and stripped thousands)
+        const explicitCostRegex = /\b(?:change|set|update|edit|make)\s+(?:the\s+)?(?:expense\s+|item\s+)?(?:cost|price|amount|money|value)\b(?:.*?\b(?:to|as|into)\s*|\s*)[$€£]?\s*(\d+(?:[.,]\d{1,2})?)(?!\d)\s*(?:dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks)?/i;
         const explicitCostMatch = working.match(explicitCostRegex);
         if (explicitCostMatch) {
             const normalizedCost = explicitCostMatch[1].replace(',', '.');
@@ -276,7 +298,7 @@ export default function CashFlowTab({
             working = working.replace(checkBatchedRegex, ' ');
         }
 
-        // 4. SMART CATEGORY MATCHER (supports "change category to wants", "in wants", etc.)
+        // 4. SMART CATEGORY MATCHER
         const phoneticAliases = {
             wants: ['wants', 'want', 'once', 'wands', 'ones', 'one', 'wont', 'waltz'],
             needs: ['needs', 'need', 'kneads', 'neat', 'knees', 'leads', 'meats'],
@@ -324,6 +346,7 @@ export default function CashFlowTab({
         // 5. IF EXPLICIT NAME COMMAND WAS GIVEN, APPLY IT DIRECTLY
         if (explicitTargetName) {
             const cleanTarget = explicitTargetName
+                .replace(/[.,]+/g, ' ')
                 .replace(/\b(the|a|an|please|now)\b/gi, ' ')
                 .replace(/\s+/g, ' ')
                 .trim();
@@ -337,7 +360,7 @@ export default function CashFlowTab({
             return;
         }
 
-        // 6. STANDARD PRICE & NAME EXTRACTION (for natural phrases like "Rent 3000 in needs")
+        // 6. STANDARD PRICE & NAME EXTRACTION (Preserves decimals like $12.50 and full amounts like 1500)
         const spokenNumbers = {
             one: '1', two: '2', three: '3', four: '4', five: '5',
             six: '6', seven: '7', eight: '8', nine: '9', ten: '10',
@@ -347,15 +370,11 @@ export default function CashFlowTab({
             thousand: '1000'
         };
 
-        while (/(\d),(\d{3})\b/.test(working)) {
-            working = working.replace(/(\d),(\d{3})\b/g, '$1$2');
-        }
-
-        const amountRegex = /(?:[$€£]\s*)?(\d+(?:[.,]\d{1,2})?)\s*(?:dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks)?/i;
+        const amountRegex = /(?:[$€£]\s*)?(\d+(?:[.,]\d{1,2})?)(?!\d)\s*(?:dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks)?/i;
         const amountMatch = !explicitCostMatch ? working.match(amountRegex) : null;
 
         const cleanSegment = (seg) => seg
-            .replace(/[$€£]/g, ' ')
+            .replace(/[$€£.,]/g, ' ')
             .replace(/\b(dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks|cost|costing|price|priced|amount|box|checkbox|check|uncheck)\b/gi, ' ')
             .replace(/\b(change|set|update|rename|edit|make|call|name|title|description|whatever|current|currently|right\s+now|now)\b/gi, ' ')
             .replace(/\b(i\s+just|i\s+have|i've|i|please|can\s+you|could\s+you)\b/gi, ' ')
@@ -429,7 +448,11 @@ export default function CashFlowTab({
             });
 
             const transcriber = await getLocalTranscriber();
-            const output = await transcriber(audioData, { temperature: 0 });
+            const output = await transcriber(audioData, {
+                temperature: 0,
+                chunk_length_s: 30,
+                stride_length_s: 5
+            });
             const transcript = (output?.text || '').trim();
 
             if (!transcript) {
@@ -455,7 +478,12 @@ export default function CashFlowTab({
     const toggleVoiceRecording = async () => {
         if (isReadOnly || isTranscribing) return;
 
-        // Manual toggle: clicking a second time immediately stops and transcribes
+        // Prevent overlapping microphone startup requests
+        if (isStartingMicRef.current) {
+            await cancelVoiceRecording();
+            return;
+        }
+
         if (isRecordingRef.current || isListening) {
             await stopAndProcessRecording();
             return;
@@ -469,8 +497,20 @@ export default function CashFlowTab({
             return;
         }
 
+        const attemptId = ++micAttemptRef.current;
+        isStartingMicRef.current = true;
+
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            // If unmounted or canceled while waiting for permission, stop tracks immediately
+            if (micAttemptRef.current !== attemptId || !isStartingMicRef.current) {
+                stream.getTracks().forEach(track => {
+                    try { track.stop(); } catch { /* ignore */ }
+                });
+                return;
+            }
+
             mediaStreamRef.current = stream;
             audioChunksRef.current = [];
 
@@ -483,7 +523,7 @@ export default function CashFlowTab({
             processorRef.current = processor;
 
             processor.onaudioprocess = (event) => {
-                if (!isRecordingRef.current) return;
+                if (!isRecordingRef.current || micAttemptRef.current !== attemptId) return;
                 const inputData = event.inputBuffer.getChannelData(0);
                 audioChunksRef.current.push(new Float32Array(inputData));
             };
@@ -491,6 +531,7 @@ export default function CashFlowTab({
             source.connect(processor);
             processor.connect(audioCtx.destination);
 
+            isStartingMicRef.current = false;
             isRecordingRef.current = true;
             setIsListening(true);
             setVoiceFeedback({
@@ -498,21 +539,22 @@ export default function CashFlowTab({
                 message: t('voice_recording_prompt', 'Recording... Speak now, then click "Stop Recording" when you are done.')
             });
 
-            // 60-second safety cap in case the microphone is left open unattended
             recordingTimeoutRef.current = setTimeout(() => {
-                if (isRecordingRef.current) {
+                if (isRecordingRef.current && micAttemptRef.current === attemptId) {
                     stopAndProcessRecording();
                 }
             }, 60000);
         } catch (err) {
-            await releaseAudioHardware();
-            setIsListening(false);
-            setVoiceFeedback({
-                type: 'error',
-                message: err.name === 'NotAllowedError'
-                    ? t('err_voice_denied', 'Microphone permission denied. Please allow microphone access in your browser.')
-                    : `Microphone error: ${err.message || 'Check your input device.'}`
-            });
+            if (micAttemptRef.current === attemptId) {
+                await releaseAudioHardware();
+                setIsListening(false);
+                setVoiceFeedback({
+                    type: 'error',
+                    message: err.name === 'NotAllowedError'
+                        ? t('err_voice_denied', 'Microphone permission denied. Please allow microphone access in your browser.')
+                        : `Microphone error: ${err.message || 'Check your input device.'}`
+                });
+            }
         }
     };
 
@@ -1121,11 +1163,9 @@ export default function CashFlowTab({
                             <form
                                 onSubmit={async (e) => {
                                     const pendingFreq = isRecurring ? recurrenceType : null;
-                                    await handleAddExpense(e);
-                                    if (pendingFreq) {
-                                        try {
-                                            localStorage.setItem('managed_last_recurrence_freq', pendingFreq);
-                                        } catch { /* ignore */ }
+                                    const createdExp = await handleAddExpense(e, pendingFreq);
+                                    if (pendingFreq && createdExp?.id) {
+                                        updateExpenseMeta(createdExp.id, { recurrenceType: pendingFreq });
                                     }
                                 }}
                                 className="space-y-4"
@@ -1349,13 +1389,15 @@ export default function CashFlowTab({
                                                         </div>
                                                         <button
                                                             type="button"
-                                                            onClick={() => {
-                                                                const todayStamp = new Date().toISOString().slice(0, 10);
-                                                                updateExpenseMeta(exp.id, {
-                                                                    recurrenceType: editingExpense.recurrenceType || freq,
-                                                                    lastEditedAt: todayStamp
-                                                                });
-                                                                handleUpdateExpense(exp.id, editingExpense);
+                                                            onClick={async () => {
+                                                                const ok = await handleUpdateExpense(exp.id, editingExpense);
+                                                                if (ok) {
+                                                                    const todayStamp = getToday();
+                                                                    updateExpenseMeta(exp.id, {
+                                                                        recurrenceType: editingExpense.recurrenceType || freq,
+                                                                        lastEditedAt: todayStamp
+                                                                    });
+                                                                }
                                                             }}
                                                             className="px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold"
                                                         >

@@ -35,22 +35,36 @@ export default function AIAssistantDrawer(props) {
     const [isOpen, setIsOpen] = useState(false);
     const [input, setInput] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isStartingMic, setIsStartingMic] = useState(false);
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
 
     const [messages, setMessages] = useState(() => loadAccountChatHistory(userId));
-    const msgIdCounterRef = useRef(1);
+    const msgIdCounterRef = useRef(
+        messages.reduce((max, msg) => {
+            const match = typeof msg?.id === 'string' ? /^[uae]_(\d+)$/.exec(msg.id) : null;
+            return match ? Math.max(max, Number(match[1])) : max;
+        }, 1)
+    );
+
+    // Keep a ref to the latest props so async voice transcription always uses fresh state & callbacks
+    const latestPropsRef = useRef(props);
+    useEffect(() => {
+        latestPropsRef.current = props;
+    });
 
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null);
     const isRecordingRef = useRef(false);
     const isStartingMicRef = useRef(false);
+    const micAttemptRef = useRef(0);
     const audioContextRef = useRef(null);
     const processorRef = useRef(null);
     const mediaStreamRef = useRef(null);
     const audioChunksRef = useRef([]);
 
     const releaseMic = useCallback(() => {
+        micAttemptRef.current += 1;
         isRecordingRef.current = false;
         isStartingMicRef.current = false;
         audioChunksRef.current = [];
@@ -70,7 +84,6 @@ export default function AIAssistantDrawer(props) {
         }
     }, []);
 
-    // Persist chat history only under the authenticated user's key
     useEffect(() => {
         const key = getChatStorageKey(userId);
         if (!key) return;
@@ -104,6 +117,7 @@ export default function AIAssistantDrawer(props) {
 
     const handleCloseDrawer = () => {
         releaseMic();
+        setIsStartingMic(false);
         setIsRecording(false);
         setIsTranscribing(false);
         setIsOpen(false);
@@ -120,7 +134,7 @@ export default function AIAssistantDrawer(props) {
         setIsProcessing(true);
 
         try {
-            const response = await processAIAgentTurn(cleanPrompt, props);
+            const response = await processAIAgentTurn(cleanPrompt, latestPropsRef.current);
             const nextAiMsgId = `a_${++msgIdCounterRef.current}`;
             setMessages(prev => [
                 ...prev,
@@ -151,10 +165,20 @@ export default function AIAssistantDrawer(props) {
     const toggleAssistantVoice = async () => {
         if (isTranscribing) return;
 
-        if (isRecordingRef.current || isRecording || isStartingMicRef.current) {
+        // If microphone startup is pending, cancel the pending attempt immediately
+        if (isStartingMicRef.current || isStartingMic) {
+            releaseMic();
+            setIsStartingMic(false);
+            setIsRecording(false);
+            return;
+        }
+
+        // If actively recording, stop and transcribe
+        if (isRecordingRef.current || isRecording) {
             const sampleRate = audioContextRef.current?.sampleRate || 16000;
             const chunks = [...audioChunksRef.current];
             releaseMic();
+            setIsStartingMic(false);
             setIsRecording(false);
 
             if (chunks.length === 0) return;
@@ -165,7 +189,11 @@ export default function AIAssistantDrawer(props) {
 
                 setIsTranscribing(true);
                 const transcriber = await getLocalTranscriber();
-                const output = await transcriber(audioData, { temperature: 0 });
+                const output = await transcriber(audioData, {
+                    temperature: 0,
+                    chunk_length_s: 30,
+                    stride_length_s: 5
+                });
                 const transcript = (output?.text || '').trim();
                 if (transcript) {
                     await handleSendPrompt(transcript);
@@ -180,16 +208,19 @@ export default function AIAssistantDrawer(props) {
 
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
 
-        try {
-            isStartingMicRef.current = true;
-            setIsRecording(true);
-            audioChunksRef.current = [];
+        const attemptId = ++micAttemptRef.current;
+        isStartingMicRef.current = true;
+        setIsStartingMic(true);
+        audioChunksRef.current = [];
 
+        try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-            if (!isStartingMicRef.current) {
-                stream.getTracks().forEach(track => track.stop());
-                setIsRecording(false);
+            // If canceled or superseded while waiting for permission, stop tracks and exit
+            if (micAttemptRef.current !== attemptId || !isStartingMicRef.current) {
+                stream.getTracks().forEach(track => {
+                    try { track.stop(); } catch { /* ignore */ }
+                });
                 return;
             }
 
@@ -204,18 +235,24 @@ export default function AIAssistantDrawer(props) {
             processorRef.current = processor;
 
             processor.onaudioprocess = (e) => {
-                if (!isRecordingRef.current) return;
+                if (!isRecordingRef.current || micAttemptRef.current !== attemptId) return;
                 audioChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
             };
 
             source.connect(processor);
             processor.connect(audioCtx.destination);
-            isRecordingRef.current = true;
+
             isStartingMicRef.current = false;
+            setIsStartingMic(false);
+            isRecordingRef.current = true;
+            setIsRecording(true);
         } catch (err) {
             console.error('Mic start failed:', err);
-            releaseMic();
-            setIsRecording(false);
+            if (micAttemptRef.current === attemptId) {
+                releaseMic();
+                setIsStartingMic(false);
+                setIsRecording(false);
+            }
         }
     };
 
@@ -343,24 +380,44 @@ export default function AIAssistantDrawer(props) {
                             type="button"
                             onClick={toggleAssistantVoice}
                             disabled={isTranscribing}
-                            aria-label={isRecording ? 'Stop voice command' : 'Speak to AI Assistant'}
-                            title={isRecording ? 'Click to stop recording' : 'Speak a command'}
+                            aria-label={
+                                isRecording
+                                    ? 'Stop voice command'
+                                    : isStartingMic
+                                    ? 'Cancel microphone startup'
+                                    : 'Speak to AI Assistant'
+                            }
+                            title={
+                                isRecording
+                                    ? 'Click to stop recording'
+                                    : isStartingMic
+                                    ? 'Starting microphone... Click to cancel'
+                                    : 'Speak a command'
+                            }
                             className={`px-2.5 py-2 rounded-lg text-xs font-bold transition-all focus:outline-none focus:ring-2 focus:ring-emerald-600/30 ${
                                 isRecording
                                     ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse'
+                                    : isStartingMic
+                                    ? 'bg-amber-500 hover:bg-amber-600 text-white'
                                     : 'bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 hover:bg-emerald-50 dark:hover:bg-zinc-700'
                             }`}
                         >
-                            {isTranscribing ? '⏳' : isRecording ? 'Stop' : '🎤'}
+                            {isTranscribing ? '⏳' : isRecording ? 'Stop' : isStartingMic ? 'Cancel' : '🎤'}
                         </button>
                         <input
                             ref={inputRef}
                             type="text"
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
-                            placeholder={isRecording ? 'Recording... Click Stop when done' : 'Ask or command (e.g. "How many expenses?")'}
+                            placeholder={
+                                isRecording
+                                    ? 'Recording... Click Stop when done'
+                                    : isStartingMic
+                                    ? 'Waiting for microphone permission...'
+                                    : 'Ask or command (e.g. "How many expenses?")'
+                            }
                             aria-label="Message MANAGED AI Assistant"
-                            className="flex-1 px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30"
+                            className="flex-1 px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-xs text-gray-900 dark:text-white focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30"
                         />
                         <button
                             type="submit"

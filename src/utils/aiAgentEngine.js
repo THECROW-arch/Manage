@@ -24,28 +24,76 @@ function normalizeTypos(str) {
         .trim();
 }
 
-/**
- * Safely parses numeric amounts from natural text, distinguishing thousands separators (1,200)
- * from decimal commas (45,50) so expense/budget amounts are never corrupted.
- */
-export function parseMoneyAmount(rawNumberStr) {
-    if (!rawNumberStr) return NaN;
-    let s = String(rawNumberStr).trim();
-    // If both comma and dot exist (e.g. 1,200.50), strip commas
-    if (s.includes(',') && s.includes('.')) {
-        s = s.replace(/,/g, '');
-    } else if (s.includes(',')) {
-        // If comma is followed by 3 digits (e.g. 1,000 or 12,500), it is a thousands separator
-        if (/^\d{1,3}(,\d{3})+$/.test(s)) {
-            s = s.replace(/,/g, '');
-        } else {
-            s = s.replace(',', '.');
-        }
-    }
-    return parseFloat(s);
+function escapeRegExp(str) {
+    return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)/;
+/**
+ * Parses a complete monetary token without accepting partial matches or truncating decimals.
+ * Handles thousands separators ("1,000" -> 1000, "8,000" -> 8000, "2,000" -> 2000)
+ * and decimal commas/dots ("1,5" -> 1.5, "12.50" -> 12.5).
+ * Returns NaN if the token has >2 decimal places (e.g. "1000.567") or invalid grouping.
+ */
+export function parseMoneyAmount(rawNumberStr) {
+    if (rawNumberStr === null || rawNumberStr === undefined) return NaN;
+    const s = String(rawNumberStr).trim().replace(/^[$€£]\s*/, '');
+    if (!s) return NaN;
+
+    const hasComma = s.includes(',');
+    const hasDot = s.includes('.');
+
+    if (hasComma && hasDot) {
+        const lastComma = s.lastIndexOf(',');
+        const lastDot = s.lastIndexOf('.');
+        if (lastComma < lastDot) {
+            // Format: 1,234.56
+            if (!/^\d{1,3}(,\d{3})+(\.\d{1,2})?$/.test(s)) return NaN;
+            return Number(s.replace(/,/g, ''));
+        } else {
+            // Format: 1.234,56
+            if (!/^\d{1,3}(\.\d{3})+(,\d{1,2})?$/.test(s)) return NaN;
+            return Number(s.replace(/\./g, '').replace(',', '.'));
+        }
+    }
+
+    if (hasComma) {
+        // Thousands grouping: "1,000", "8,000", "240,000"
+        if (/^\d{1,3}(,\d{3})+$/.test(s)) {
+            return Number(s.replace(/,/g, ''));
+        }
+        // Decimal comma with 1 or 2 fractional digits: "1,5", "45,50"
+        if (/^\d+,\d{1,2}$/.test(s)) {
+            return Number(s.replace(',', '.'));
+        }
+        return NaN;
+    }
+
+    if (hasDot) {
+        // Reject more than 2 decimal places (e.g. "1000.567" or ambiguous "1.200") instead of truncating
+        if (!/^\d+\.\d{1,2}$/.test(s)) return NaN;
+        return Number(s);
+    }
+
+    if (/^\d+$/.test(s)) {
+        return Number(s);
+    }
+
+    return NaN;
+}
+
+export const MONEY_PARSER_TEST_CASES = [
+    { input: '1,000', expected: 1000 },
+    { input: '8,000', expected: 8000 },
+    { input: '2,000', expected: 2000 },
+    { input: '1,5', expected: 1.5 }
+];
+
+export function runMoneyParserSelfTest() {
+    return MONEY_PARSER_TEST_CASES.every(({ input, expected }) => parseMoneyAmount(input) === expected);
+}
+
+// Captures the complete contiguous numeric token so partial prefixes are never extracted
+const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)/;
 
 export async function processAIAgentTurn(rawInput, ctx) {
     const text = (rawInput || '').trim();
@@ -69,6 +117,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         totalRemaining = 0,
         totalAutomatedAssets = 0,
         categories = [],
+        expenses = [],
         monthlyExpenses = [],
         lastAddedExpenseId = null,
         assetAdjustments = [],
@@ -115,7 +164,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     const findCategoryInText = (inputStr) => {
         if (!Array.isArray(categories) || categories.length === 0) return null;
-        // Strip leading logging verbs (like "save") so "Save 20 for lunch" does not match Savings
         const cleanedLookup = String(inputStr || '').replace(
             /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b\s*/i,
             ''
@@ -123,7 +171,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const aliases = {
             wants: ['wants', 'want', 'once', 'entertainment', 'lifestyle'],
             needs: ['needs', 'need', 'bills', 'essentials'],
-            savings: ['savings', 'saving', 'invest', 'investment']
+            savings: ['savings', 'saving', 'save', 'invest', 'investment']
         };
         const sorted = [...categories].sort((a, b) => b.name.length - a.name.length);
         for (const cat of sorted) {
@@ -131,8 +179,8 @@ export async function processAIAgentTurn(rawInput, ctx) {
             const stem = cName.replace(/s$/, '');
             const list = [cName, stem, ...(aliases[cName] || []), ...(aliases[`${stem}s`] || [])];
             for (const word of list) {
-                const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                if (new RegExp(`\\b${escaped}\\b`, 'i').test(cleanedLookup)) {
+                const escaped = escapeRegExp(word);
+                if (new RegExp(`(?:^|\\W)${escaped}(?=$|\\W)`, 'i').test(cleanedLookup)) {
                     return cat;
                 }
             }
@@ -274,7 +322,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const ok = await handleDeleteSandboxSheet(targetSheet.id);
-        if (ok === false) {
+        if (!ok) {
             return { reply: `Failed to delete Sandbox Sheet **${targetSheet.title}**. Please try again.` };
         }
         return {
@@ -314,7 +362,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const ok = await handleDeleteBundle(targetBundle.id);
-        if (ok === false) {
+        if (!ok) {
             return { reply: `Failed to delete Special Occasion **${targetBundle.name}**. Please try again.` };
         }
         return {
@@ -340,16 +388,21 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
         const allocations = {};
         const splitSummary = [];
-        const pairRegex = /[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:dollars?|mad|dhs?|euros?)?\s*(?:from|in|out\s+of|off)\s+([a-zA-Z]+)\b/gi;
+        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)\s*(?:dollars?|mad|dhs?|euros?)?\s*(?:from|in|out\s+of|off)\s+([a-zA-Z]+)\b/gi;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
             const amt = parseMoneyAmount(match[1]);
+            if (isNaN(amt) || amt <= 0) {
+                return {
+                    reply: `Invalid allocation amount **"${match[1]}"**. Please provide a valid positive amount with at most 2 decimal places.`
+                };
+            }
             const catWord = match[2];
             const matchedCat = categories.find(c =>
                 c.name.toLowerCase() === catWord.toLowerCase() ||
                 c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, ''))
             );
-            if (matchedCat && !isNaN(amt) && amt > 0) {
+            if (matchedCat) {
                 allocations[matchedCat.id] = Number(((allocations[matchedCat.id] || 0) + amt).toFixed(2));
                 splitSummary.push(`**${formatCurrency(amt)}** from **${matchedCat.name}**`);
             }
@@ -390,10 +443,12 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const amtMatch = text.match(MONEY_TOKEN_REGEX);
         const rawTitle = nameMatch?.[1]?.trim() || 'Sandbox Plan';
         const sheetTitle = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
-        const budgetAmt = amtMatch ? parseMoneyAmount(amtMatch[1]) : 0;
+        const budgetAmt = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
 
-        if (!budgetAmt || budgetAmt <= 0) {
-            return { reply: 'Please include a master budget amount, e.g., *"Create a sandbox sheet named Home office with a budget of 8000"*.' };
+        if (isNaN(budgetAmt) || budgetAmt <= 0) {
+            return {
+                reply: 'Please include a valid master budget amount (up to 2 decimal places), e.g., *"Create a sandbox sheet named Home office with a budget of 8000"*.'
+            };
         }
 
         const res = await onDirectCreateSandbox({ title: sheetTitle, totalBudget: budgetAmt });
@@ -417,21 +472,24 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const rawObjTitle = nameMatch?.[1]?.trim() || 'Wealth Objective';
         const objTitle = rawObjTitle.charAt(0).toUpperCase() + rawObjTitle.slice(1);
 
-        const numbers = [...text.matchAll(/[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d+)?)/g)].map(m => parseMoneyAmount(m[1]));
-        const targetCost = numbers[0] || 0;
+        const rawTokens = [...text.matchAll(/[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)/g)].map(m => m[1]);
+        const targetCost = rawTokens.length > 0 ? parseMoneyAmount(rawTokens[0]) : NaN;
 
-        if (targetCost <= 0) {
-            return { reply: 'Please include the target cost for your objective, e.g., *"Create a wealth objective named Car Chevy for 240000"*.' };
+        if (isNaN(targetCost) || targetCost <= 0) {
+            return { reply: 'Please include a valid target cost for your objective, e.g., *"Create a wealth objective named Car Chevy for 240000"*.' };
         }
 
         const autoPulls = {};
-        const pairRegex = /[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:from|in)\s+([a-zA-Z]+)\b/gi;
+        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)\s*(?:from|in)\s+([a-zA-Z]+)\b/gi;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
             const amt = parseMoneyAmount(match[1]);
+            if (isNaN(amt) || amt <= 0) {
+                return { reply: `Invalid auto-pull amount **"${match[1]}"**. Please provide a valid positive amount.` };
+            }
             const catWord = match[2];
             const matchedCat = categories.find(c => c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, '')));
-            if (matchedCat && amt > 0) autoPulls[matchedCat.id] = amt;
+            if (matchedCat) autoPulls[matchedCat.id] = amt;
         }
 
         const newObj = {
@@ -440,6 +498,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             targetAmount: targetCost,
             manualSaved: 0,
             autoPulls,
+            appliedMonths: [],
             history: [],
             createdAt: getToday()
         };
@@ -453,9 +512,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 8. ONE-MONTH INCOME BOOST (GIFT / BONUS FOR THIS MONTH ONLY)
+    // 8. ONE-MONTH INCOME BOOST (Distinguishes gift expenses from income boosts!)
     // =========================================================================
-    if (/\b(clear|remove|reset)\b.*\b(boost|bonus|gift|extra\s+income)\b/i.test(lower) && handleClearMonthlyBoost) {
+    if (/\b(clear|remove|reset)\b.*\b(boost|bonus|extra\s+income|income\s+gift)\b/i.test(lower) && handleClearMonthlyBoost) {
         if (isReadOnly) {
             return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
         }
@@ -467,26 +526,55 @@ export async function processAIAgentTurn(rawInput, ctx) {
         };
     }
 
-    if (/\b(gift|bonus|boost|extra\s+income|extra\s+money|add\s+to\s+my\s+salary\s+this\s+month|add\s+to\s+this\s+month'?s\s+income)\b/i.test(lower) && handleAddMonthlyBoost) {
-        if (isReadOnly) {
-            return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
-        }
-        const amtMatch = text.match(MONEY_TOKEN_REGEX);
-        const boostVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
-        if (!isNaN(boostVal) && boostVal > 0) {
-            handleAddMonthlyBoost(boostVal);
-            return {
-                reply: `Added a temporary **+${formatCurrency(boostVal)}** income boost for **${selectedMonth} only**! Your total income for **${selectedMonth}** is now **${formatCurrency(parsedSalary + boostVal)}**, and next month will automatically revert to your base salary.`,
-                actionBadge: `+${formatCurrency(boostVal)} (${selectedMonth} Only)`,
-                suggestions: ["Clear this month's income boost", 'Audit my budget']
-            };
+    const mentionsBoostWord = /\b(gift|bonus|boost|extra\s+income|extra\s+money)\b/i.test(lower);
+    if (mentionsBoostWord && handleAddMonthlyBoost) {
+        const hasExplicitIncomeContext =
+            /\b(income\s+boost|salary\s+boost|boost\s+(?:my\s+)?(?:income|salary)|extra\s+income|extra\s+money|(?:to|into|for)\s+(?:my\s+|this\s+month'?s?\s+)?(?:income|salary|paycheck)|gifted\s+me)\b/i.test(lower) ||
+            (/\b(?:boost|bonus|gift)\b/i.test(lower) && /\b(?:income|salary|paycheck)\b/i.test(lower));
+
+        const hasExpensePurchaseVerb = /\b(spent|paid|bought|purchase|purchased|log|record|save|fill|prefill)\b/i.test(lower);
+        const strippedForCatCheck = lower.replace(/^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b\s*/i, '');
+        const hasCategoryTarget = Boolean(findCategoryInText(strippedForCatCheck));
+        const isClearGiftExpense = !hasExplicitIncomeContext && (hasExpensePurchaseVerb || hasCategoryTarget);
+
+        if (!isClearGiftExpense) {
+            if (isReadOnly) {
+                return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
+            }
+            const amtMatch = text.match(MONEY_TOKEN_REGEX);
+            const boostVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
+
+            if (hasExplicitIncomeContext) {
+                if (!isNaN(boostVal) && boostVal > 0) {
+                    handleAddMonthlyBoost(boostVal);
+                    return {
+                        reply: `Added a temporary **+${formatCurrency(boostVal)}** income boost for **${selectedMonth} only**! Your total income for **${selectedMonth}** is now **${formatCurrency(parsedSalary + boostVal)}**, and next month will automatically revert to your base salary.`,
+                        actionBadge: `+${formatCurrency(boostVal)} (${selectedMonth} Only)`,
+                        suggestions: ["Clear this month's income boost", 'Audit my budget']
+                    };
+                }
+            } else if (/\b(gift|bonus)\b/i.test(lower) && !isNaN(boostVal) && boostVal > 0) {
+                // Ambiguous gift/bonus command: ask for clarification before altering income or expenses
+                const defaultExpCat = categories.find(c => c.type !== 'asset')?.name || 'Wants';
+                return {
+                    reply: `Would you like me to add **${formatCurrency(boostVal)}** as a **temporary income boost** for **${selectedMonth}**, or log it as a **gift expense**?\n\n• For income: *"Add a ${boostVal} gift to my income for this month"*\n• For an expense: *"Log ${boostVal} for gift in ${defaultExpCat}"*`,
+                    suggestions: [
+                        `Add a ${boostVal} gift to my income for this month`,
+                        `Log ${boostVal} for gift in ${defaultExpCat}`
+                    ]
+                };
+            }
         }
     }
 
     // =========================================================================
-    // 9. CREATE / DELETE / RENAME A CATEGORY
+    // 9. CREATE / DELETE / RENAME A CATEGORY (Strictly separated from expense commands!)
     // =========================================================================
-    if (/\b(create|add|make|new)\b.*\bcategory\b/i.test(lower)) {
+    const isExplicitCreateCategory =
+        /\b(?:create|add|make|new)\s+(?:a\s+)?(?:new\s+)?(?:wealth\s+asset\s+|asset\s+|expense\s+)?category\b/i.test(lower) &&
+        !/\b(?:expense|transaction|item|purchase)\b/i.test(lower.split(/\bcategory\b/i)[0]);
+
+    if (isExplicitCreateCategory) {
         if (!onDirectCreateCategory) {
             return { reply: 'Category creation handler is not connected.' };
         }
@@ -495,15 +583,15 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const pctMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:%|percent)/i);
         const requestedPct = pctMatch ? parseFloat(pctMatch[1]) : 0;
 
-        const goalMatch = text.match(/\b(?:goal|target)\s*(?:of|is|to|:)?\s*[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d+)?)/i);
+        const goalMatch = text.match(/\b(?:goal|target)\s*(?:of|is|to|:)?\s*[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)/i);
         const requestedGoal = goalMatch ? parseMoneyAmount(goalMatch[1]) : 0;
 
         let extractedName = '';
-        const namedMatch = text.match(/\b(?:named|called|titled)\s+([a-zA-Z0-9\s&'-]+?)(?=\s*(?:,|\bit'?s\b|\bits\b|\bit\s+is\b|\bas\s+a\b|\bwhich\s+is\b|\btype\b|\bwealth\b|\basset\b|\bexpense\b|\bgive\s+it\b|\bwith\b|\bat\b|\d+\s*%|$))/i);
+        const namedMatch = text.match(/\b(?:named|called|titled)\s+([a-zA-Z0-9\s&'+!-]+?)(?=\s*(?:,|\bit'?s\b|\bits\b|\bit\s+is\b|\bas\s+a\b|\bwhich\s+is\b|\btype\b|\bwealth\b|\basset\b|\bexpense\b|\bgive\s+it\b|\bwith\b|\bat\b|\d+\s*%|$))/i);
         if (namedMatch && namedMatch[1]) {
             extractedName = namedMatch[1].trim();
         } else {
-            const afterCatMatch = text.match(/\bcategory\s+([a-zA-Z0-9\s&'-]+?)(?=\s*(?:,|\bit'?s\b|\bits\b|\bit\s+is\b|\bas\s+a\b|\bwhich\s+is\b|\btype\b|\bwealth\b|\basset\b|\bexpense\b|\bgive\s+it\b|\bwith\b|\bat\b|\d+\s*%|$))/i);
+            const afterCatMatch = text.match(/\bcategory\s+([a-zA-Z0-9\s&'+!-]+?)(?=\s*(?:,|\bit'?s\b|\bits\b|\bit\s+is\b|\bas\s+a\b|\bwhich\s+is\b|\btype\b|\bwealth\b|\basset\b|\bexpense\b|\bgive\s+it\b|\bwith\b|\bat\b|\d+\s*%|$))/i);
             if (afterCatMatch && afterCatMatch[1]) {
                 extractedName = afterCatMatch[1].replace(/^(?:named|called|for|to)\s+/i, '').trim();
             }
@@ -520,7 +608,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             name: formattedCatName,
             type: isAssetType ? 'asset' : 'expense',
             percentage: requestedPct,
-            targetGoal: requestedGoal
+            targetGoal: isNaN(requestedGoal) ? 0 : requestedGoal
         });
 
         if (!res.ok) {
@@ -539,7 +627,12 @@ export async function processAIAgentTurn(rawInput, ctx) {
         };
     }
 
-    if (/\b(delete|remove)\b.*\bcategory\b/i.test(lower)) {
+    // Only delete a category when the command explicitly targets a category and does NOT mention an expense/item
+    const isExplicitDeleteCategory =
+        /\b(?:delete|remove)\s+(?:the\s+)?(?:category\b|[a-z0-9\s&'+!-]+?\s+category\b)/i.test(lower) &&
+        !/\b(?:expense|expenses|transaction|item|purchase|from\s+category|in\s+category|under\s+category)\b/i.test(lower);
+
+    if (isExplicitDeleteCategory) {
         if (isReadOnly) {
             return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
         }
@@ -551,7 +644,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             return { reply: 'You must keep at least one category in your budget, so I cannot delete your final category.' };
         }
         const ok = await handleDeleteCategory(targetCat.id, targetCat.percentage);
-        if (ok === false) {
+        if (!ok) {
             return { reply: `Failed to delete category **${targetCat.name}**. Please try again.` };
         }
         return {
@@ -561,7 +654,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         };
     }
 
-    const renameCatMatch = text.match(/\b(?:rename|change)\s+(?:the\s+)?category\s+([a-zA-Z0-9\s]+?)\s+to\s+([a-zA-Z0-9\s]+)$/i);
+    const renameCatMatch = text.match(/\b(?:rename|change)\s+(?:the\s+)?category\s+([a-zA-Z0-9\s&'+!-]+?)\s+to\s+([a-zA-Z0-9\s&'+!-]+)$/i);
     if (renameCatMatch && handleUpdateCategory) {
         if (isReadOnly) {
             return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
@@ -570,7 +663,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const newCatName = renameCatMatch[2].trim();
         if (targetCat && newCatName) {
             const ok = await handleUpdateCategory(targetCat.id, newCatName, targetCat.target_goal || 0);
-            if (ok === false) {
+            if (!ok) {
                 return { reply: `Failed to rename category **${targetCat.name}**. Please try again.` };
             }
             return {
@@ -582,7 +675,8 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 10. REMOVE / DELETE / UNDO AN EXPENSE (Uses creation order for last-added expense)
+    // 10. REMOVE / DELETE / UNDO AN EXPENSE
+    // Distinguishes cross-month lastAddedExpenseId and verifies created_at timestamps
     // =========================================================================
     if (/\b(remove|delete|undo|erase|cancel)\b.*\b(expense|expenses|transaction|item|purchase|last|latest|recent)\b/i.test(lower) || /\b(remove|delete)\s+the\s+last\b/i.test(lower)) {
         if (isReadOnly) {
@@ -597,16 +691,33 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
         if (isLastIntent) {
             if (lastAddedExpenseId) {
-                targetExp = monthlyExpenses.find(e => e.id === lastAddedExpenseId) || null;
-            }
-            if (!targetExp) {
-                // Fall back to creation timestamp order (created_at) rather than expense_date order
-                const byCreationOrder = [...monthlyExpenses].sort((a, b) => {
-                    if (a.created_at && b.created_at) {
-                        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+                targetExp = monthlyExpenses.find(e => String(e.id) === String(lastAddedExpenseId)) || null;
+                if (!targetExp && Array.isArray(expenses) && expenses.length > 0) {
+                    const otherMonthExp = expenses.find(e => String(e.id) === String(lastAddedExpenseId));
+                    if (otherMonthExp) {
+                        const otherMonth = (otherMonthExp.expense_date || '').slice(0, 7) || 'another month';
+                        return {
+                            reply: `Your last-added expense (**${otherMonthExp.name}** • ${formatCurrency(otherMonthExp.cost)}) was recorded in **${otherMonth}**, not **${selectedMonth}**. Switch to **${otherMonth}** to remove it, or tell me the exact name of an expense in **${selectedMonth}** (e.g., *"Remove ${monthlyExpenses[0].name}"*).`,
+                            suggestions: [`Switch month to ${otherMonth}`, `Remove ${monthlyExpenses[0].name}`]
+                        };
                     }
-                    return 0;
-                });
+                }
+            }
+
+            if (!targetExp) {
+                // Verify all monthlyExpenses have valid created_at timestamps before using creation-order fallback
+                const allHaveValidCreatedAt = monthlyExpenses.every(
+                    e => Boolean(e.created_at) && !Number.isNaN(Date.parse(e.created_at))
+                );
+                if (!allHaveValidCreatedAt && monthlyExpenses.length > 1) {
+                    return {
+                        reply: `Creation timestamps are still syncing for some expenses in **${selectedMonth}**. Please specify the expense name you want to remove (for example: *"Remove ${monthlyExpenses[0].name}"*).`,
+                        suggestions: monthlyExpenses.slice(0, 3).map(e => `Remove ${e.name}`)
+                    };
+                }
+                const byCreationOrder = [...monthlyExpenses].sort(
+                    (a, b) => Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0)
+                );
                 targetExp = byCreationOrder[0];
             }
         } else {
@@ -622,7 +733,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const ok = await handleDeleteExpense(targetExp.id);
-        if (ok === false) {
+        if (!ok) {
             return { reply: `Failed to remove **${targetExp.name}**. Please try again.` };
         }
         return {
@@ -648,7 +759,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 ...targetExp,
                 name: newName.charAt(0).toUpperCase() + newName.slice(1)
             });
-            if (ok === false) {
+            if (!ok) {
                 return { reply: `Failed to update **${targetExp.name}**. Please try again.` };
             }
             return {
@@ -694,21 +805,26 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
     }
 
-    const salaryCmdMatch = text.match(/\b(?:set|change|update|make)\s+(?:my\s+)?(?:monthly\s+)?(?:salary|income|paycheck)\s+(?:to|as|at)?\s*[$€£]?\s*(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:[.,]\d+)?)/i);
+    const salaryCmdMatch = text.match(/\b(?:set|change|update|make)\s+(?:my\s+)?(?:monthly\s+)?(?:salary|income|paycheck)\s+(?:to|as|at)?\s*[$€£]?\s*(\d+(?:[.,]\d+)*)(?!\d)/i);
     if (salaryCmdMatch && setSalary) {
         const newSal = parseMoneyAmount(salaryCmdMatch[1]);
-        if (!isNaN(newSal) && newSal >= 0) {
-            setSalary(newSal.toString());
-            return {
-                reply: `Updated your base monthly salary to **${formatCurrency(newSal)}**!`,
-                actionBadge: `Salary → ${formatCurrency(newSal)}`,
-                suggestions: ['Audit my budget', 'How much can I spend per day?']
-            };
+        if (isNaN(newSal) || newSal < 0) {
+            return { reply: 'Please enter a valid salary amount (with up to 2 decimal places).' };
         }
+        setSalary(newSal.toString());
+        return {
+            reply: `Updated your base monthly salary to **${formatCurrency(newSal)}**!`,
+            actionBadge: `Salary → ${formatCurrency(newSal)}`,
+            suggestions: ['Audit my budget', 'How much can I spend per day?']
+        };
     }
 
     const monthMatch = text.match(/\b(?:switch|go|change|set)\s+(?:month\s+)?to\s+(\d{4}-\d{2})\b/i);
     if (monthMatch && setSelectedMonth) {
+        const monthNum = Number(monthMatch[1].slice(5));
+        if (monthNum < 1 || monthNum > 12) {
+            return { reply: 'Enter a month from 01 to 12 (for example: *"Switch month to 2026-11"*).' };
+        }
         setSelectedMonth(monthMatch[1]);
         return {
             reply: `Switched your active budget view to **${monthMatch[1]}**.`,
@@ -806,11 +922,11 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 13. LOG OR PRE-FILL AN EXPENSE
+    // 13. LOG OR PRE-FILL AN EXPENSE (Allows category qualifiers like "category Needs")
     // =========================================================================
     const isLogIntent = /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b/i.test(lower);
     const hasNumber = /\d+/.test(lower);
-    if (isLogIntent && hasNumber && !/\b(tax|afford|if\s+i|how\s+many|how\s+much|category|salary|currency|occasion|sandbox|objective)\b/i.test(lower)) {
+    if (isLogIntent && hasNumber && !/\b(tax|afford|if\s+i|how\s+many|how\s+much|salary|currency|occasion|sandbox|objective)\b/i.test(lower)) {
         if (isReadOnly) {
             return { reply: `The ledger for **${selectedMonth}** is locked. Switch to the current open month to log expenses.` };
         }
@@ -819,19 +935,22 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const recFlag = /\b(recurring|monthly|daily|yearly|every\s+month)\b/i.test(lower);
         const batchFlag = /\b(batch|batched|month\s+end)\b/i.test(lower);
 
-        const matchedCat = findCategoryInText(lower) || categories.find(c => c.type !== 'asset') || categories[0];
+        // Exclude leading logging verb (e.g. "save") before looking up category
+        const categoryText = lower.replace(/^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b\s*/i, '');
+        const matchedCat = findCategoryInText(categoryText) || categories.find(c => c.type !== 'asset') || categories[0];
         const amtMatch = text.match(MONEY_TOKEN_REGEX);
         const costVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
 
         if (!matchedCat || isNaN(costVal) || costVal <= 0) {
             return {
-                reply: 'Please include both an item name and a valid positive amount (for example: *"Log 45 for coffee in Wants"*).'
+                reply: 'Please include both an item name and a valid positive amount with at most 2 decimal places (for example: *"Log 45 for coffee in Wants"*).'
             };
         }
 
+        const escapedCatName = escapeRegExp(matchedCat.name);
         let cleanItem = text
             .replace(amtMatch[0], ' ')
-            .replace(new RegExp(`\\b${matchedCat.name}\\b`, 'gi'), ' ')
+            .replace(new RegExp(`(^|\\W)${escapedCatName}(?=$|\\W)`, 'gi'), '$1 ')
             .replace(/\b(please|can\s+you|add|log|record|save|spent|paid|bought|fill|prefill|recurring|recuring|monthly|daily|yearly|every\s+month|batch|batched|at\s+month\s+end|month\s+end)\b/gi, ' ')
             .replace(/\b(expenses?|expences?|transactions?|items?|purchases?|named|called)\b/gi, ' ')
             .replace(/\b(dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks)\b/gi, ' ')
@@ -1002,24 +1121,32 @@ export async function processAIAgentTurn(rawInput, ctx) {
             };
         }
 
-        if (targetCat) {
-            const { remaining, allocated } = getCategoryStats(targetCat);
-            if (testCost <= remaining) {
-                const afterPurchase = remaining - testCost;
-                const pctOfRemaining = remaining > 0 ? Math.round((testCost / remaining) * 100) : 100;
-                return {
-                    reply: `**Yes, you can afford it!**\n\n• **${targetCat.name} Available:** ${formatCurrency(remaining)} (of ${formatCurrency(allocated)})\n• **Purchase Amount:** ${formatCurrency(testCost)} (${pctOfRemaining}% of your remaining ${targetCat.name} pool)\n• **Left After Purchase:** ${formatCurrency(afterPurchase)}`,
-                    actionBadge: 'Affordability → Approved',
-                    suggestions: [`Log ${testCost} in ${targetCat.name}`, 'How much can I spend per day?']
-                };
-            } else {
-                const shortfall = testCost - remaining;
-                return {
-                    reply: `**Not inside ${targetCat.name} right now.**\n\n• **${targetCat.name} Available:** ${formatCurrency(remaining)}\n• **Purchase Amount:** ${formatCurrency(testCost)}\n• **Shortfall:** You are short by **${formatCurrency(shortfall)}** in ${targetCat.name}.`,
-                    actionBadge: 'Affordability → Exceeds Pool',
-                    suggestions: ['Audit my budget', 'Open Occasions & Sandbox']
-                };
-            }
+        if (!targetCat) {
+            return {
+                reply: `Repeat the question with the amount and a category name (for example: *"Can I afford ${formatCurrency(testCost)} in Wants?"*).`,
+                suggestions: categories
+                    .filter(c => c.type !== 'asset')
+                    .slice(0, 3)
+                    .map(c => `Can I afford ${testCost} in ${c.name}?`)
+            };
+        }
+
+        const { remaining, allocated } = getCategoryStats(targetCat);
+        if (testCost <= remaining) {
+            const afterPurchase = remaining - testCost;
+            const pctOfRemaining = remaining > 0 ? Math.round((testCost / remaining) * 100) : 100;
+            return {
+                reply: `**Yes, you can afford it!**\n\n• **${targetCat.name} Available:** ${formatCurrency(remaining)} (of ${formatCurrency(allocated)})\n• **Purchase Amount:** ${formatCurrency(testCost)} (${pctOfRemaining}% of your remaining ${targetCat.name} pool)\n• **Left After Purchase:** ${formatCurrency(afterPurchase)}`,
+                actionBadge: 'Affordability → Approved',
+                suggestions: [`Log ${testCost} in ${targetCat.name}`, 'How much can I spend per day?']
+            };
+        } else {
+            const shortfall = testCost - remaining;
+            return {
+                reply: `**Not inside ${targetCat.name} right now.**\n\n• **${targetCat.name} Available:** ${formatCurrency(remaining)}\n• **Purchase Amount:** ${formatCurrency(testCost)}\n• **Shortfall:** You are short by **${formatCurrency(shortfall)}** in ${targetCat.name}.`,
+                actionBadge: 'Affordability → Exceeds Pool',
+                suggestions: ['Audit my budget', 'Open Occasions & Sandbox']
+            };
         }
     }
 
@@ -1046,6 +1173,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     // =========================================================================
     // 20. ANALYST ENGINE: SAVINGS / PORTFOLIO GOAL PROJECTION & OBJECTIVES
+    // Uses completed contributions only for Wealth Objectives
     // =========================================================================
     if (/\b(goal|goals|target|portfolio|wealth|net\s+worth|when\s+will\s+i\s+reach|objectives?)\b/i.test(lower)) {
         const assetCats = categories.filter(c => c.type === 'asset');
@@ -1075,8 +1203,12 @@ export async function processAIAgentTurn(rawInput, ctx) {
         if (Array.isArray(wealthObjectives) && wealthObjectives.length > 0) {
             const objLines = wealthObjectives.map(o => {
                 const autoMo = Object.values(o.autoPulls || {}).reduce((s, v) => s + (parseFloat(v) || 0), 0);
-                const totalFunded = (parseFloat(o.manualSaved) || 0) + autoMo;
-                return `• **${o.name}:** ${formatCurrency(totalFunded)} / ${formatCurrency(o.targetAmount)} (${autoMo > 0 ? `${formatCurrency(autoMo)}/mo auto-pull` : 'Manual funding'})`;
+                // Count only completed contributions (history / manualSaved), never unexecuted autoPull config
+                const completedFunded = Array.isArray(o.history) && o.history.length > 0
+                    ? o.history.reduce((s, h) => s + (parseFloat(h.amount) || 0), 0)
+                    : (parseFloat(o.manualSaved) || 0);
+                const remainingObj = Math.max(0, (parseFloat(o.targetAmount) || 0) - completedFunded);
+                return `• **${o.name}:** ${formatCurrency(completedFunded)} funded of ${formatCurrency(o.targetAmount)} (${formatCurrency(remainingObj)} remaining • ${autoMo > 0 ? `${formatCurrency(autoMo)}/mo auto-pull rule` : 'Manual funding'})`;
             }).join('\n');
             sections.push(`**Wealth Objectives:**\n${objLines}`);
         }
@@ -1096,15 +1228,14 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 21. ANALYST ENGINE: ACCURATE PROGRESSIVE TAX ESTIMATOR
+    // 21. ANALYST ENGINE: ACCURATE PROGRESSIVE TAX ESTIMATOR (Reads rawRes.owed first)
     // =========================================================================
     if (/\b(tax|taxes)\b/i.test(lower)) {
-        // Ignore 4-digit calendar years like "2026" when looking for an explicit income amount
         const withoutYear = text.replace(/\b20\d{2}\b/g, ' ');
         const amtMatch = withoutYear.match(MONEY_TOKEN_REGEX);
         const annualIncome = amtMatch ? parseMoneyAmount(amtMatch[1]) : (parsedSalary * 12);
 
-        if (!annualIncome || annualIncome <= 0) {
+        if (isNaN(annualIncome) || annualIncome <= 0) {
             return {
                 reply: 'Enter your monthly salary in **Settings** or ask me *"Estimate tax on 120000"* so I can calculate your progressive tax!',
                 suggestions: ['Estimate tax on 120000', 'Open Tax Center']
@@ -1129,6 +1260,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             const derivedFromNet = rawNet !== undefined ? Math.max(0, annualIncome - Number(rawNet)) : 0;
 
             totalTax = Number(
+                rawRes.owed ??
                 rawRes.totalTax ??
                 rawRes.taxOwed ??
                 rawRes.tax ??

@@ -1,13 +1,31 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
 
+const SUPPORTED_TIERS = [
+    { value: 'free', label: 'FREE TIER' },
+    { value: 'pro', label: 'PRO TIER' },
+    { value: 'pro_monthly', label: 'PRO MONTHLY' },
+    { value: 'pro_yearly', label: 'PRO YEARLY' },
+    { value: 'enterprise', label: 'ENTERPRISE' }
+];
+
+const PAID_TIER_SET = new Set(['pro', 'pro_monthly', 'pro_yearly', 'enterprise']);
+
 /**
- * Executive Owner Command Center for platform-wide SaaS metrics, support health,
- * and interactive user role & subscription tier management.
+ * Safely encodes a cell for CSV export, quoting all fields, escaping embedded quotes,
+ * and neutralizing spreadsheet formula prefixes (@, =, +, -, tab, CR).
  */
+function encodeSafeCSVCell(rawVal) {
+    const str = String(rawVal ?? '');
+    const neutralized = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
+    return `"${neutralized.replace(/"/g, '""')}"`;
+}
+
 export default function OwnerDashboard() {
     const [users, setUsers] = useState([]);
     const [tickets, setTickets] = useState([]);
+    const [ticketsUnavailable, setTicketsUnavailable] = useState(false);
+    const [isDirectoryStale, setIsDirectoryStale] = useState(false);
     const [rpcMetrics, setRpcMetrics] = useState(null);
     const [loading, setLoading] = useState(true);
     const [errorMsg, setErrorMsg] = useState('');
@@ -16,7 +34,7 @@ export default function OwnerDashboard() {
     const [searchQuery, setSearchQuery] = useState('');
     const [roleFilter, setRoleFilter] = useState('all');
     const [tierFilter, setTierFilter] = useState('all');
-    const [savingUserId, setSavingUserId] = useState(null);
+    const [savingUserIds, setSavingUserIds] = useState(() => new Set());
 
     const fetchRequestIdRef = useRef(0);
 
@@ -35,65 +53,93 @@ export default function OwnerDashboard() {
 
             if (reqId !== fetchRequestIdRef.current) return;
 
-            if (!rpcRes.error && rpcRes.data) {
+            const errors = [];
+            if (rpcRes.error) {
+                errors.push(`Metrics RPC: ${rpcRes.error.message}`);
+            } else if (rpcRes.data) {
                 setRpcMetrics(rpcRes.data);
             }
 
-            const rpcUserList = Array.isArray(rpcRes.data?.users)
-                ? rpcRes.data.users
-                : Array.isArray(rpcRes.data)
-                ? rpcRes.data
-                : [];
+            if (ownerProfilesRes.error) {
+                errors.push(`Directory RPC: ${ownerProfilesRes.error.message}`);
+            }
 
-            const profileRows = Array.isArray(ownerProfilesRes.data) ? ownerProfilesRes.data : [];
-            const mergedMap = new Map();
+            if (ticketsRes.error) {
+                errors.push(`Support Queue: ${ticketsRes.error.message}`);
+                setTicketsUnavailable(true);
+            } else {
+                setTicketsUnavailable(false);
+                setTickets(Array.isArray(ticketsRes.data) ? ticketsRes.data : []);
+            }
 
-            rpcUserList.forEach((u) => {
-                const uid = u.user_id || u.id;
-                if (uid) mergedMap.set(uid, { ...u, user_id: uid });
-            });
+            const hasValidUserSource = !ownerProfilesRes.error || !rpcRes.error;
+            if (hasValidUserSource) {
+                const rpcUserList = !rpcRes.error
+                    ? Array.isArray(rpcRes.data?.users)
+                        ? rpcRes.data.users
+                        : Array.isArray(rpcRes.data)
+                        ? rpcRes.data
+                        : []
+                    : [];
 
-            profileRows.forEach((p) => {
-                const uid = p.user_id || p.id;
-                if (uid) {
-                    const existing = mergedMap.get(uid) || {};
-                    mergedMap.set(uid, { ...existing, ...p, user_id: uid });
-                }
-            });
+                const profileRows = !ownerProfilesRes.error && Array.isArray(ownerProfilesRes.data)
+                    ? ownerProfilesRes.data
+                    : [];
 
-            const normalizedUsers = Array.from(mergedMap.values()).map((u) => {
-                const rawName =
-                    u.username ||
-                    u.name ||
-                    (u.email ? u.email.split('@')[0] : '') ||
-                    `user_${String(u.user_id || '').slice(0, 6)}`;
+                const mergedMap = new Map();
 
-                const rawRole = (u.role || 'user').toLowerCase();
-                const cleanRole = rawRole === 'customer' ? 'user' : rawRole;
-                const cleanTier = (u.subscription_tier || u.tier || 'free').toLowerCase();
+                rpcUserList.forEach((u) => {
+                    const uid = u.user_id || u.id;
+                    if (uid) mergedMap.set(uid, { ...u, user_id: uid });
+                });
 
-                return {
-                    ...u,
-                    displayName: rawName,
-                    role: cleanRole,
-                    subscription_tier: cleanTier,
-                    accountStatus: 'active',
-                    current_streak: Number(u.current_streak || 0),
-                    longest_streak: Number(u.longest_streak || 0),
-                    salary: Number(u.salary || 0),
-                    currency: u.currency || '$',
-                    created_at: u.created_at || null
-                };
-            });
+                profileRows.forEach((p) => {
+                    const uid = p.user_id || p.id;
+                    if (uid) {
+                        const existing = mergedMap.get(uid) || {};
+                        mergedMap.set(uid, { ...existing, ...p, user_id: uid });
+                    }
+                });
 
-            setUsers(normalizedUsers);
-            setTickets(Array.isArray(ticketsRes.data) ? ticketsRes.data : []);
+                const normalizedUsers = Array.from(mergedMap.values()).map((u) => {
+                    const rawName =
+                        u.username ||
+                        u.name ||
+                        (u.email ? u.email.split('@')[0] : '') ||
+                        `user_${String(u.user_id || '').slice(0, 6)}`;
 
-            if (ownerProfilesRes.error && rpcRes.error) {
-                setErrorMsg(ownerProfilesRes.error.message || rpcRes.error.message);
+                    const rawRole = String(u.role || 'user').trim().toLowerCase();
+                    const cleanRole = rawRole === 'customer' ? 'user' : rawRole;
+                    const storedTier = String(u.subscription_tier || u.tier || 'free').trim().toLowerCase() || 'free';
+
+                    return {
+                        ...u,
+                        displayName: rawName,
+                        role: cleanRole,
+                        subscription_tier: storedTier,
+                        accountStatus: 'active',
+                        current_streak: Number(u.current_streak || 0),
+                        longest_streak: Number(u.longest_streak || 0),
+                        salary: Number(u.salary || 0),
+                        currency: u.currency || '$',
+                        created_at: u.created_at || null
+                    };
+                });
+
+                setUsers(normalizedUsers);
+                setIsDirectoryStale(Boolean(ownerProfilesRes.error || rpcRes.error));
+            } else {
+                // Both user sources failed: keep existing directory data and mark it stale
+                setIsDirectoryStale(true);
+            }
+
+            if (errors.length > 0) {
+                setErrorMsg(errors.join(' • '));
             }
         } catch (err) {
             if (reqId === fetchRequestIdRef.current) {
+                setIsDirectoryStale(true);
+                setTicketsUnavailable(true);
                 setErrorMsg(err.message || 'Failed to load Command Center data.');
             }
         } finally {
@@ -115,8 +161,19 @@ export default function OwnerDashboard() {
     }, [toastMsg]);
 
     const handleUpdateUserAccess = async (targetUserId, updates) => {
-        setSavingUserId(targetUserId);
-        const previousUsers = [...users];
+        const targetUser = users.find((u) => u.user_id === targetUserId);
+        if (!targetUser) return;
+
+        const previousFieldValues = {};
+        Object.keys(updates).forEach((key) => {
+            previousFieldValues[key] = targetUser[key];
+        });
+
+        setSavingUserIds((prev) => {
+            const next = new Set(prev);
+            next.add(targetUserId);
+            return next;
+        });
 
         setUsers((prev) =>
             prev.map((u) => (u.user_id === targetUserId ? { ...u, ...updates } : u))
@@ -131,17 +188,54 @@ export default function OwnerDashboard() {
 
             if (error) throw error;
 
-            const updatedUser = users.find((u) => u.user_id === targetUserId);
+            // Reconcile from server if a special user was demoted so their true stored tier is reflected
+            if (previousFieldValues.role === 'special' && updates.role && updates.role !== 'special') {
+                const { data: refreshedProfiles, error: refreshErr } = await supabase.rpc('get_all_profiles_for_owner');
+                if (!refreshErr && Array.isArray(refreshedProfiles)) {
+                    const serverRow = refreshedProfiles.find((p) => (p.user_id || p.id) === targetUserId);
+                    if (serverRow) {
+                        const reconciledTier = String(serverRow.subscription_tier || 'free').trim().toLowerCase() || 'free';
+                        setUsers((prev) =>
+                            prev.map((u) =>
+                                u.user_id === targetUserId
+                                    ? {
+                                          ...u,
+                                          role: String(serverRow.role || updates.role).trim().toLowerCase(),
+                                          subscription_tier: reconciledTier
+                                      }
+                                    : u
+                            )
+                        );
+                    }
+                }
+            }
+
             setToastMsg(
-                `Updated @${updatedUser?.displayName || 'user'} (${Object.entries(updates)
+                `Updated @${targetUser.displayName || 'user'} (${Object.entries(updates)
                     .map(([k, v]) => `${k.replace('subscription_', '')}: ${String(v).toUpperCase()}`)
                     .join(', ')})`
             );
         } catch (err) {
-            setUsers(previousUsers);
+            // Functional rollback: only restore fields that still contain this request's optimistic value
+            setUsers((prev) =>
+                prev.map((u) => {
+                    if (u.user_id !== targetUserId) return u;
+                    const restored = { ...u };
+                    Object.keys(updates).forEach((key) => {
+                        if (restored[key] === updates[key]) {
+                            restored[key] = previousFieldValues[key];
+                        }
+                    });
+                    return restored;
+                })
+            );
             setErrorMsg(`Failed to update user: ${err.message || 'Database error'}`);
         } finally {
-            setSavingUserId(null);
+            setSavingUserIds((prev) => {
+                const next = new Set(prev);
+                next.delete(targetUserId);
+                return next;
+            });
         }
     };
 
@@ -149,7 +243,7 @@ export default function OwnerDashboard() {
         if (users.length === 0) return;
         const headers = ['Username', 'User ID', 'Role', 'Subscription Tier', 'Status', 'Current Streak', 'Joined Date'];
         const rows = users.map((u) => [
-            `@${u.displayName.replace(/,/g, '')}`,
+            `@${u.displayName}`,
             u.user_id,
             u.role.toUpperCase(),
             u.subscription_tier.toUpperCase(),
@@ -157,7 +251,9 @@ export default function OwnerDashboard() {
             u.current_streak,
             u.created_at ? new Date(u.created_at).toISOString().slice(0, 10) : 'Active'
         ]);
-        const csvContent = [headers, ...rows].map((r) => r.join(',')).join('\n');
+        const csvContent = [headers, ...rows]
+            .map((row) => row.map(encodeSafeCSVCell).join(','))
+            .join('\n');
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -174,13 +270,17 @@ export default function OwnerDashboard() {
     const devCount = users.filter((u) => u.role === 'dev').length;
     const specialCount = users.filter((u) => u.role === 'special').length;
     const standardUserCount = Math.max(0, totalUsers - ownerCount - devCount - specialCount);
-    const proUsersCount = users.filter((u) => (u.subscription_tier === 'pro' || u.subscription_tier === 'enterprise') && u.role !== 'special').length;
+    const proUsersCount = users.filter((u) => PAID_TIER_SET.has(u.subscription_tier) && u.role !== 'special').length;
     const activeBudgetsCount = users.filter((u) => u.salary > 0 || u.current_streak > 0).length;
 
     const totalTickets = tickets.length;
     const openTickets = tickets.filter((t) => t.status === 'open' || t.status === 'in_progress').length;
     const resolvedTickets = tickets.filter((t) => t.status === 'resolved').length;
-    const resolutionRate = totalTickets > 0 ? Math.round((resolvedTickets / totalTickets) * 100) : 100;
+    const resolutionRate = ticketsUnavailable
+        ? null
+        : totalTickets > 0
+        ? Math.round((resolvedTickets / totalTickets) * 100)
+        : 100;
 
     const filteredUsers = users.filter((u) => {
         const matchesSearch =
@@ -192,7 +292,7 @@ export default function OwnerDashboard() {
         return matchesSearch && matchesRole && matchesTier;
     });
 
-    if (loading) {
+    if (loading && users.length === 0) {
         return (
             <div className="p-8 space-y-6 animate-pulse">
                 <div className="h-24 rounded-2xl bg-gray-200 dark:bg-zinc-900" />
@@ -233,7 +333,7 @@ export default function OwnerDashboard() {
                         <button
                             type="button"
                             onClick={handleExportUsersCSV}
-                            className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-950/50 transition-all"
+                            className="px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold shadow-lg shadow-emerald-950/50 transition-all"
                         >
                             ↓ Export User Directory (CSV)
                         </button>
@@ -243,7 +343,10 @@ export default function OwnerDashboard() {
 
             {errorMsg && (
                 <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-center justify-between">
-                    <span>{errorMsg}</span>
+                    <span>
+                        {errorMsg}
+                        {isDirectoryStale && users.length > 0 ? ' (Showing last known directory snapshot)' : ''}
+                    </span>
                     <button type="button" onClick={() => setErrorMsg('')} className="font-black ml-4">✕</button>
                 </div>
             )}
@@ -262,7 +365,7 @@ export default function OwnerDashboard() {
                             Total Accounts
                         </span>
                         <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
-                            Verified
+                            {isDirectoryStale ? 'Stale' : 'Verified'}
                         </span>
                     </div>
                     <p className="text-3xl font-black text-gray-900 dark:text-white">{totalUsers}</p>
@@ -307,16 +410,22 @@ export default function OwnerDashboard() {
                             Support SLA Health
                         </span>
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            openTickets === 0
+                            ticketsUnavailable
+                                ? 'bg-gray-100 text-gray-600 dark:bg-zinc-800 dark:text-zinc-400'
+                                : openTickets === 0
                                 ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
                                 : 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300'
                         }`}>
-                            {openTickets} Open
+                            {ticketsUnavailable ? 'Unavailable' : `${openTickets} Open`}
                         </span>
                     </div>
-                    <p className="text-3xl font-black text-gray-900 dark:text-white">{resolutionRate}%</p>
+                    <p className="text-3xl font-black text-gray-900 dark:text-white">
+                        {resolutionRate === null ? 'N/A' : `${resolutionRate}%`}
+                    </p>
                     <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1">
-                        {resolvedTickets} resolved of {totalTickets} total tickets
+                        {ticketsUnavailable
+                            ? 'Support ticket metrics unavailable'
+                            : `${resolvedTickets} resolved of ${totalTickets} total tickets`}
                     </p>
                 </div>
             </div>
@@ -353,7 +462,11 @@ export default function OwnerDashboard() {
                     <h2 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-400">
                         Recent Support Queue Snapshot
                     </h2>
-                    {tickets.length === 0 ? (
+                    {ticketsUnavailable ? (
+                        <p className="text-xs text-rose-600 dark:text-rose-400 py-6 text-center font-medium">
+                            Unable to load support tickets. Check your connection and click Refresh Telemetry.
+                        </p>
+                    ) : tickets.length === 0 ? (
                         <p className="text-xs text-gray-500 dark:text-zinc-500 py-6 text-center">
                             No support tickets logged across the platform.
                         </p>
@@ -421,8 +534,11 @@ export default function OwnerDashboard() {
                             className="px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-xs font-semibold text-gray-800 dark:text-zinc-200"
                         >
                             <option value="all">All Tiers</option>
-                            <option value="free">Free Tier</option>
-                            <option value="pro">Pro Tier</option>
+                            {SUPPORTED_TIERS.map((tier) => (
+                                <option key={tier.value} value={tier.value}>
+                                    {tier.label}
+                                </option>
+                            ))}
                         </select>
                     </div>
                 </div>
@@ -448,8 +564,9 @@ export default function OwnerDashboard() {
                                 </tr>
                             ) : (
                                 filteredUsers.map((u) => {
-                                    const isSaving = savingUserId === u.user_id;
+                                    const isSaving = savingUserIds.has(u.user_id);
                                     const isSpecialRole = u.role === 'special';
+                                    const hasKnownTier = SUPPORTED_TIERS.some((t) => t.value === u.subscription_tier);
 
                                     const roleBadgeClass =
                                         u.role === 'owner'
@@ -531,8 +648,16 @@ export default function OwnerDashboard() {
                                                         }
                                                         className="px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-bold text-gray-800 dark:text-zinc-200 focus:outline-none focus:border-emerald-500 disabled:opacity-50 cursor-pointer"
                                                     >
-                                                        <option value="free">FREE TIER</option>
-                                                        <option value="pro">PRO TIER</option>
+                                                        {!hasKnownTier && (
+                                                            <option value={u.subscription_tier}>
+                                                                {u.subscription_tier.toUpperCase()}
+                                                            </option>
+                                                        )}
+                                                        {SUPPORTED_TIERS.map((tier) => (
+                                                            <option key={tier.value} value={tier.value}>
+                                                                {tier.label}
+                                                            </option>
+                                                        ))}
                                                     </select>
                                                 )}
                                             </td>
@@ -544,10 +669,8 @@ export default function OwnerDashboard() {
                                                     value={u.role}
                                                     onChange={(e) => {
                                                         const nextRole = e.target.value;
-                                                        const patch = nextRole === 'special'
-                                                            ? { role: 'special', subscription_tier: 'pro' }
-                                                            : { role: nextRole };
-                                                        handleUpdateUserAccess(u.user_id, patch);
+                                                        // Preserve the user's underlying subscription_tier when promoting/demoting special role
+                                                        handleUpdateUserAccess(u.user_id, { role: nextRole });
                                                     }}
                                                     className="px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-bold text-gray-800 dark:text-zinc-200 focus:outline-none focus:border-emerald-500 disabled:opacity-50 cursor-pointer"
                                                 >
