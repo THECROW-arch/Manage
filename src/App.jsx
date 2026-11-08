@@ -1912,13 +1912,16 @@ export default function App() {
               ★
             </div>
             <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 mb-2">
-              MANAGED Pro Feature
+              {t('pro_feature_badge', 'MANAGED Pro Feature')}
             </span>
             <h2 id="pro-upgrade-title" className="text-xl font-black text-gray-900 dark:text-white mb-2">
-              Unlock {upgradePromptFeature}
+              {t('pro_unlock_title', { feature: upgradePromptFeature, defaultValue: `Unlock ${upgradePromptFeature}` })}
             </h2>
             <p className="text-xs text-gray-600 dark:text-zinc-400 mb-6 leading-relaxed">
-              Your account is currently on the <strong>Free Tier</strong>. Upgrade to <strong>MANAGED Pro</strong> (or request a <strong>Special VIP</strong> pass from an administrator in Support) to unlock unlimited Sandbox sheets, Visual Dashboard Excel reports, and multi-goal Wealth Objectives.
+              {t(
+                'pro_upgrade_desc',
+                'Your account is currently on the Free Tier. Upgrade to MANAGED Pro (or request a Special VIP pass from an administrator in Support) to unlock unlimited Sandbox sheets, Visual Dashboard Excel reports, and multi-goal Wealth Objectives.'
+              )}
             </p>
             <div className="flex gap-3">
               <button
@@ -1926,7 +1929,7 @@ export default function App() {
                 onClick={() => setUpgradePromptFeature(null)}
                 className="flex-1 py-2.5 rounded-lg font-bold text-xs bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 transition-colors"
               >
-                Maybe Later
+                {t('maybe_later', 'Maybe Later')}
               </button>
               <button
                 type="button"
@@ -1936,7 +1939,7 @@ export default function App() {
                 }}
                 className="flex-1 py-2.5 rounded-lg font-bold text-xs bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm transition-colors"
               >
-                Request Pro Access
+                {t('request_pro_access', 'Request Pro Access')}
               </button>
             </div>
           </div>
@@ -2136,6 +2139,8 @@ export default function App() {
                 parsedSalary={parsedSalary}
                 selectedMonth={selectedMonth}
                 isReadOnly={isReadOnly}
+                hasProAccess={hasProAccess}
+                onRequireProUpgrade={setUpgradePromptFeature}
                 formatCurrency={formatCurrency}
                 getCategoryAvailablePool={getCategoryAvailablePool}
                 onManualContributeToObjective={async ({ objectiveName, categoryId, amount }) => {

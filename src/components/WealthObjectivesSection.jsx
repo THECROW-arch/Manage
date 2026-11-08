@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getToday } from '../utils/constants';
 
 /**
@@ -29,10 +30,13 @@ export default function WealthObjectivesSection({
     parsedSalary = 0,
     selectedMonth,
     isReadOnly = false,
+    hasProAccess = false,
+    onRequireProUpgrade,
     formatCurrency,
     getCategoryAvailablePool,
     onManualContributeToObjective
 }) {
+    const { t } = useTranslation();
     const [objName, setObjName] = useState('');
     const [objTarget, setObjTarget] = useState('');
     const [autoPulls, setAutoPulls] = useState({});
@@ -79,10 +83,20 @@ export default function WealthObjectivesSection({
 
     /**
      * Creates a new wealth objective with optional multi-category monthly auto-pull rules.
+     * Enforces the 1-objective limit for Free Tier users.
      * @param {Event} e - Form submit event.
      */
     const handleCreateObjective = (e) => {
         e.preventDefault();
+        if (isReadOnly) return;
+
+        if (!hasProAccess && wealthObjectives.length >= 1) {
+            if (onRequireProUpgrade) {
+                onRequireProUpgrade('Multi-Goal Wealth Objectives');
+            }
+            return;
+        }
+
         const targetNum = parseFloat(objTarget);
         if (!objName.trim() || isNaN(targetNum) || targetNum <= 0) return;
 
@@ -190,7 +204,6 @@ export default function WealthObjectivesSection({
         const allEntries = Object.entries(obj.autoPulls || {}).filter(([, amt]) => parseFloat(amt) > 0);
         if (allEntries.length === 0) return;
 
-        // Identify categories already charged for this objective in activeMonthKey
         const alreadyChargedCatIds = new Set(
             (obj.history || [])
                 .filter(h => h.type === 'auto' && h.month === activeMonthKey && h.categoryId)
@@ -207,7 +220,6 @@ export default function WealthObjectivesSection({
             return;
         }
 
-        // Validate category availability for remaining uncharged categories
         for (const [catId, rawAmt] of pendingEntries) {
             const amt = parseFloat(rawAmt);
             const catObj = categories.find(c => c.id === catId);
@@ -293,9 +305,11 @@ export default function WealthObjectivesSection({
         <section className="mt-8 bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 shadow-sm">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6">
                 <div>
-                    <h2 className="text-base font-bold text-gray-900 dark:text-white">Wealth Objectives & Target Goals</h2>
+                    <h2 className="text-base font-bold text-gray-900 dark:text-white">
+                        {t('wealth_objectives_title', 'Wealth Objectives & Target Goals')}
+                    </h2>
                     <p className="text-xs text-gray-500 dark:text-zinc-400">
-                        Build dedicated targets (e.g., Car Chevy • 240,000) with automated monthly category pulls and manual top-ups.
+                        {t('wealth_objectives_subtitle', 'Build dedicated targets (e.g., Car Chevy • 240,000) with automated monthly category pulls and manual top-ups.')}
                     </p>
                 </div>
             </div>
@@ -309,13 +323,15 @@ export default function WealthObjectivesSection({
 
             {/* Create New Objective Form */}
             <form onSubmit={handleCreateObjective} className="p-4 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 mb-6 space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-600 dark:text-zinc-400">New Wealth Objective</h3>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-600 dark:text-zinc-400">
+                    {t('new_wealth_objective', 'New Wealth Objective')}
+                </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <input
                         type="text"
                         value={objName}
                         onChange={(e) => setObjName(e.target.value)}
-                        placeholder="Objective Name (e.g. Car Chevy)"
+                        placeholder={t('objective_name_placeholder', 'Objective Name (e.g. Car Chevy)')}
                         className="px-3 py-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500"
                         required
                     />
@@ -325,7 +341,7 @@ export default function WealthObjectivesSection({
                         min="1"
                         value={objTarget}
                         onChange={(e) => setObjTarget(e.target.value)}
-                        placeholder="Target Cost (e.g. 240000)"
+                        placeholder={t('target_cost_placeholder', 'Target Cost (e.g. 240000)')}
                         className="px-3 py-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500"
                         required
                     />
@@ -334,7 +350,7 @@ export default function WealthObjectivesSection({
                 {/* Automated Monthly Category Pull Builder */}
                 <div className="space-y-2">
                     <label className="block text-xs font-semibold text-gray-600 dark:text-zinc-400">
-                        Automated Monthly Category Pulls (Optional — choose 1 or multiple categories)
+                        {t('auto_pulls_label', 'Automated Monthly Category Pulls (Optional — choose 1 or multiple categories)')}
                     </label>
                     <div className="flex flex-col sm:flex-row gap-2">
                         <select
@@ -344,7 +360,7 @@ export default function WealthObjectivesSection({
                         >
                             {categories.map(cat => (
                                 <option key={cat.id} value={cat.id}>
-                                    {cat.name} ({formatCurrency(parsedSalary * ((cat.percentage || 0) / 100))}/mo budget)
+                                    {cat.name} ({formatCurrency(parsedSalary * ((cat.percentage || 0) / 100))}/mo)
                                 </option>
                             ))}
                         </select>
@@ -354,7 +370,7 @@ export default function WealthObjectivesSection({
                             min="0"
                             value={tempAutoAmount}
                             onChange={(e) => setTempAutoAmount(e.target.value)}
-                            placeholder="Monthly auto-pull amount (e.g. 2000)"
+                            placeholder={t('monthly_autopull_placeholder', 'Monthly auto-pull amount (e.g. 2000)')}
                             className="flex-1 px-3 py-2 rounded-md bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white"
                         />
                         <button
@@ -362,7 +378,7 @@ export default function WealthObjectivesSection({
                             onClick={handleAddAutoPullRule}
                             className="px-3 py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold shrink-0"
                         >
-                            + Add Auto-Pull
+                            {t('add_autopull_btn', '+ Add Auto-Pull')}
                         </button>
                     </div>
 
@@ -396,14 +412,14 @@ export default function WealthObjectivesSection({
                     disabled={isReadOnly}
                     className="w-full py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-bold text-xs shadow-sm transition-colors"
                 >
-                    Create Wealth Objective
+                    {t('create_objective_btn', 'Create Wealth Objective')}
                 </button>
             </form>
 
             {/* Objectives List */}
             {wealthObjectives.length === 0 ? (
                 <div className="p-8 text-center border border-dashed border-gray-200 dark:border-zinc-800 rounded-lg text-xs text-gray-500 dark:text-zinc-500">
-                    No wealth objectives created yet. Add one above or ask Sterling: &quot;Create a wealth objective named Car Chevy for 240000&quot;.
+                    {t('no_objectives_empty', 'No wealth objectives created yet. Add one above or ask Sterling: "Create a wealth objective named Car Chevy for 240000".')}
                 </div>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -436,7 +452,7 @@ export default function WealthObjectivesSection({
                                         <div>
                                             <h4 className="text-sm font-bold text-gray-900 dark:text-white">{obj.name}</h4>
                                             <p className="text-xs text-gray-500 dark:text-zinc-400">
-                                                Target: <strong className="text-gray-800 dark:text-zinc-200">{formatCurrency(obj.targetAmount)}</strong>
+                                                {t('target_label', 'Target:')} <strong className="text-gray-800 dark:text-zinc-200">{formatCurrency(obj.targetAmount)}</strong>
                                             </p>
                                         </div>
                                         <button
@@ -452,10 +468,10 @@ export default function WealthObjectivesSection({
 
                                     <div className="flex items-baseline justify-between text-xs mb-1.5">
                                         <span className="font-bold text-emerald-700 dark:text-emerald-400">
-                                            {formatCurrency(totalAccumulated)} funded ({progressPct.toFixed(1)}%)
+                                            {formatCurrency(totalAccumulated)} {t('funded_label', 'funded')} ({progressPct.toFixed(1)}%)
                                         </span>
                                         <span className="text-gray-500 dark:text-zinc-500">
-                                            {formatCurrency(remainingNeeded)} remaining
+                                            {formatCurrency(remainingNeeded)} {t('remaining_label', 'remaining')}
                                         </span>
                                     </div>
                                     <div className="w-full h-2 rounded-full bg-gray-200 dark:bg-zinc-800 overflow-hidden mb-3">
@@ -472,7 +488,7 @@ export default function WealthObjectivesSection({
                                                     const cName = categories.find(c => c.id === cId)?.name || 'Category';
                                                     return (
                                                         <span key={cId} className="text-[10px] px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 font-semibold">
-                                                            Auto Rule: {cName} ({formatCurrency(amt)}/mo)
+                                                            {t('auto_rule_label', 'Auto Rule:')} {cName} ({formatCurrency(amt)}/mo)
                                                         </span>
                                                     );
                                                 })}
@@ -487,8 +503,8 @@ export default function WealthObjectivesSection({
                                                     {isFundingThis
                                                         ? 'Processing...'
                                                         : isAutoAppliedThisMonth
-                                                            ? `✓ ${activeMonthKey} Auto-Pull Applied (${formatCurrency(configuredMonthlyAuto)})`
-                                                            : `Apply ${activeMonthKey} Auto-Pull (${formatCurrency(pendingAutoAmount)})`}
+                                                        ? `✓ ${activeMonthKey} Auto-Pull Applied (${formatCurrency(configuredMonthlyAuto)})`
+                                                        : `Apply ${activeMonthKey} Auto-Pull (${formatCurrency(pendingAutoAmount)})`}
                                                 </button>
                                             )}
                                         </div>
@@ -498,7 +514,7 @@ export default function WealthObjectivesSection({
                                 {/* Manual Contribution Box (From ANY Category) */}
                                 <div className="pt-3 border-t border-gray-200 dark:border-zinc-800 space-y-2">
                                     <span className="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-400">
-                                        Add Manual Funds (From Any Category)
+                                        {t('add_manual_funds_label', 'Add Manual Funds (From Any Category)')}
                                     </span>
                                     <div className="flex flex-col sm:flex-row gap-2">
                                         <select
@@ -524,7 +540,7 @@ export default function WealthObjectivesSection({
                                                 [obj.id]: { ...mInput, amount: e.target.value }
                                             }))}
                                             disabled={isReadOnly || isFundingThis}
-                                            placeholder="Amount (e.g. 1500)"
+                                            placeholder={t('amount_placeholder', 'Amount (e.g. 1500)')}
                                             className="flex-1 px-2.5 py-1.5 rounded bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white disabled:opacity-50"
                                         />
                                         <button
@@ -533,7 +549,7 @@ export default function WealthObjectivesSection({
                                             onClick={() => handleManualDeposit(obj)}
                                             className="px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-bold shrink-0"
                                         >
-                                            {isFundingThis ? 'Funding...' : '+ Fund'}
+                                            {isFundingThis ? t('funding_btn', 'Funding...') : t('fund_btn', '+ Fund')}
                                         </button>
                                     </div>
                                 </div>
