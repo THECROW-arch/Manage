@@ -26,6 +26,7 @@ function getObjectiveFundedTotal(obj) {
 export default function WealthObjectivesSection({
     wealthObjectives = [],
     setWealthObjectives,
+    onCreateWealthObjective,
     categories = [],
     parsedSalary = 0,
     selectedMonth,
@@ -82,20 +83,13 @@ export default function WealthObjectivesSection({
     };
 
     /**
-     * Creates a new wealth objective with optional multi-category monthly auto-pull rules.
-     * Enforces the 1-objective limit for Free Tier users.
+     * Creates a new wealth objective via the shared creation handler so both UI and AI
+     * paths enforce the same Pro tier limit.
      * @param {Event} e - Form submit event.
      */
     const handleCreateObjective = (e) => {
         e.preventDefault();
         if (isReadOnly) return;
-
-        if (!hasProAccess && wealthObjectives.length >= 1) {
-            if (onRequireProUpgrade) {
-                onRequireProUpgrade('Multi-Goal Wealth Objectives');
-            }
-            return;
-        }
 
         const targetNum = parseFloat(objTarget);
         if (!objName.trim() || isNaN(targetNum) || targetNum <= 0) return;
@@ -108,23 +102,43 @@ export default function WealthObjectivesSection({
             );
         }
 
-        const newObjective = {
-            id: crypto.randomUUID(),
-            name: objName.trim(),
-            targetAmount: targetNum,
-            manualSaved: 0,
-            autoPulls: finalAutoPulls,
-            appliedMonths: [],
-            history: [],
-            createdAt: getToday()
-        };
+        if (onCreateWealthObjective) {
+            const res = onCreateWealthObjective({
+                name: objName.trim(),
+                targetAmount: targetNum,
+                autoPulls: finalAutoPulls
+            });
+            if (!res?.ok) return;
+        } else {
+            if (!hasProAccess && wealthObjectives.length >= 1) {
+                if (onRequireProUpgrade) onRequireProUpgrade('multi_goal_objectives');
+                return;
+            }
+            const newObjective = {
+                id: crypto.randomUUID(),
+                name: objName.trim(),
+                targetAmount: targetNum,
+                manualSaved: 0,
+                autoPulls: finalAutoPulls,
+                appliedMonths: [],
+                history: [],
+                createdAt: getToday()
+            };
+            setWealthObjectives(prev => [newObjective, ...prev]);
+        }
 
-        setWealthObjectives(prev => [newObjective, ...prev]);
+        const createdName = objName.trim();
         setObjName('');
         setObjTarget('');
         setAutoPulls({});
         setTempAutoAmount('');
-        setStatusMsg(`Created objective "${newObjective.name}" (${formatCurrency(targetNum)}).`);
+        setStatusMsg(
+            t('obj_status_created', {
+                name: createdName,
+                amount: formatCurrency(targetNum),
+                defaultValue: `Created objective "${createdName}" (${formatCurrency(targetNum)}).`
+            })
+        );
     };
 
     /**
@@ -146,7 +160,14 @@ export default function WealthObjectivesSection({
         if (getCategoryAvailablePool) {
             const avail = getCategoryAvailablePool(catId);
             if (amt > avail) {
-                setStatusMsg(`Cannot pull ${formatCurrency(amt)} from ${catObj.name} (only ${formatCurrency(avail)} available).`);
+                setStatusMsg(
+                    t('obj_status_insufficient_pool', {
+                        amount: formatCurrency(amt),
+                        category: catObj.name,
+                        available: formatCurrency(avail),
+                        defaultValue: `Cannot pull ${formatCurrency(amt)} from ${catObj.name} (only ${formatCurrency(avail)} available).`
+                    })
+                );
                 return;
             }
         }
@@ -188,7 +209,14 @@ export default function WealthObjectivesSection({
             );
 
             setManualInputs(prev => ({ ...prev, [obj.id]: { ...input, amount: '' } }));
-            setStatusMsg(`Added ${formatCurrency(amt)} from ${catObj.name} to "${obj.name}"!`);
+            setStatusMsg(
+                t('obj_status_manual_added', {
+                    amount: formatCurrency(amt),
+                    category: catObj.name,
+                    name: obj.name,
+                    defaultValue: `Added ${formatCurrency(amt)} from ${catObj.name} to "${obj.name}"!`
+                })
+            );
         } finally {
             markObjectiveInFlight(obj.id, false);
         }
@@ -216,7 +244,13 @@ export default function WealthObjectivesSection({
             pendingEntries.length === 0;
 
         if (alreadyApplied) {
-            setStatusMsg(`Auto-pulls for "${obj.name}" have already been applied for ${activeMonthKey}.`);
+            setStatusMsg(
+                t('obj_status_autopull_already', {
+                    name: obj.name,
+                    month: activeMonthKey,
+                    defaultValue: `Auto-pulls for "${obj.name}" have already been applied for ${activeMonthKey}.`
+                })
+            );
             return;
         }
 
@@ -224,13 +258,25 @@ export default function WealthObjectivesSection({
             const amt = parseFloat(rawAmt);
             const catObj = categories.find(c => c.id === catId);
             if (!catObj) {
-                setStatusMsg(`Configured category for "${obj.name}" no longer exists.`);
+                setStatusMsg(
+                    t('obj_status_cat_missing', {
+                        name: obj.name,
+                        defaultValue: `Configured category for "${obj.name}" no longer exists.`
+                    })
+                );
                 return;
             }
             if (getCategoryAvailablePool) {
                 const avail = getCategoryAvailablePool(catId);
                 if (amt > avail) {
-                    setStatusMsg(`Cannot auto-pull ${formatCurrency(amt)} from ${catObj.name} (only ${formatCurrency(avail)} available).`);
+                    setStatusMsg(
+                        t('obj_status_autopull_insufficient', {
+                            amount: formatCurrency(amt),
+                            category: catObj.name,
+                            available: formatCurrency(avail),
+                            defaultValue: `Cannot auto-pull ${formatCurrency(amt)} from ${catObj.name} (only ${formatCurrency(avail)} available).`
+                        })
+                    );
                     return;
                 }
             }
@@ -285,7 +331,14 @@ export default function WealthObjectivesSection({
                         };
                     })
                 );
-                setStatusMsg(`Applied ${formatCurrency(addedSum)} in ${activeMonthKey} auto-pulls to "${obj.name}"!`);
+                setStatusMsg(
+                    t('obj_status_autopull_applied', {
+                        amount: formatCurrency(addedSum),
+                        month: activeMonthKey,
+                        name: obj.name,
+                        defaultValue: `Applied ${formatCurrency(addedSum)} in ${activeMonthKey} auto-pulls to "${obj.name}"!`
+                    })
+                );
             }
         } finally {
             markObjectiveInFlight(obj.id, false);
@@ -501,10 +554,18 @@ export default function WealthObjectivesSection({
                                                     className="w-full py-1.5 px-3 rounded bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/50 dark:hover:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 text-[11px] font-bold disabled:opacity-50 transition-colors"
                                                 >
                                                     {isFundingThis
-                                                        ? 'Processing...'
+                                                        ? t('processing_btn', 'Processing...')
                                                         : isAutoAppliedThisMonth
-                                                        ? `✓ ${activeMonthKey} Auto-Pull Applied (${formatCurrency(configuredMonthlyAuto)})`
-                                                        : `Apply ${activeMonthKey} Auto-Pull (${formatCurrency(pendingAutoAmount)})`}
+                                                        ? t('autopull_applied_btn', {
+                                                              month: activeMonthKey,
+                                                              amount: formatCurrency(configuredMonthlyAuto),
+                                                              defaultValue: `✓ ${activeMonthKey} Auto-Pull Applied (${formatCurrency(configuredMonthlyAuto)})`
+                                                          })
+                                                        : t('autopull_apply_btn', {
+                                                              month: activeMonthKey,
+                                                              amount: formatCurrency(pendingAutoAmount),
+                                                              defaultValue: `Apply ${activeMonthKey} Auto-Pull (${formatCurrency(pendingAutoAmount)})`
+                                                          })}
                                                 </button>
                                             )}
                                         </div>

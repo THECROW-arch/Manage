@@ -169,6 +169,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         onDirectCreateCategory,
         wealthObjectives = [],
         setWealthObjectives,
+        onCreateWealthObjective,
         currentMonthBoost = 0,
         handleAddMonthlyBoost,
         handleClearMonthlyBoost,
@@ -499,9 +500,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 7. CREATE A WEALTH OBJECTIVE
+    // 7. CREATE A WEALTH OBJECTIVE (Uses shared onCreateWealthObjective Pro gate)
     // =========================================================================
-    if (/\b(create|make|add|new)\b.*\b(wealth\s+objective|objective)\b/i.test(lower) && setWealthObjectives) {
+    if (/\b(create|make|add|new)\b.*\b(wealth\s+objective|objective)\b/i.test(lower) && (onCreateWealthObjective || setWealthObjectives)) {
         if (isReadOnly) {
             return { reply: `The ledger for **${selectedMonth}** is closed and read-only.` };
         }
@@ -529,18 +530,33 @@ export async function processAIAgentTurn(rawInput, ctx) {
             if (matchedCat) autoPulls[matchedCat.id] = amt;
         }
 
-        const newObj = {
-            id: crypto.randomUUID(),
-            name: objTitle,
-            targetAmount: targetCost,
-            manualSaved: 0,
-            autoPulls,
-            appliedMonths: [],
-            history: [],
-            createdAt: getToday()
-        };
+        if (onCreateWealthObjective) {
+            const res = onCreateWealthObjective({
+                name: objTitle,
+                targetAmount: targetCost,
+                autoPulls
+            });
+            if (!res.ok) {
+                return {
+                    reply: res.error,
+                    actionBadge: 'Blocked → Pro Tier Limit',
+                    suggestions: ['Open Portfolio', 'Audit my budget']
+                };
+            }
+        } else {
+            const newObj = {
+                id: crypto.randomUUID(),
+                name: objTitle,
+                targetAmount: targetCost,
+                manualSaved: 0,
+                autoPulls,
+                appliedMonths: [],
+                history: [],
+                createdAt: getToday()
+            };
+            setWealthObjectives(prev => [newObj, ...prev]);
+        }
 
-        setWealthObjectives(prev => [newObj, ...prev]);
         return {
             reply: `Created Wealth Objective **${objTitle}** with a target of **${formatCurrency(targetCost)}** inside your **Portfolio** tab!`,
             actionBadge: `Objective → ${objTitle} (${formatCurrency(targetCost)})`,
