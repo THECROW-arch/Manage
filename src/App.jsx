@@ -6,6 +6,7 @@ import { supabase } from './supabaseClient';
 import Auth from './Auth';
 import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth } from './utils/constants';
 import { generateFormalAudit, generateVisualDashboard } from './utils/excelGenerator';
+import { sendRecurringExpenseReminderEmail } from './utils/emailReminderService';
 import HistoryTab from './components/HistoryTab';
 import TaxCenterTab from './components/TaxCenterTab';
 import SettingsTab from './components/SettingsTab';
@@ -110,6 +111,9 @@ export default function App() {
   const [userRole, setUserRole] = useState('customer');
   const [subscriptionTier, setSubscriptionTier] = useState('free');
   const [upgradePromptFeature, setUpgradePromptFeature] = useState(null);
+  const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
+  const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
+  const [isSendingReminder, setIsSendingReminder] = useState(false);
 
   const hasProAccess = useMemo(() => {
     const cleanRole = String(userRole || '').trim().toLowerCase();
@@ -117,6 +121,16 @@ export default function App() {
     if (['owner', 'dev', 'special'].includes(cleanRole)) return true;
     return ['pro', 'pro_monthly', 'pro_yearly', 'enterprise'].includes(cleanTier);
   }, [userRole, subscriptionTier]);
+
+  const localizedUpgradeFeatureName = useMemo(() => {
+    if (!upgradePromptFeature) return '';
+    const featureMap = {
+      visual_excel_reports: t('pro_feature_visual_excel', 'Visual Dashboard Excel Reports'),
+      unlimited_sandbox_sheets: t('pro_feature_unlimited_sandbox', 'Unlimited Sandbox Calculation Sheets'),
+      multi_goal_objectives: t('pro_feature_multi_objectives', 'Multi-Goal Wealth Objectives')
+    };
+    return featureMap[upgradePromptFeature] || t(upgradePromptFeature, upgradePromptFeature);
+  }, [upgradePromptFeature, t]);
   const [categories, setCategories] = useState([]);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryType, setNewCategoryType] = useState('expense');
@@ -282,7 +296,8 @@ export default function App() {
         if (profile.tax_filing_status) setTaxFilingStatus(profile.tax_country === 'US' ? profile.tax_filing_status : 'single');
         setCurrentStreak(profile.current_streak || 0);
         setLongestStreak(profile.longest_streak || 0);
-
+        setEmailRemindersEnabled(profile.email_reminders_enabled ?? true);
+        setLastReminderPeriod(profile.last_reminder_period || null);
         // Hydrate monthly income boosts & wealth objectives from Supabase (falling back to localStorage if DB is empty)
         const localBoosts = readUserStorage('managed_monthly_boosts', userId, {});
         const dbBoosts =
@@ -516,7 +531,9 @@ export default function App() {
           tax_country: taxCountry,
           tax_filing_status: taxFilingStatus,
           monthly_boosts: monthlyIncomeBoosts,
-          wealth_objectives: wealthObjectives
+          wealth_objectives: wealthObjectives,
+          email_reminders_enabled: emailRemindersEnabled,
+          last_reminder_period: lastReminderPeriod
         });
 
         for (const cat of categories) {
@@ -548,6 +565,8 @@ export default function App() {
     taxFilingStatus,
     monthlyIncomeBoosts,
     wealthObjectives,
+    emailRemindersEnabled,
+    lastReminderPeriod,
     t
   ]);
 
@@ -667,9 +686,101 @@ export default function App() {
   const activeMonthlyExpenses = monthlyExpenses.filter(e => !isExpenseSkippedForCurrentPeriod(e, selectedMonth));
   const assetCategories = categories.filter(c => c.type === 'asset');
 
+  /**
+   * Shared creation handler for Wealth Objectives used by both the Portfolio form and Sterling AI.
+   * Enforces the 1-objective Free Tier limit consistently across both creation paths.
+   */
+  const handleCreateWealthObjective = ({ name, targetAmount, autoPulls = {} }) => {
+    if (isReadOnly) {
+      return { ok: false, code: 'read_only', error: `The ledger for **${selectedMonth}** is closed and read-only.` };
+    }
+    if (!hasProAccess && wealthObjectives.length >= 1) {
+      setUpgradePromptFeature('multi_goal_objectives');
+      return {
+        ok: false,
+        code: 'pro_limit',
+        error: 'Free accounts include **1 Wealth Objective**. Upgrade to **MANAGED Pro** for unlimited multi-goal Wealth Objectives!'
+      };
+    }
+    const cleanName = String(name || '').trim();
+    const targetNum = parseFloat(targetAmount);
+    if (!cleanName || isNaN(targetNum) || targetNum <= 0) {
+      return { ok: false, code: 'invalid', error: 'Please provide a valid objective name and target amount.' };
+    }
+    const newObjective = {
+      id: crypto.randomUUID(),
+      name: cleanName,
+      targetAmount: targetNum,
+      manualSaved: 0,
+      autoPulls: autoPulls || {},
+      appliedMonths: [],
+      history: [],
+      createdAt: getToday()
+    };
+    setWealthObjectives(prev => [newObjective, ...prev]);
+    return { ok: true, objective: newObjective };
+  };
+
+  /**
+   * Sends a confirmation reminder email for recurring expenses in the active period.
+   * @param {boolean} isManualTrigger - Whether triggered manually by user button click.
+   */
+  const handleSendRecurringReminder = async (isManualTrigger = true) => {
+    if (!session?.user?.email || isSendingReminder) return false;
+    const unconfirmedRecurring = activeMonthlyExpenses
+      .filter(exp => exp.is_recurring)
+      .map(exp => ({
+        ...exp,
+        recurrenceType: expenseMetaMap[exp.id]?.recurrenceType || 'monthly'
+      }));
+
+    if (unconfirmedRecurring.length === 0) {
+      if (isManualTrigger) {
+        setAlertMsg(
+          t('err_no_unconfirmed_recurring', {
+            period: selectedMonth,
+            defaultValue: `All recurring expenses for ${selectedMonth} are already confirmed or skipped.`
+          })
+        );
+      }
+      return false;
+    }
+
+    setIsSendingReminder(true);
+    try {
+      const res = await sendRecurringExpenseReminderEmail({
+        userId: session.user.id,
+        recipientEmail: session.user.email,
+        username: username || session.user.email.split('@')[0],
+        periodKey: selectedMonth,
+        pendingExpenses: unconfirmedRecurring,
+        formatCurrency
+      });
+
+      if (res.ok) {
+        setLastReminderPeriod(selectedMonth);
+        if (isManualTrigger) {
+          setAlertMsg(
+            t('succ_reminder_sent', {
+              email: session.user.email,
+              count: unconfirmedRecurring.length,
+              defaultValue: `Confirmation reminder email queued for ${session.user.email} (${unconfirmedRecurring.length} recurring item(s)).`
+            })
+          );
+        }
+        return true;
+      } else if (isManualTrigger && res.error) {
+        setAlertMsg(res.error);
+      }
+      return false;
+    } finally {
+      setIsSendingReminder(false);
+    }
+  };
+
   const handleExportData = async (exportFormat) => {
     if (exportFormat === 'visual' && !hasProAccess) {
-      setUpgradePromptFeature('Visual Dashboard Excel Reports');
+      setUpgradePromptFeature('visual_excel_reports');
       return;
     }
     const todayStr = getToday();
@@ -1456,7 +1567,7 @@ export default function App() {
     e.preventDefault();
     if (isReadOnly) return;
     if (!hasProAccess && sandboxSheets.length >= 1) {
-      setUpgradePromptFeature('Unlimited Sandbox Calculation Sheets');
+      setUpgradePromptFeature('unlimited_sandbox_sheets');
       return;
     }
     const budget = parseFloat(newSheetBudget);
@@ -1912,13 +2023,19 @@ export default function App() {
               ★
             </div>
             <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 mb-2">
-              MANAGED Pro Feature
+              {t('pro_feature_badge', 'MANAGED Pro Feature')}
             </span>
             <h2 id="pro-upgrade-title" className="text-xl font-black text-gray-900 dark:text-white mb-2">
-              Unlock {upgradePromptFeature}
+              {t('pro_unlock_title', {
+                feature: localizedUpgradeFeatureName,
+                defaultValue: `Unlock ${localizedUpgradeFeatureName}`
+              })}
             </h2>
             <p className="text-xs text-gray-600 dark:text-zinc-400 mb-6 leading-relaxed">
-              Your account is currently on the <strong>Free Tier</strong>. Upgrade to <strong>MANAGED Pro</strong> (or request a <strong>Special VIP</strong> pass from an administrator in Support) to unlock unlimited Sandbox sheets, Visual Dashboard Excel reports, and multi-goal Wealth Objectives.
+              {t(
+                'pro_upgrade_desc',
+                'Your account is currently on the Free Tier. Upgrade to MANAGED Pro (or request a Special VIP pass from an administrator in Support) to unlock unlimited Sandbox sheets, Visual Dashboard Excel reports, and multi-goal Wealth Objectives.'
+              )}
             </p>
             <div className="flex gap-3">
               <button
@@ -1926,7 +2043,7 @@ export default function App() {
                 onClick={() => setUpgradePromptFeature(null)}
                 className="flex-1 py-2.5 rounded-lg font-bold text-xs bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 transition-colors"
               >
-                Maybe Later
+                {t('maybe_later', 'Maybe Later')}
               </button>
               <button
                 type="button"
@@ -1936,7 +2053,7 @@ export default function App() {
                 }}
                 className="flex-1 py-2.5 rounded-lg font-bold text-xs bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm transition-colors"
               >
-                Request Pro Access
+                {t('request_pro_access', 'Request Pro Access')}
               </button>
             </div>
           </div>
@@ -2132,10 +2249,13 @@ export default function App() {
               <WealthObjectivesSection
                 wealthObjectives={wealthObjectives}
                 setWealthObjectives={setWealthObjectives}
+                onCreateWealthObjective={handleCreateWealthObjective}
                 categories={categories}
                 parsedSalary={parsedSalary}
                 selectedMonth={selectedMonth}
                 isReadOnly={isReadOnly}
+                hasProAccess={hasProAccess}
+                onRequireProUpgrade={setUpgradePromptFeature}
                 formatCurrency={formatCurrency}
                 getCategoryAvailablePool={getCategoryAvailablePool}
                 onManualContributeToObjective={async ({ objectiveName, categoryId, amount }) => {
@@ -2214,6 +2334,11 @@ export default function App() {
               exportDate={exportDate}
               setExportDate={setExportDate}
               handleExportData={handleExportData}
+              emailRemindersEnabled={emailRemindersEnabled}
+              setEmailRemindersEnabled={setEmailRemindersEnabled}
+              onSendRecurringReminder={() => handleSendRecurringReminder(true)}
+              isSendingReminder={isSendingReminder}
+              userEmail={session?.user?.email || ''}
             />
           )}
           {activeTab === 'support' && (
@@ -2280,6 +2405,7 @@ export default function App() {
           handleDeleteSandboxSheet={handleDeleteSandboxSheet}
           wealthObjectives={wealthObjectives}
           setWealthObjectives={setWealthObjectives}
+          onCreateWealthObjective={handleCreateWealthObjective}
           currentMonthBoost={currentMonthBoost}
           handleAddMonthlyBoost={handleAddMonthlyBoost}
           handleClearMonthlyBoost={handleClearMonthlyBoost}
@@ -2314,7 +2440,7 @@ export default function App() {
           onDirectCreateSandbox={async ({ title, totalBudget }) => {
             if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is read-only.` };
             if (!hasProAccess && sandboxSheets.length >= 1) {
-              setUpgradePromptFeature('Unlimited Sandbox Calculation Sheets');
+              setUpgradePromptFeature('unlimited_sandbox_sheets');
               return { ok: false, error: 'Free accounts include **1 Sandbox Sheet**. Upgrade to **MANAGED Pro** for unlimited Sandbox sheets!' };
             }
             const tempId = crypto.randomUUID();

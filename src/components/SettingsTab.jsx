@@ -26,7 +26,12 @@ export default function SettingsTab({
   setExportMonth,
   exportDate,
   setExportDate,
-  handleExportData
+  handleExportData,
+  emailRemindersEnabled = true,
+  setEmailRemindersEnabled,
+  onSendRecurringReminder,
+  isSendingReminder = false,
+  userEmail = ''
 }) {
   const { t, i18n } = useTranslation();
   const [isProcessingDanger, setIsProcessingDanger] = useState(false);
@@ -74,7 +79,7 @@ export default function SettingsTab({
     if (!window.confirm(t('confirm_wipe_data', 'WARNING: This will permanently delete all your financial data, expenses, and history. This action cannot be undone. Are you absolutely sure?'))) {
       return;
     }
-    
+
     setIsProcessingDanger(true); // 1. Lock the buttons
 
     try { // 2. Start the protected block
@@ -114,7 +119,7 @@ export default function SettingsTab({
     if (!window.confirm(t('confirm_delete_account', 'DANGER: This will permanently delete your entire account, profile, and all associated data. You will be logged out immediately. Are you sure?'))) {
       return;
     }
-    
+
     setIsProcessingDanger(true); // 1. Lock the buttons
 
     try { // 2. Start the protected block
@@ -251,8 +256,8 @@ export default function SettingsTab({
               <button
                 onClick={() => setExportScope('month')}
                 className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${exportScope === 'month'
-                    ? 'bg-emerald-600 text-white shadow'
-                    : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
+                  ? 'bg-emerald-600 text-white shadow'
+                  : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
                   }`}
               >
                 {t('whole_month_report')}
@@ -260,8 +265,8 @@ export default function SettingsTab({
               <button
                 onClick={() => setExportScope('day')}
                 className={`flex-1 py-2 text-xs font-bold rounded-md transition-all ${exportScope === 'day'
-                    ? 'bg-emerald-600 text-white shadow'
-                    : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
+                  ? 'bg-emerald-600 text-white shadow'
+                  : 'bg-white dark:bg-zinc-900 text-gray-600 dark:text-zinc-400 border border-gray-200 dark:border-zinc-800'
                   }`}
               >
                 {t('specific_day_report')}
@@ -405,7 +410,50 @@ export default function SettingsTab({
           </button>
         </div>
       </div>
+      {/* Recurring Expense Confirmation Email Reminders */}
+      <div className="bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-gray-900 dark:text-white">
+              {t('email_reminders_title', 'Recurring Expense Email Reminders')}
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1">
+              {t('email_reminders_desc', {
+                email: userEmail || 'your account email',
+                defaultValue: `Receive an email reminder at ${userEmail || 'your account email'} when recurring expenses need to be confirmed or skipped for the active period.`
+              })}
+            </p>
+          </div>
+          {setEmailRemindersEnabled && (
+            <label className="inline-flex items-center gap-2 cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                checked={Boolean(emailRemindersEnabled)}
+                onChange={(e) => setEmailRemindersEnabled(e.target.checked)}
+                className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+              />
+              <span className="text-xs font-bold text-gray-800 dark:text-zinc-200">
+                {t('email_reminders_enabled_label', 'Enable Email Reminders')}
+              </span>
+            </label>
+          )}
+        </div>
 
+        {onSendRecurringReminder && (
+          <div className="pt-2 border-t border-gray-100 dark:border-zinc-800 flex justify-end">
+            <button
+              type="button"
+              disabled={isSendingReminder}
+              onClick={onSendRecurringReminder}
+              className="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-colors"
+            >
+              {isSendingReminder
+                ? t('sending_reminder_btn', 'Sending Reminder...')
+                : t('send_reminder_now_btn', 'Send Confirmation Reminder Now')}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
