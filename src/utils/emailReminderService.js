@@ -95,8 +95,8 @@ export function buildRecurringReminderEmail({ username, periodKey, pendingExpens
 
 /**
  * Dispatches a recurring expense confirmation reminder email to the authenticated user.
- * Logs the reminder in Supabase (public.email_reminder_queue) and invokes the optional
- * Supabase Edge Function ('send-recurring-reminder') or webhook if configured.
+ * Logs every attempt in Supabase (public.email_reminder_queue) so failures stay auditable,
+ * and returns ok: false whenever delivery does not succeed.
  * @param {object} params - Dispatch parameters.
  * @returns {Promise<{ok: boolean, status?: string, error?: string}>} Dispatch result.
  */
@@ -122,9 +122,10 @@ export async function sendRecurringExpenseReminderEmail({
         formatCurrency
     });
 
-    try {
-        let deliveryStatus = 'queued';
+    let deliveryStatus;
+    let deliveryError = null;
 
+    try {
         const webhookUrl = import.meta.env?.VITE_EMAIL_WEBHOOK_URL;
         if (webhookUrl) {
             const resp = await fetch(webhookUrl, {
@@ -138,7 +139,12 @@ export async function sendRecurringExpenseReminderEmail({
                     periodKey
                 })
             });
-            if (resp.ok) deliveryStatus = 'sent';
+            if (resp.ok) {
+                deliveryStatus = 'sent';
+            } else {
+                deliveryStatus = 'failed';
+                deliveryError = `Email webhook failed with status ${resp.status}.`;
+            }
         } else {
             const { error: fnError } = await supabase.functions.invoke('send-recurring-reminder', {
                 body: {
@@ -151,9 +157,18 @@ export async function sendRecurringExpenseReminderEmail({
             });
             if (!fnError) {
                 deliveryStatus = 'sent';
+            } else {
+                deliveryStatus = 'failed';
+                deliveryError = fnError.message || 'Failed to invoke send-recurring-reminder Edge Function.';
             }
         }
+    } catch (err) {
+        deliveryStatus = 'failed';
+        deliveryError = err.message || 'Network error while dispatching reminder email.';
+    }
 
+    // Always insert the audit row into email_reminder_queue so both sent and failed attempts are recorded
+    try {
         const { error: dbError } = await supabase.from('email_reminder_queue').insert([
             {
                 user_id: userId,
@@ -170,9 +185,17 @@ export async function sendRecurringExpenseReminderEmail({
         if (dbError) {
             console.warn('Could not write to email_reminder_queue:', dbError.message);
         }
-
-        return { ok: true, status: deliveryStatus };
-    } catch (err) {
-        return { ok: false, error: err.message || 'Failed to dispatch reminder email.' };
+    } catch (dbErr) {
+        console.warn('Failed to log email reminder attempt:', dbErr);
     }
+
+    if (deliveryStatus !== 'sent') {
+        return {
+            ok: false,
+            status: 'failed',
+            error: deliveryError || 'Failed to deliver reminder email.'
+        };
+    }
+
+    return { ok: true, status: 'sent' };
 }

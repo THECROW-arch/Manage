@@ -537,9 +537,14 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 autoPulls
             });
             if (!res.ok) {
+                const badgeByCode = {
+                    pro_limit: 'Blocked → Pro Tier Limit',
+                    read_only: 'Blocked → Read-Only Month',
+                    invalid: 'Invalid Objective Input'
+                };
                 return {
                     reply: res.error,
-                    actionBadge: 'Blocked → Pro Tier Limit',
+                    actionBadge: badgeByCode[res.code] || 'Objective Creation Blocked',
                     suggestions: ['Open Portfolio', 'Audit my budget']
                 };
             }

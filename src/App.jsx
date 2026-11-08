@@ -126,7 +126,7 @@ export default function App() {
     if (!upgradePromptFeature) return '';
     const featureMap = {
       visual_excel_reports: t('pro_feature_visual_excel', 'Visual Dashboard Excel Reports'),
-      unlimited_sandbox_sheets: t('pro_feature_unlimited_sandbox', 'unlimited_sandbox_sheets'),
+      unlimited_sandbox_sheets: t('pro_feature_unlimited_sandbox', 'Unlimited Sandbox Calculation Sheets'),
       multi_goal_objectives: t('pro_feature_multi_objectives', 'Multi-Goal Wealth Objectives')
     };
     return featureMap[upgradePromptFeature] || t(upgradePromptFeature, upgradePromptFeature);
@@ -2249,6 +2249,7 @@ export default function App() {
               <WealthObjectivesSection
                 wealthObjectives={wealthObjectives}
                 setWealthObjectives={setWealthObjectives}
+                onCreateWealthObjective={handleCreateWealthObjective}
                 categories={categories}
                 parsedSalary={parsedSalary}
                 selectedMonth={selectedMonth}

@@ -413,7 +413,7 @@ export default function WealthObjectivesSection({
                         >
                             {categories.map(cat => (
                                 <option key={cat.id} value={cat.id}>
-                                    {cat.name} ({formatCurrency(parsedSalary * ((cat.percentage || 0) / 100))}/mo)
+                                    {cat.name} ({formatCurrency(parsedSalary * ((cat.percentage || 0) / 100))}/{t('per_month_short', 'mo')})
                                 </option>
                             ))}
                         </select>
@@ -438,10 +438,10 @@ export default function WealthObjectivesSection({
                     {Object.keys(autoPulls).length > 0 && (
                         <div className="flex flex-wrap gap-2 pt-1">
                             {Object.entries(autoPulls).map(([cId, amt]) => {
-                                const cName = categories.find(c => c.id === cId)?.name || 'Category';
+                                const cName = categories.find(c => c.id === cId)?.name || t('category_fallback', 'Category');
                                 return (
                                     <span key={cId} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
-                                        Auto: {cName} ({formatCurrency(amt)}/mo)
+                                        {t('auto_prefix', 'Auto:')} {cName} ({formatCurrency(amt)}/{t('per_month_short', 'mo')})
                                         <button
                                             type="button"
                                             onClick={() => setAutoPulls(prev => {
@@ -512,7 +512,7 @@ export default function WealthObjectivesSection({
                                             type="button"
                                             disabled={isReadOnly || isFundingThis}
                                             onClick={() => handleDeleteObjective(obj.id)}
-                                            aria-label={`Delete ${obj.name}`}
+                                            aria-label={t('delete_objective_aria', { name: obj.name, defaultValue: `Delete ${obj.name}` })}
                                             className="text-gray-400 hover:text-rose-500 disabled:opacity-40 text-xs font-bold p-1"
                                         >
                                             ✕
@@ -538,10 +538,10 @@ export default function WealthObjectivesSection({
                                         <div className="space-y-2 mb-3">
                                             <div className="flex flex-wrap gap-1.5">
                                                 {Object.entries(obj.autoPulls).map(([cId, amt]) => {
-                                                    const cName = categories.find(c => c.id === cId)?.name || 'Category';
+                                                    const cName = categories.find(c => c.id === cId)?.name || t('category_fallback', 'Category');
                                                     return (
                                                         <span key={cId} className="text-[10px] px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 font-semibold">
-                                                            {t('auto_rule_label', 'Auto Rule:')} {cName} ({formatCurrency(amt)}/mo)
+                                                            {t('auto_rule_label', 'Auto Rule:')} {cName} ({formatCurrency(amt)}/{t('per_month_short', 'mo')})
                                                         </span>
                                                     );
                                                 })}
