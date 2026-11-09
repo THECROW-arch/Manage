@@ -1,24 +1,24 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react';
 import './App.css';
 import './i18n';
 import { useTranslation } from 'react-i18next';
 import { supabase } from './supabaseClient';
 import Auth from './Auth';
 import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth } from './utils/constants';
-import { generateFormalAudit, generateVisualDashboard } from './utils/excelGenerator';
 import { sendRecurringExpenseReminderEmail } from './utils/emailReminderService';
-import HistoryTab from './components/HistoryTab';
-import TaxCenterTab from './components/TaxCenterTab';
-import SettingsTab from './components/SettingsTab';
 import Sidebar, { MobileHeader } from './components/Sidebar';
-import PortfolioTab from './components/PortfolioTab';
-import WealthObjectivesSection from './components/WealthObjectivesSection';
-import OccasionsSandboxTab from './components/OccasionsSandboxTab';
 import CashFlowTab from './components/CashFlowTab';
-import SupportTab from './components/SupportTab';
-import DevDashboard from './components/DevDashboard';
-import OwnerDashboard from './components/OwnerDashboard';
 import AIAssistantDrawer from './components/AIAssistantDrawer';
+
+const HistoryTab = lazy(() => import('./components/HistoryTab'));
+const TaxCenterTab = lazy(() => import('./components/TaxCenterTab'));
+const SettingsTab = lazy(() => import('./components/SettingsTab'));
+const PortfolioTab = lazy(() => import('./components/PortfolioTab'));
+const WealthObjectivesSection = lazy(() => import('./components/WealthObjectivesSection'));
+const OccasionsSandboxTab = lazy(() => import('./components/OccasionsSandboxTab'));
+const SupportTab = lazy(() => import('./components/SupportTab'));
+const DevDashboard = lazy(() => import('./components/DevDashboard'));
+const OwnerDashboard = lazy(() => import('./components/OwnerDashboard'));
 
 const readUserStorage = (prefix, uid, fallback) => {
   if (!uid) return fallback;
@@ -302,8 +302,8 @@ export default function App() {
         const localBoosts = readUserStorage('managed_monthly_boosts', userId, {});
         const dbBoosts =
           profile.monthly_boosts &&
-          typeof profile.monthly_boosts === 'object' &&
-          !Array.isArray(profile.monthly_boosts)
+            typeof profile.monthly_boosts === 'object' &&
+            !Array.isArray(profile.monthly_boosts)
             ? profile.monthly_boosts
             : {};
         const mergedBoosts = Object.keys(dbBoosts).length > 0 ? dbBoosts : localBoosts;
@@ -428,7 +428,7 @@ export default function App() {
     };
   }, []);
 
-  
+
 
   const handleLogoutRequest = () => {
     setShowLogoutConfirm(true);
@@ -459,10 +459,15 @@ export default function App() {
     }
   };
 
-  const formatCurrency = (amount) => {
-    const num = Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return currency.length > 1 ? `${currency} ${num}` : `${currency}${num}`;
-  };
+  const formatCurrency = useCallback((val) => {
+    const num = Number(val) || 0;
+    const formatted = num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const isPrefix = ['$', '€', '£', '¥'].includes(currency);
+    if (i18n.language === 'ar') {
+      return `${formatted} ${currency}`;
+    }
+    return isPrefix ? `${currency}${formatted}` : `${formatted} ${currency}`;
+  }, [currency, i18n.language]);
 
   // Pure Account-Scoped State Updaters & Persistence Effects
   const monthlyIncomeBoosts = useMemo(() => {
@@ -570,9 +575,10 @@ export default function App() {
     t
   ]);
 
-  const expenseMetaMap = activeUserId
-    ? (metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {}))
-    : {};
+  const expenseMetaMap = useMemo(() => {
+    if (!activeUserId) return {};
+    return metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
+  }, [activeUserId, metaOverridesByUser]);
 
   const updateExpenseMeta = (expId, patch, syncToDb = true) => {
     if (!activeUserId || !expId) return;
@@ -777,7 +783,56 @@ export default function App() {
       setIsSendingReminder(false);
     }
   };
+ // Automatically trigger one recurring expense reminder email per period when enabled
+  const autoReminderAttemptedRef = useRef({});
+  useEffect(() => {
+    if (!session?.user?.email || loadingData || isReadOnly) return;
+    if (!emailRemindersEnabled) return;
+    if (lastReminderPeriod === selectedMonth) return;
 
+    const attemptKey = `${session.user.id}_${selectedMonth}`;
+    if (autoReminderAttemptedRef.current[attemptKey]) return;
+
+    const unconfirmedRecurring = activeMonthlyExpenses
+      .filter(exp => exp.is_recurring)
+      .map(exp => ({
+        ...exp,
+        recurrenceType: expenseMetaMap[exp.id]?.recurrenceType || 'monthly'
+      }));
+
+    if (unconfirmedRecurring.length === 0) return;
+
+    autoReminderAttemptedRef.current[attemptKey] = true;
+
+    let cancelled = false;
+    sendRecurringExpenseReminderEmail({
+      userId: session.user.id,
+      recipientEmail: session.user.email,
+      username: username || session.user.email.split('@')[0],
+      periodKey: selectedMonth,
+      pendingExpenses: unconfirmedRecurring,
+      formatCurrency
+    }).then((res) => {
+      if (!cancelled && res?.ok) {
+        setLastReminderPeriod(selectedMonth);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    session,
+     username,
+    loadingData,
+    isReadOnly,
+    emailRemindersEnabled,
+    lastReminderPeriod,
+    selectedMonth,
+    activeMonthlyExpenses,
+    expenseMetaMap,
+    formatCurrency
+  ]);
   const handleExportData = async (exportFormat) => {
     if (exportFormat === 'visual' && !hasProAccess) {
       setUpgradePromptFeature('visual_excel_reports');
@@ -875,6 +930,7 @@ export default function App() {
     };
 
     try {
+      const { generateFormalAudit, generateVisualDashboard } = await import('./utils/excelGenerator');
       if (exportFormat === 'formal') {
         await generateFormalAudit(reportData);
         setAlertMsg(t('succ_export_formal', { period: targetPeriod }));
@@ -2094,271 +2150,274 @@ export default function App() {
             hasProAccess={hasProAccess}
           />
 
-          {activeTab === 'cashflow' && (
-            <CashFlowTab
-              key={activeUserId || 'guest'}
-              userId={activeUserId}
-              expenseMetaMap={expenseMetaMap}
-              updateExpenseMeta={updateExpenseMeta}
-              isExpenseSkippedForCurrentPeriod={isExpenseSkippedForCurrentPeriod}
-              isPastMonth={isPastMonth}
-              closedMonths={closedMonths}
-              selectedMonth={selectedMonth}
-              handleCloseMonth={handleCloseMonth}
-              setSelectedMonth={setSelectedMonth}
-              isReadOnly={isReadOnly}
-              totalRemaining={totalRemaining}
-              parsedSalary={parsedSalary}
-              baseSalary={baseSalary}
-              currentMonthBoost={currentMonthBoost}
-              handleAddMonthlyBoost={handleAddMonthlyBoost}
-              handleClearMonthlyBoost={handleClearMonthlyBoost}
-              globalPercentUsed={globalPercentUsed}
-              totalSpent={totalSpent}
-              totalAutomatedAssets={totalAutomatedAssets}
-              chartData={chartData}
-              theme={theme}
-              formatCurrency={formatCurrency}
-              handleUnlockAll={handleUnlockAll}
-              lockedCategories={lockedCategories}
-              handleSmartLockAll={handleSmartLockAll}
-              categories={categories}
-              monthlyExpenses={monthlyExpenses}
-              dragState={dragState}
-              setDragState={setDragState}
-              handleSliderChange={handleSliderChange}
-              toggleIndividualLock={toggleIndividualLock}
-              setEditingCategory={setEditingCategory}
-              handleDeleteCategory={handleDeleteCategory}
-              editingCategory={editingCategory}
-              handleUpdateCategory={handleUpdateCategory}
-              setIsCategoryModalOpen={setIsCategoryModalOpen}
-              isCategoryModalOpen={isCategoryModalOpen}
-              newCategoryType={newCategoryType}
-              setNewCategoryType={setNewCategoryType}
-              newCategoryName={newCategoryName}
-              setNewCategoryName={setNewCategoryName}
-              newCategoryGoal={newCategoryGoal}
-              setNewCategoryGoal={setNewCategoryGoal}
-              handleAddCategory={handleAddCategory}
-              setActiveTab={setActiveTab}
-              setPlannerSubTab={setPlannerSubTab}
-              handleAddExpense={handleAddExpense}
-              expenseName={expenseName}
-              setExpenseName={setExpenseName}
-              expenseCost={expenseCost}
-              setExpenseCost={setExpenseCost}
-              expenseCategoryId={expenseCategoryId}
-              setExpenseCategoryId={setExpenseCategoryId}
-              expenseDate={expenseDate}
-              setExpenseDate={setExpenseDate}
-              isRecurring={isRecurring}
-              setIsRecurring={setIsRecurring}
-              isBatched={isBatched}
-              setIsBatched={setIsBatched}
-              searchQuery={searchQuery}
-              setSearchQuery={setSearchQuery}
-              filterCategory={filterCategory}
-              setFilterCategory={setFilterCategory}
-              filteredExpenses={filteredExpenses}
-              expandedTransactionId={expandedTransactionId}
-              setExpandedTransactionId={setExpandedTransactionId}
-              bundles={bundles}
-              handleDeleteExpense={handleDeleteExpense}
-              editingExpense={editingExpense}
-              setEditingExpense={setEditingExpense}
-              handleUpdateExpense={handleUpdateExpense}
-              groupedExpenses={groupedExpenses}
-            />
-          )}
+          <Suspense fallback={<div className="py-12 text-center text-xs font-semibold text-gray-500 dark:text-zinc-400 animate-pulse">{t('loading_data')}</div>}>
 
-          {activeTab === 'occasions' && (
-            <OccasionsSandboxTab
-              selectedMonth={selectedMonth}
-              plannerSubTab={plannerSubTab}
-              setPlannerSubTab={setPlannerSubTab}
-              bundleName={bundleName}
-              setBundleName={setBundleName}
-              categories={categories}
-              getCategoryAvailablePool={getCategoryAvailablePool}
-              bundleAllocations={bundleAllocations}
-              setBundleAllocations={setBundleAllocations}
-              handleCreateBundle={handleCreateBundle}
-              bundles={bundles}
-              occasionItemInputs={occasionItemInputs}
-              setOccasionItemInputs={setOccasionItemInputs}
-              handleAddOccasionItem={handleAddOccasionItem}
-              handleDeleteOccasionItem={handleDeleteOccasionItem}
-              handleLockAndFinalizeBundle={handleLockAndFinalizeBundle}
-              isReadOnly={isReadOnly}
-              handleDeleteBundle={handleDeleteBundle}
-              handleCreateSandboxSheet={handleCreateSandboxSheet}
-              newSheetTitle={newSheetTitle}
-              setNewSheetTitle={setNewSheetTitle}
-              newSheetBudget={newSheetBudget}
-              setNewSheetBudget={setNewSheetBudget}
-              sandboxSheets={sandboxSheets}
-              setSandboxSheets={setSandboxSheets}
-              activeSheetId={activeSheetId}
-              setActiveSheetId={setActiveSheetId}
-              activeSheet={activeSheet}
-              handleExportSandboxCSV={handleExportSandboxCSV}
-              handleAddSubBucket={handleAddSubBucket}
-              subBucketName={subBucketName}
-              setSubBucketName={setSubBucketName}
-              subBucketLimit={subBucketLimit}
-              setSubBucketLimit={setSubBucketLimit}
-              handleAddSandboxExpense={handleAddSandboxExpense}
-              sandboxExpName={sandboxExpName}
-              setSandboxExpName={setSandboxExpName}
-              sandboxExpCost={sandboxExpCost}
-              setSandboxExpCost={setSandboxExpCost}
-              sandboxExpBucketId={sandboxExpBucketId}
-              setSandboxExpBucketId={setSandboxExpBucketId}
-              setAlertMsg={setAlertMsg}
-              formatCurrencyFn={formatCurrency}
-              handleDeleteSandboxSheet={handleDeleteSandboxSheet}
-            />
-          )}
-
-          {activeTab === 'portfolio' && (
-            <>
-              <PortfolioTab
-                assetCategories={assetCategories}
-                handleAddAdjustment={handleAddAdjustment}
-                adjCatId={adjCatId}
-                setAdjCatId={setAdjCatId}
-                adjAmount={adjAmount}
-                setAdjAmount={setAdjAmount}
-                adjNote={adjNote}
-                setAdjNote={setAdjNote}
-                adjDate={adjDate}
-                setAdjDate={setAdjDate}
-                assetAdjustments={assetAdjustments}
-                categories={categories}
-                formatCurrency={formatCurrency}
-                wealthHistoryData={wealthHistoryData}
-                theme={theme}
-                currency={currency}
-                parsedSalary={parsedSalary}
-                monthlyExpenses={activeMonthlyExpenses}
-                selectedMonth={selectedMonth}
-                todayMonth={todayMonth}
+            {activeTab === 'cashflow' && (
+              <CashFlowTab
+                key={activeUserId || 'guest'}
+                userId={activeUserId}
+                expenseMetaMap={expenseMetaMap}
+                updateExpenseMeta={updateExpenseMeta}
+                isExpenseSkippedForCurrentPeriod={isExpenseSkippedForCurrentPeriod}
+                isPastMonth={isPastMonth}
                 closedMonths={closedMonths}
-              />
-              <WealthObjectivesSection
-                wealthObjectives={wealthObjectives}
-                setWealthObjectives={setWealthObjectives}
-                onCreateWealthObjective={handleCreateWealthObjective}
-                categories={categories}
-                parsedSalary={parsedSalary}
                 selectedMonth={selectedMonth}
+                handleCloseMonth={handleCloseMonth}
+                setSelectedMonth={setSelectedMonth}
                 isReadOnly={isReadOnly}
-                hasProAccess={hasProAccess}
-                onRequireProUpgrade={setUpgradePromptFeature}
+                totalRemaining={totalRemaining}
+                parsedSalary={parsedSalary}
+                baseSalary={baseSalary}
+                currentMonthBoost={currentMonthBoost}
+                handleAddMonthlyBoost={handleAddMonthlyBoost}
+                handleClearMonthlyBoost={handleClearMonthlyBoost}
+                globalPercentUsed={globalPercentUsed}
+                totalSpent={totalSpent}
+                totalAutomatedAssets={totalAutomatedAssets}
+                chartData={chartData}
+                theme={theme}
                 formatCurrency={formatCurrency}
-                getCategoryAvailablePool={getCategoryAvailablePool}
-                onManualContributeToObjective={async ({ objectiveName, categoryId, amount }) => {
-                  if (isReadOnly) {
-                    setAlertMsg(t('err_month_locked', 'This month is closed and read-only.'));
-                    return false;
-                  }
-                  const catObj = categories.find(c => c.id === categoryId);
-                  if (!catObj) return false;
-                  const avail = getCategoryAvailablePool(categoryId);
-                  if (amount > avail) {
-                    setAlertMsg(t('err_exp_exceeds_avail', { category: catObj.name }));
-                    return false;
-                  }
-                  const today = getToday();
-                  const alignedDate = today.startsWith(selectedMonth) ? today : `${selectedMonth}-01`;
-                  const payload = {
-                    user_id: session.user.id,
-                    name: `Objective: ${objectiveName}`,
-                    cost: amount,
-                    category_id: categoryId,
-                    category: catObj.name,
-                    expense_date: alignedDate,
-                    is_recurring: false,
-                    is_batched: false,
-                    bundle_id: null
-                  };
-                  const { data, error } = await supabase.from('expenses').insert([payload]).select();
-                  if (error || !data || data.length === 0) {
-                    setAlertMsg('Failed to record manual contribution.');
-                    return false;
-                  }
-                  recordLastAddedExpenseId(data[0].id);
-                  setExpenses(prev => [data[0], ...prev]);
-                  return true;
-                }}
+                handleUnlockAll={handleUnlockAll}
+                lockedCategories={lockedCategories}
+                handleSmartLockAll={handleSmartLockAll}
+                categories={categories}
+                monthlyExpenses={monthlyExpenses}
+                dragState={dragState}
+                setDragState={setDragState}
+                handleSliderChange={handleSliderChange}
+                toggleIndividualLock={toggleIndividualLock}
+                setEditingCategory={setEditingCategory}
+                handleDeleteCategory={handleDeleteCategory}
+                editingCategory={editingCategory}
+                handleUpdateCategory={handleUpdateCategory}
+                setIsCategoryModalOpen={setIsCategoryModalOpen}
+                isCategoryModalOpen={isCategoryModalOpen}
+                newCategoryType={newCategoryType}
+                setNewCategoryType={setNewCategoryType}
+                newCategoryName={newCategoryName}
+                setNewCategoryName={setNewCategoryName}
+                newCategoryGoal={newCategoryGoal}
+                setNewCategoryGoal={setNewCategoryGoal}
+                handleAddCategory={handleAddCategory}
+                setActiveTab={setActiveTab}
+                setPlannerSubTab={setPlannerSubTab}
+                handleAddExpense={handleAddExpense}
+                expenseName={expenseName}
+                setExpenseName={setExpenseName}
+                expenseCost={expenseCost}
+                setExpenseCost={setExpenseCost}
+                expenseCategoryId={expenseCategoryId}
+                setExpenseCategoryId={setExpenseCategoryId}
+                expenseDate={expenseDate}
+                setExpenseDate={setExpenseDate}
+                isRecurring={isRecurring}
+                setIsRecurring={setIsRecurring}
+                isBatched={isBatched}
+                setIsBatched={setIsBatched}
+                searchQuery={searchQuery}
+                setSearchQuery={setSearchQuery}
+                filterCategory={filterCategory}
+                setFilterCategory={setFilterCategory}
+                filteredExpenses={filteredExpenses}
+                expandedTransactionId={expandedTransactionId}
+                setExpandedTransactionId={setExpandedTransactionId}
+                bundles={bundles}
+                handleDeleteExpense={handleDeleteExpense}
+                editingExpense={editingExpense}
+                setEditingExpense={setEditingExpense}
+                handleUpdateExpense={handleUpdateExpense}
+                groupedExpenses={groupedExpenses}
               />
-            </>
-          )}
+            )}
 
-          {activeTab === 'history' && <HistoryTab historyFeed={historyFeed} />}
+            {activeTab === 'occasions' && (
+              <OccasionsSandboxTab
+                selectedMonth={selectedMonth}
+                plannerSubTab={plannerSubTab}
+                setPlannerSubTab={setPlannerSubTab}
+                bundleName={bundleName}
+                setBundleName={setBundleName}
+                categories={categories}
+                getCategoryAvailablePool={getCategoryAvailablePool}
+                bundleAllocations={bundleAllocations}
+                setBundleAllocations={setBundleAllocations}
+                handleCreateBundle={handleCreateBundle}
+                bundles={bundles}
+                occasionItemInputs={occasionItemInputs}
+                setOccasionItemInputs={setOccasionItemInputs}
+                handleAddOccasionItem={handleAddOccasionItem}
+                handleDeleteOccasionItem={handleDeleteOccasionItem}
+                handleLockAndFinalizeBundle={handleLockAndFinalizeBundle}
+                isReadOnly={isReadOnly}
+                handleDeleteBundle={handleDeleteBundle}
+                handleCreateSandboxSheet={handleCreateSandboxSheet}
+                newSheetTitle={newSheetTitle}
+                setNewSheetTitle={setNewSheetTitle}
+                newSheetBudget={newSheetBudget}
+                setNewSheetBudget={setNewSheetBudget}
+                sandboxSheets={sandboxSheets}
+                setSandboxSheets={setSandboxSheets}
+                activeSheetId={activeSheetId}
+                setActiveSheetId={setActiveSheetId}
+                activeSheet={activeSheet}
+                handleExportSandboxCSV={handleExportSandboxCSV}
+                handleAddSubBucket={handleAddSubBucket}
+                subBucketName={subBucketName}
+                setSubBucketName={setSubBucketName}
+                subBucketLimit={subBucketLimit}
+                setSubBucketLimit={setSubBucketLimit}
+                handleAddSandboxExpense={handleAddSandboxExpense}
+                sandboxExpName={sandboxExpName}
+                setSandboxExpName={setSandboxExpName}
+                sandboxExpCost={sandboxExpCost}
+                setSandboxExpCost={setSandboxExpCost}
+                sandboxExpBucketId={sandboxExpBucketId}
+                setSandboxExpBucketId={setSandboxExpBucketId}
+                setAlertMsg={setAlertMsg}
+                formatCurrencyFn={formatCurrency}
+                handleDeleteSandboxSheet={handleDeleteSandboxSheet}
+              />
+            )}
 
-          {activeTab === 'taxes' && (
-            <TaxCenterTab
-              taxCountry={taxCountry}
-              setTaxCountry={(country) => {
-                setTaxCountry(country);
-                setTaxFilingStatus('single');
-                setTaxIncomeInput('');
-                setTaxEstimateResult(null);
-              }}
-              taxFilingStatus={taxFilingStatus}
-              setTaxFilingStatus={setTaxFilingStatus}
-              taxIncomeInput={taxIncomeInput}
-              setTaxIncomeInput={setTaxIncomeInput}
-              calculateTaxEstimate={calculateTaxEstimate}
-              taxEstimateResult={taxEstimateResult}
-            />
-          )}
+            {activeTab === 'portfolio' && (
+              <>
+                <PortfolioTab
+                  assetCategories={assetCategories}
+                  handleAddAdjustment={handleAddAdjustment}
+                  adjCatId={adjCatId}
+                  setAdjCatId={setAdjCatId}
+                  adjAmount={adjAmount}
+                  setAdjAmount={setAdjAmount}
+                  adjNote={adjNote}
+                  setAdjNote={setAdjNote}
+                  adjDate={adjDate}
+                  setAdjDate={setAdjDate}
+                  assetAdjustments={assetAdjustments}
+                  categories={categories}
+                  formatCurrency={formatCurrency}
+                  wealthHistoryData={wealthHistoryData}
+                  theme={theme}
+                  currency={currency}
+                  parsedSalary={parsedSalary}
+                  monthlyExpenses={activeMonthlyExpenses}
+                  selectedMonth={selectedMonth}
+                  todayMonth={todayMonth}
+                  closedMonths={closedMonths}
+                />
+                <WealthObjectivesSection
+                  wealthObjectives={wealthObjectives}
+                  setWealthObjectives={setWealthObjectives}
+                  onCreateWealthObjective={handleCreateWealthObjective}
+                  categories={categories}
+                  parsedSalary={parsedSalary}
+                  selectedMonth={selectedMonth}
+                  isReadOnly={isReadOnly}
+                  hasProAccess={hasProAccess}
+                  onRequireProUpgrade={setUpgradePromptFeature}
+                  formatCurrency={formatCurrency}
+                  getCategoryAvailablePool={getCategoryAvailablePool}
+                  onManualContributeToObjective={async ({ objectiveName, categoryId, amount }) => {
+                    if (isReadOnly) {
+                      setAlertMsg(t('err_month_locked', 'This month is closed and read-only.'));
+                      return false;
+                    }
+                    const catObj = categories.find(c => c.id === categoryId);
+                    if (!catObj) return false;
+                    const avail = getCategoryAvailablePool(categoryId);
+                    if (amount > avail) {
+                      setAlertMsg(t('err_exp_exceeds_avail', { category: catObj.name }));
+                      return false;
+                    }
+                    const today = getToday();
+                    const alignedDate = today.startsWith(selectedMonth) ? today : `${selectedMonth}-01`;
+                    const payload = {
+                      user_id: session.user.id,
+                      name: `Objective: ${objectiveName}`,
+                      cost: amount,
+                      category_id: categoryId,
+                      category: catObj.name,
+                      expense_date: alignedDate,
+                      is_recurring: false,
+                      is_batched: false,
+                      bundle_id: null
+                    };
+                    const { data, error } = await supabase.from('expenses').insert([payload]).select();
+                    if (error || !data || data.length === 0) {
+                      setAlertMsg('Failed to record manual contribution.');
+                      return false;
+                    }
+                    recordLastAddedExpenseId(data[0].id);
+                    setExpenses(prev => [data[0], ...prev]);
+                    return true;
+                  }}
+                />
+              </>
+            )}
 
-          {activeTab === 'settings' && (
-            <SettingsTab
-              theme={theme}
-              setTheme={setTheme}
-              salary={salary}
-              setSalary={setSalary}
-              currencyMode={currencyMode}
-              setCurrencyMode={setCurrencyMode}
-              customCurrency={customCurrency}
-              setCustomCurrency={setCustomCurrency}
-              setCurrency={setCurrency}
-              exportScope={exportScope}
-              setExportScope={setExportScope}
-              exportMonth={exportMonth}
-              setExportMonth={setExportMonth}
-              exportDate={exportDate}
-              setExportDate={setExportDate}
-              handleExportData={handleExportData}
-              emailRemindersEnabled={emailRemindersEnabled}
-              setEmailRemindersEnabled={setEmailRemindersEnabled}
-              onSendRecurringReminder={() => handleSendRecurringReminder(true)}
-              isSendingReminder={isSendingReminder}
-              userEmail={session?.user?.email || ''}
-            />
-          )}
-          {activeTab === 'support' && (
-            <SupportTab
-              session={session}
-              username={username}
-              supportDraft={supportDraft}
-              setSupportDraft={setSupportDraft}
-              draftHydratedUserId={draftHydratedUserId}
-              isSubmittingTicket={submittingTicketUserId === session?.user?.id}
-              setSubmittingTicketUserId={setSubmittingTicketUserId}
-            />
-          )}
-          {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (
-            <DevDashboard />
-          )}
+            {activeTab === 'history' && <HistoryTab historyFeed={historyFeed} />}
 
-          {activeTab === 'owner_dashboard' && userRole === 'owner' && (
-            <OwnerDashboard />
-          )}
+            {activeTab === 'taxes' && (
+              <TaxCenterTab
+                taxCountry={taxCountry}
+                setTaxCountry={(country) => {
+                  setTaxCountry(country);
+                  setTaxFilingStatus('single');
+                  setTaxIncomeInput('');
+                  setTaxEstimateResult(null);
+                }}
+                taxFilingStatus={taxFilingStatus}
+                setTaxFilingStatus={setTaxFilingStatus}
+                taxIncomeInput={taxIncomeInput}
+                setTaxIncomeInput={setTaxIncomeInput}
+                calculateTaxEstimate={calculateTaxEstimate}
+                taxEstimateResult={taxEstimateResult}
+              />
+            )}
+
+            {activeTab === 'settings' && (
+              <SettingsTab
+                theme={theme}
+                setTheme={setTheme}
+                salary={salary}
+                setSalary={setSalary}
+                currencyMode={currencyMode}
+                setCurrencyMode={setCurrencyMode}
+                customCurrency={customCurrency}
+                setCustomCurrency={setCustomCurrency}
+                setCurrency={setCurrency}
+                exportScope={exportScope}
+                setExportScope={setExportScope}
+                exportMonth={exportMonth}
+                setExportMonth={setExportMonth}
+                exportDate={exportDate}
+                setExportDate={setExportDate}
+                handleExportData={handleExportData}
+                emailRemindersEnabled={emailRemindersEnabled}
+                setEmailRemindersEnabled={setEmailRemindersEnabled}
+                onSendRecurringReminder={() => handleSendRecurringReminder(true)}
+                isSendingReminder={isSendingReminder}
+                userEmail={session?.user?.email || ''}
+              />
+            )}
+            {activeTab === 'support' && (
+              <SupportTab
+                session={session}
+                username={username}
+                supportDraft={supportDraft}
+                setSupportDraft={setSupportDraft}
+                draftHydratedUserId={draftHydratedUserId}
+                isSubmittingTicket={submittingTicketUserId === session?.user?.id}
+                setSubmittingTicketUserId={setSubmittingTicketUserId}
+              />
+            )}
+            {activeTab === 'dev_dashboard' && (userRole === 'dev' || userRole === 'owner') && (
+              <DevDashboard />
+            )}
+
+            {activeTab === 'owner_dashboard' && userRole === 'owner' && (
+              <OwnerDashboard />
+            )}
+          </Suspense>
         </div>
 
         <AIAssistantDrawer
@@ -2571,7 +2630,7 @@ export default function App() {
             return { ok: true, category: updatedList.find(c => c.id === createdCat.id) || createdCat };
           }}
         />
-      </main>
-    </div>
+      </main >
+    </div >
   );
 }
