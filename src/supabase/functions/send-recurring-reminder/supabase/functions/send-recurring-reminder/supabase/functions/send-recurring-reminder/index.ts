@@ -25,11 +25,69 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { to, subject, text, html, periodKey } = await req.json();
+    // 1. Verify caller identity via Supabase Auth using the Authorization header
+    const authHeader = req.headers.get("Authorization");
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
 
-    if (!to || !subject || (!html && !text)) {
+    if (!authHeader || !supabaseUrl || !supabaseAnonKey) {
       return new Response(
-        JSON.stringify({ error: "Missing required email fields (to, subject, html/text)." }),
+        JSON.stringify({ error: "Missing authorization header or Supabase environment configuration." }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    const userResp = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      method: "GET",
+      headers: {
+        Authorization: authHeader,
+        apikey: supabaseAnonKey
+      }
+    });
+
+    if (!userResp.ok) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized: invalid or expired user session." }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    const authUser = await userResp.json().catch(() => null);
+    const authenticatedEmail = String(authUser?.email || "").trim().toLowerCase();
+
+    if (!authenticatedEmail) {
+      return new Response(
+        JSON.stringify({ error: "Authenticated user does not have a verified email address." }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    const { to, subject, text, html, periodKey } = await req.json();
+    const requestedTo = String(to || "").trim().toLowerCase();
+
+    // 2. Restrict recipient strictly to the authenticated caller's own email address
+    if (requestedTo && requestedTo !== authenticatedEmail) {
+      return new Response(
+        JSON.stringify({ error: "Forbidden: recipient email must match the authenticated user." }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    if (!subject || (!html && !text)) {
+      return new Response(
+        JSON.stringify({ error: "Missing required email fields (subject, html/text)." }),
         {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -60,7 +118,7 @@ Deno.serve(async (req: Request) => {
       },
       body: JSON.stringify({
         from: fromAddress,
-        to: [to],
+        to: [authUser.email],
         subject,
         html,
         text,

@@ -788,7 +788,15 @@ export default function App() {
   useEffect(() => {
     if (!session?.user?.email || loadingData || isReadOnly) return;
     if (!emailRemindersEnabled) return;
-    if (lastReminderPeriod === selectedMonth) return;
+
+    let cachedPeriod;
+    try {
+      cachedPeriod = localStorage.getItem(`managed_last_reminder_${session.user.id}`);
+    } catch {
+      cachedPeriod = null;
+    }
+
+    if (lastReminderPeriod === selectedMonth || cachedPeriod === selectedMonth) return;
 
     const attemptKey = `${session.user.id}_${selectedMonth}`;
     if (autoReminderAttemptedRef.current[attemptKey]) return;
@@ -804,7 +812,6 @@ export default function App() {
 
     autoReminderAttemptedRef.current[attemptKey] = true;
 
-    let cancelled = false;
     sendRecurringExpenseReminderEmail({
       userId: session.user.id,
       recipientEmail: session.user.email,
@@ -813,17 +820,15 @@ export default function App() {
       pendingExpenses: unconfirmedRecurring,
       formatCurrency
     }).then((res) => {
-      if (!cancelled && res?.ok) {
+      if (res?.ok) {
         setLastReminderPeriod(selectedMonth);
+      } else {
+        delete autoReminderAttemptedRef.current[attemptKey];
       }
     });
-
-    return () => {
-      cancelled = true;
-    };
   }, [
     session,
-     username,
+    username,
     loadingData,
     isReadOnly,
     emailRemindersEnabled,

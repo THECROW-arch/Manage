@@ -1,8 +1,9 @@
 let transcriberPromise = null;
 
 /**
- * Lazily loads the Hugging Face Transformers library and initializes the Whisper
+ * Lazily loads the Transformers library and initializes the Whisper
  * speech-recognition pipeline only when voice transcription is requested.
+ * Resets the cached promise on failure so subsequent voice requests can retry.
  * @param {Function} [onProgress] - Optional callback for model download progress.
  * @returns {Promise<Function>} Initialized automatic-speech-recognition pipeline.
  */
@@ -10,12 +11,12 @@ export async function getLocalTranscriber(onProgress) {
     if (!transcriberPromise) {
         transcriberPromise = (async () => {
             try {
-                // Dynamic import wrapped safely for Rolldown / Vite bundling
-                const transformers = await import('@huggingface/transformers');
+                const cdnUrl = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+                const transformers = await import(/* @vite-ignore */ cdnUrl);
                 const { pipeline, env } = transformers;
                 env.allowLocalModels = false;
                 env.useBrowserCache = true;
-                return pipeline(
+                return await pipeline(
                     'automatic-speech-recognition',
                     'Xenova/whisper-base.en',
                     {
@@ -23,8 +24,12 @@ export async function getLocalTranscriber(onProgress) {
                     }
                 );
             } catch (err) {
+                transcriberPromise = null;
                 console.warn('Transformers.js failed to load dynamically:', err);
-                throw new Error('Voice transcription model could not be initialized. Please check your internet connection or npm installation.', { cause: err });
+                throw new Error(
+                    'Voice transcription model could not be initialized. Please check your internet connection.',
+                    { cause: err }
+                );
             }
         })();
     }

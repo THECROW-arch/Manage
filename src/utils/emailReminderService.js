@@ -197,5 +197,21 @@ export async function sendRecurringExpenseReminderEmail({
         };
     }
 
+    // Reliably persist the sent period in Supabase profiles and localStorage immediately upon delivery
+    try {
+        localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
+    } catch {
+        // Ignore storage quota errors
+    }
+
+    const { error: profileUpdateError } = await supabase
+        .from('profiles')
+        .update({ last_reminder_period: periodKey })
+        .eq('user_id', userId);
+
+    if (profileUpdateError) {
+        console.warn('Could not persist last_reminder_period to profile:', profileUpdateError.message);
+    }
+
     return { ok: true, status: 'sent' };
 }
