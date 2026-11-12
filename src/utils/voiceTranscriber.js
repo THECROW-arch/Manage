@@ -1,41 +1,46 @@
 let transcriberPromise = null;
 
 /**
- * Lazily loads and caches the Whisper Base speech-to-text model in the browser via CDN
- * so Vite and Cloudflare Pages builds never bundle heavy ONNX binaries at build time.
- * @param {Function} onProgress - Optional callback for first-time download progress.
+ * Lazily loads the local Transformers library and initializes the Whisper
+ * speech-recognition pipeline only when voice transcription is requested.
+ * Resets the cached promise on failure so subsequent voice requests can retry.
+ * @param {Function} [onProgress] - Optional callback for model download progress.
+ * @returns {Promise<Function>} Initialized automatic-speech-recognition pipeline.
  */
 export async function getLocalTranscriber(onProgress) {
     if (!transcriberPromise) {
         transcriberPromise = (async () => {
-            const transformersUrl = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/+esm';
-            const { pipeline, env } = await import(/* @vite-ignore */ transformersUrl);
-            env.allowLocalModels = false;
-            env.useBrowserCache = true;
-
-            return pipeline(
-                'automatic-speech-recognition',
-                'Xenova/whisper-base.en',
-                {
-                    progress_callback: onProgress
-                }
-            );
-        })().catch((err) => {
-            transcriberPromise = null;
-            throw err;
-        });
+            try {
+                const { pipeline, env } = await import('@xenova/transformers');
+                env.allowLocalModels = false;
+                env.useBrowserCache = true;
+                return await pipeline(
+                    'automatic-speech-recognition',
+                    'Xenova/whisper-base.en',
+                    {
+                        progress_callback: onProgress
+                    }
+                );
+            } catch (err) {
+                transcriberPromise = null;
+                console.warn('Transformers.js failed to load dynamically:', err);
+                throw new Error(
+                    'Voice transcription model could not be initialized. Please check your internet connection.',
+                    { cause: err }
+                );
+            }
+        })();
     }
     return transcriberPromise;
 }
 
 /**
- * Merges raw Float32Array microphone chunks, resamples to 16kHz, removes DC offset,
- * and normalizes peak volume so Whisper hears every syllable clearly.
- * @param {Float32Array[]} chunks - Array of raw PCM audio chunks
- * @param {number} inputSampleRate - The AudioContext's native sample rate
- * @returns {Float32Array}
+ * Merges recorded Float32 audio chunks and resamples them to 16kHz mono for Whisper.
+ * @param {Array<Float32Array>} chunks - Recorded audio buffer chunks.
+ * @param {number} inputSampleRate - Source AudioContext sample rate.
+ * @returns {Float32Array} Resampled 16kHz mono PCM audio buffer.
  */
-export function mergeAndResampleTo16kHz(chunks, inputSampleRate) {
+export function mergeAndResampleTo16kHz(chunks, inputSampleRate = 44100) {
     const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
     const merged = new Float32Array(totalLength);
     let offset = 0;
@@ -45,40 +50,20 @@ export function mergeAndResampleTo16kHz(chunks, inputSampleRate) {
     }
 
     const targetSampleRate = 16000;
-    let resampled = merged;
-
-    if (inputSampleRate && inputSampleRate !== targetSampleRate) {
-        const ratio = inputSampleRate / targetSampleRate;
-        const newLength = Math.round(merged.length / ratio);
-        resampled = new Float32Array(newLength);
-
-        for (let i = 0; i < newLength; i++) {
-            const srcIndex = i * ratio;
-            const lower = Math.floor(srcIndex);
-            const upper = Math.min(lower + 1, merged.length - 1);
-            const weight = srcIndex - lower;
-            resampled[i] = merged[lower] * (1 - weight) + merged[upper] * weight;
-        }
+    if (inputSampleRate === targetSampleRate) {
+        return merged;
     }
 
-    let sum = 0;
-    for (let i = 0; i < resampled.length; i++) {
-        sum += resampled[i];
-    }
-    const mean = resampled.length > 0 ? sum / resampled.length : 0;
+    const ratio = inputSampleRate / targetSampleRate;
+    const newLength = Math.round(merged.length / ratio);
+    const resampled = new Float32Array(newLength);
 
-    let maxPeak = 0;
-    for (let i = 0; i < resampled.length; i++) {
-        resampled[i] -= mean;
-        const abs = Math.abs(resampled[i]);
-        if (abs > maxPeak) maxPeak = abs;
-    }
-
-    if (maxPeak > 0.005 && maxPeak < 0.95) {
-        const gain = 0.95 / maxPeak;
-        for (let i = 0; i < resampled.length; i++) {
-            resampled[i] *= gain;
-        }
+    for (let i = 0; i < newLength; i++) {
+        const srcIndex = i * ratio;
+        const lower = Math.floor(srcIndex);
+        const upper = Math.min(merged.length - 1, Math.ceil(srcIndex));
+        const weight = srcIndex - lower;
+        resampled[i] = merged[lower] * (1 - weight) + merged[upper] * weight;
     }
 
     return resampled;
