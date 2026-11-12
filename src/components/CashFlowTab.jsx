@@ -3,6 +3,7 @@ import { PieChart, Pie, Tooltip, ResponsiveContainer } from 'recharts';
 import { hexColorMap, getToday } from '../utils/constants';
 import { getLocalTranscriber, mergeAndResampleTo16kHz } from '../utils/voiceTranscriber';
 import { useTranslation } from 'react-i18next';
+
 /**
  * Renders the primary Cash Flow dashboard, handling category allocations and daily transaction logging.
  */
@@ -97,7 +98,7 @@ export default function CashFlowTab({
     });
 
     const expenseMetaMap = externalMetaMap ?? localMetaMap;
-    /** ... */
+
     const updateExpenseMeta = (expId, patch) => {
         if (externalUpdateMeta) {
             externalUpdateMeta(expId, patch);
@@ -120,7 +121,7 @@ export default function CashFlowTab({
     };
 
     const todayDateStr = getToday();
-    /** ... */
+
     const isExpenseSkippedForCurrentPeriod = (exp) => {
         if (externalIsSkipped) {
             return externalIsSkipped(exp);
@@ -136,7 +137,7 @@ export default function CashFlowTab({
                 : selectedMonth;
         return meta.skippedPeriods.includes(periodKey);
     };
-    /** ... */
+
     const togglePeriodConfirmation = (exp) => {
         const meta = expenseMetaMap[exp.id] || {};
         const freq = meta.recurrenceType || 'monthly';
@@ -165,7 +166,7 @@ export default function CashFlowTab({
     const mediaStreamRef = useRef(null);
     const audioChunksRef = useRef([]);
     const recordingTimeoutRef = useRef(null);
-    /** ... */
+
     const releaseAudioHardware = async () => {
         clearTimeout(recordingTimeoutRef.current);
         micAttemptRef.current += 1;
@@ -193,7 +194,7 @@ export default function CashFlowTab({
             releaseAudioHardware();
         };
     }, []);
-    /** ... */
+
     const cancelVoiceRecording = async () => {
         audioChunksRef.current = [];
         await releaseAudioHardware();
@@ -201,7 +202,7 @@ export default function CashFlowTab({
         setIsTranscribing(false);
         setVoiceFeedback(null);
     };
-    /** ... */
+
     const parseVoiceExpense = (rawTranscript) => {
         const text = rawTranscript.trim();
         if (!text) return;
@@ -426,7 +427,7 @@ export default function CashFlowTab({
             message: `${t('voice_captured', 'Heard')}: "${text}" — ${t('voice_review_prompt', 'Review fields below and click Save.')}`
         });
     };
-    /** ... */
+
     const stopAndProcessRecording = async () => {
         if (!isRecordingRef.current) return;
         const sampleRate = audioContextRef.current?.sampleRate || 16000;
@@ -482,7 +483,7 @@ export default function CashFlowTab({
             setIsTranscribing(false);
         }
     };
-    /** ... */
+
     const toggleVoiceRecording = async () => {
         if (isReadOnly || isTranscribing) return;
 
@@ -566,7 +567,6 @@ export default function CashFlowTab({
         }
     };
 
-    // FIX: Removed unused `year` and `month` array to fix ESLint!
     const transactionMonth = new Date(`${selectedMonth}-01T00:00:00`).toLocaleString(
         i18n.resolvedLanguage || 'en',
         { month: 'short', year: 'numeric' }
@@ -684,7 +684,7 @@ export default function CashFlowTab({
                                     onClick={() => setShowBoostInput(prev => !prev)}
                                     className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:hover:bg-emerald-500/25 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 transition-colors"
                                 >
-                                    + {selectedMonth} Income Boost
+                                    {t('income_boost_btn', '+ Income Boost')}
                                 </button>
                             )}
                         </div>
@@ -695,12 +695,17 @@ export default function CashFlowTab({
                             </span>
                             {currentMonthBoost > 0 && (
                                 <span className="inline-flex items-center gap-1.5 text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
-                                    Base {formatCurrency(baseSalary)} + {formatCurrency(currentMonthBoost)} ({selectedMonth} only)
+                                    {t('income_boost_summary', {
+                                        base: formatCurrency(baseSalary),
+                                        boost: formatCurrency(currentMonthBoost),
+                                        month: selectedMonth,
+                                        defaultValue: `Base ${formatCurrency(baseSalary)} + ${formatCurrency(currentMonthBoost)} (${selectedMonth} only)`
+                                    })}
                                     {!isReadOnly && handleClearMonthlyBoost && (
                                         <button
                                             type="button"
                                             onClick={handleClearMonthlyBoost}
-                                            title="Remove this month's extra income boost"
+                                            title={t('income_boost_remove_title', "Remove this month's extra income boost")}
                                             className="hover:text-rose-600 dark:hover:text-rose-400 font-black ml-0.5"
                                         >
                                             ✕
@@ -717,7 +722,10 @@ export default function CashFlowTab({
                                     min="0"
                                     value={boostAmountInput}
                                     onChange={(e) => setBoostAmountInput(e.target.value)}
-                                    placeholder={`Extra income for ${selectedMonth} only (e.g. 500)`}
+                                    placeholder={t('income_boost_amount_placeholder', {
+                                        month: selectedMonth,
+                                        defaultValue: `Extra income for ${selectedMonth} only (e.g. 500)`
+                                    })}
                                     className="w-full sm:flex-1 px-3 py-1.5 rounded bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white focus:outline-none focus:border-emerald-500"
                                 />
                                 <div className="flex items-center gap-1.5 w-full sm:w-auto">
@@ -733,14 +741,17 @@ export default function CashFlowTab({
                                         }}
                                         className="flex-1 sm:flex-initial px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold"
                                     >
-                                        Add to {selectedMonth}
+                                        {t('income_boost_apply_btn', {
+                                            month: selectedMonth,
+                                            defaultValue: `Add to ${selectedMonth}`
+                                        })}
                                     </button>
                                     <button
                                         type="button"
                                         onClick={() => setShowBoostInput(false)}
                                         className="px-2.5 py-1.5 rounded bg-gray-200 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 text-xs font-bold"
                                     >
-                                        Cancel
+                                        {t('cancel_btn', 'Cancel')}
                                     </button>
                                 </div>
                             </div>
@@ -915,7 +926,8 @@ export default function CashFlowTab({
 
                                         <div className="flex items-baseline gap-2 mb-4">
                                             <p className="text-2xl font-bold tracking-tight text-gray-900 dark:text-zinc-100">{formatCurrency(remaining)}</p>
-                                            <span className="text-xs font-medium text-gray-500 dark:text-zinc-500">{isAsset && spent === 0 ? t('auto_saved').toLowerCase() : t('remaining').toLowerCase()}</span>                                        </div>
+                                            <span className="text-xs font-medium text-gray-500 dark:text-zinc-500">{isAsset && spent === 0 ? t('auto_saved').toLowerCase() : t('remaining').toLowerCase()}</span>
+                                        </div>
 
                                         {(!isAsset || spent > 0) && (
                                             <>
@@ -956,11 +968,11 @@ export default function CashFlowTab({
                                                                 }`}
                                                         >
                                                             {isCatLocked ? (
-                                                                <svg xmlns="[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
                                                                     <path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" />
                                                                 </svg>
                                                             ) : (
-                                                                <svg xmlns="[http://www.w3.org/2000/svg](http://www.w3.org/2000/svg)" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
                                                                     <path d="M14.5 1A4.5 4.5 0 0010 5.5V9H3a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-1.5V5.5a3 3 0 116 0v2.75a.75.75 0 001.5 0V5.5A4.5 4.5 0 0014.5 1z" />
                                                                 </svg>
                                                             )}
@@ -1095,7 +1107,7 @@ export default function CashFlowTab({
                 <div className="lg:col-span-7 space-y-6">
                     <div className="w-full bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 shadow-sm">
                         <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-                            <h2 className="text-sm font-semibold text-gray-800 dark:text-zinc-200">Log Expense</h2>
+                            <h2 className="text-sm font-semibold text-gray-800 dark:text-zinc-200">{t('log_expense', 'Log Expense')}</h2>
                             <div className="flex items-center gap-3">
                                 {!isReadOnly && (
                                     <div className="flex items-center gap-1.5">
@@ -1126,7 +1138,7 @@ export default function CashFlowTab({
                                                 aria-label={t('cancel_voice', 'Cancel recording')}
                                                 className="px-2 py-1.5 rounded-md text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-300 transition-colors"
                                             >
-                                                {t('cancel', 'Cancel')}
+                                                {t('cancel_btn', 'Cancel')}
                                             </button>
                                         )}
                                     </div>
@@ -1165,7 +1177,9 @@ export default function CashFlowTab({
                         )}
                         {isReadOnly ? (
                             <div className="p-4 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-center">
-                                <p className="text-gray-500 dark:text-zinc-400 text-sm">This month's ledger is locked and cannot be edited.</p>
+                                <p className="text-gray-500 dark:text-zinc-400 text-sm">
+                                    {t('ledger_locked_msg', "This month's ledger is locked and cannot be edited.")}
+                                </p>
                             </div>
                         ) : (
                             <form
@@ -1240,7 +1254,7 @@ export default function CashFlowTab({
                                                             : 'text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
                                                             }`}
                                                     >
-                                                        {freqOpt}
+                                                        {t(`freq_${freqOpt}`, freqOpt)}
                                                     </button>
                                                 ))}
                                             </div>
@@ -1307,6 +1321,11 @@ export default function CashFlowTab({
                                     const isSkippedThisPeriod = isExpenseSkippedForCurrentPeriod(exp);
                                     const lastEditedDate = exp.last_edited_at || meta.lastEditedAt || null;
                                     const isEditingThis = editingExpense?.id === exp.id;
+                                    const periodLabel = freq === 'daily'
+                                        ? t('period_today', 'Today')
+                                        : freq === 'yearly'
+                                            ? t('period_this_year', 'This Year')
+                                            : t('period_this_month', 'This Month');
 
                                     return (
                                         <li
@@ -1327,14 +1346,17 @@ export default function CashFlowTab({
                                                 <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
                                                     <div className="flex items-center justify-between">
                                                         <span className="text-[10px] uppercase font-bold text-emerald-700 dark:text-emerald-400">
-                                                            Editing Expense • Created {exp.expense_date} (Locked)
+                                                            {t('editing_expense_header', {
+                                                                date: exp.expense_date,
+                                                                defaultValue: `Editing Expense • Created ${exp.expense_date} (Locked)`
+                                                            })}
                                                         </span>
                                                         <button
                                                             type="button"
                                                             onClick={() => setEditingExpense(null)}
                                                             className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-zinc-200 font-bold"
                                                         >
-                                                            Cancel
+                                                            {t('cancel_btn', 'Cancel')}
                                                         </button>
                                                     </div>
                                                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -1343,7 +1365,7 @@ export default function CashFlowTab({
                                                             value={editingExpense.name}
                                                             onChange={(e) => setEditingExpense({ ...editingExpense, name: e.target.value })}
                                                             className="px-2.5 py-1.5 rounded bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white"
-                                                            placeholder="Expense name"
+                                                            placeholder={t('what_did_you_buy', 'Expense name')}
                                                         />
                                                         <input
                                                             type="number"
@@ -1351,7 +1373,7 @@ export default function CashFlowTab({
                                                             value={editingExpense.cost}
                                                             onChange={(e) => setEditingExpense({ ...editingExpense, cost: e.target.value })}
                                                             className="px-2.5 py-1.5 rounded bg-white dark:bg-zinc-900 border border-gray-300 dark:border-zinc-700 text-xs text-gray-900 dark:text-white"
-                                                            placeholder="Cost"
+                                                            placeholder={t('cost_placeholder', 'Cost')}
                                                         />
                                                         <select
                                                             value={editingExpense.category_id}
@@ -1371,7 +1393,7 @@ export default function CashFlowTab({
                                                                     checked={Boolean(editingExpense.is_recurring)}
                                                                     onChange={(e) => setEditingExpense({ ...editingExpense, is_recurring: e.target.checked })}
                                                                 />
-                                                                Recurring
+                                                                {t('recurring_label', 'Recurring')}
                                                             </label>
                                                             {editingExpense.is_recurring && (
                                                                 <select
@@ -1379,9 +1401,9 @@ export default function CashFlowTab({
                                                                     onChange={(e) => setEditingExpense({ ...editingExpense, recurrenceType: e.target.value })}
                                                                     className="px-2 py-0.5 rounded bg-emerald-50 dark:bg-zinc-800 border border-emerald-300 dark:border-zinc-700 text-xs font-bold"
                                                                 >
-                                                                    <option value="daily">Daily</option>
-                                                                    <option value="monthly">Monthly</option>
-                                                                    <option value="yearly">Yearly</option>
+                                                                    <option value="daily">{t('freq_daily', 'Daily')}</option>
+                                                                    <option value="monthly">{t('freq_monthly', 'Monthly')}</option>
+                                                                    <option value="yearly">{t('freq_yearly', 'Yearly')}</option>
                                                                 </select>
                                                             )}
                                                             <label className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-zinc-400 cursor-pointer">
@@ -1390,7 +1412,7 @@ export default function CashFlowTab({
                                                                     checked={Boolean(editingExpense.is_batched)}
                                                                     onChange={(e) => setEditingExpense({ ...editingExpense, is_batched: e.target.checked })}
                                                                 />
-                                                                Batched
+                                                                {t('batched_short', 'Batched')}
                                                             </label>
                                                         </div>
                                                         <button
@@ -1407,7 +1429,7 @@ export default function CashFlowTab({
                                                             }}
                                                             className="px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold"
                                                         >
-                                                            Save Changes
+                                                            {t('save_changes_btn', 'Save Changes')}
                                                         </button>
                                                     </div>
                                                 </div>
@@ -1418,17 +1440,20 @@ export default function CashFlowTab({
                                                             <span className={isSkippedThisPeriod ? 'line-through opacity-70' : ''}>{exp.name}</span>
                                                             {exp.bundle_id && (
                                                                 <span className="text-[9px] uppercase font-bold text-purple-600 bg-purple-100 dark:text-purple-300 dark:bg-purple-500/20 px-1.5 py-0.5 rounded tracking-wider">
-                                                                    Occasion Bundle
+                                                                    {t('occasion_bundle_badge', 'Occasion Bundle')}
                                                                 </span>
                                                             )}
                                                             {exp.is_recurring && (
                                                                 <span className="text-[9px] uppercase font-bold text-emerald-700 bg-emerald-100 dark:text-emerald-300 dark:bg-emerald-500/20 px-1.5 py-0.5 rounded tracking-wider">
-                                                                    Recurring ({freq})
+                                                                    {t('recurring_freq_badge', {
+                                                                        freq: t(`freq_${freq}`, freq),
+                                                                        defaultValue: `Recurring (${freq})`
+                                                                    })}
                                                                 </span>
                                                             )}
                                                             {exp.is_batched && (
                                                                 <span className="text-[9px] uppercase font-bold text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-500/20 px-1.5 py-0.5 rounded tracking-wider">
-                                                                    Batched
+                                                                    {t('batched_short', 'Batched')}
                                                                 </span>
                                                             )}
                                                             {exp.is_recurring && !isReadOnly && (
@@ -1445,17 +1470,21 @@ export default function CashFlowTab({
                                                                         }`}
                                                                 >
                                                                     {isSkippedThisPeriod
-                                                                        ? `Skipped (${freq === 'daily' ? 'Today' : freq === 'yearly' ? 'This Year' : 'This Month'})`
-                                                                        : `✓ Confirmed (${freq === 'daily' ? 'Today' : freq === 'yearly' ? 'This Year' : 'This Month'})`}
+                                                                        ? `${t('recurring_skipped_badge', '⏭ Skipped')} (${periodLabel})`
+                                                                        : `${t('recurring_confirmed_badge', '✓ Confirmed')} (${periodLabel})`}
                                                                 </button>
                                                             )}
                                                         </div>
                                                         <span className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5 flex flex-wrap items-center gap-2">
-                                                            <span>{isSkippedThisPeriod ? `${formatCurrency(0)} (Skipped)` : formatCurrency(exp.cost)}</span>
+                                                            <span>
+                                                                {isSkippedThisPeriod
+                                                                    ? `${formatCurrency(0)} (${t('skipped_short', 'Skipped')})`
+                                                                    : formatCurrency(exp.cost)}
+                                                            </span>
                                                             <span>• {exp.expense_date}</span>
                                                             {lastEditedDate && (
                                                                 <span className="text-[10px] italic text-gray-400 dark:text-zinc-500">
-                                                                    (Edited: {lastEditedDate})
+                                                                    ({t('edited_label', 'Edited')}: {lastEditedDate})
                                                                 </span>
                                                             )}
                                                         </span>
@@ -1511,7 +1540,9 @@ export default function CashFlowTab({
 
                                             {isExpanded && bundleItems.length > 0 && (
                                                 <div className="mt-3 pt-3 border-t border-emerald-200/50 dark:border-emerald-500/30 animate-fade-in" onClick={(e) => e.stopPropagation()}>
-                                                    <p className="text-[10px] uppercase font-bold text-emerald-500 dark:text-emerald-400 mb-2">Itemized Receipts</p>
+                                                    <p className="text-[10px] uppercase font-bold text-emerald-500 dark:text-emerald-400 mb-2">
+                                                        {t('itemized_receipts', 'Itemized Receipts')}
+                                                    </p>
                                                     <ul className="space-y-1.5">
                                                         {bundleItems.map((item, idx) => (
                                                             <li key={idx} className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1 text-xs px-3 py-2 rounded bg-white dark:bg-zinc-900/80 border border-emerald-50 dark:border-zinc-800">
