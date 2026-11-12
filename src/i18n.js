@@ -1614,6 +1614,8 @@ Object.entries(phase12Translations).forEach(([lang, bundle]) => {
 });
 const phase13Translations = {
   en: {
+    log_expense: 'Log Expense',
+    recurring_label: 'Recurring',
     income_boost_btn: '+ Income Boost',
     income_boost_summary: 'Base {{base}} + {{boost}} ({{month}} only)',
     income_boost_remove_title: "Remove this month's extra income boost",
@@ -1649,6 +1651,8 @@ const phase13Translations = {
     ai_send_btn: 'Send'
   },
   fr: {
+    log_expense: 'Enregistrer une Dépense',
+    recurring_label: 'Récurrent',
     income_boost_btn: '+ Revenu Bonus',
     income_boost_summary: 'Base {{base}} + {{boost}} ({{month}} uniquement)',
     income_boost_remove_title: 'Supprimer le revenu bonus de ce mois',
@@ -1684,6 +1688,8 @@ const phase13Translations = {
     ai_send_btn: 'Envoyer'
   },
   es: {
+    log_expense: 'Registrar Gasto',
+    recurring_label: 'Recurrente',
     income_boost_btn: '+ Ingreso Extra',
     income_boost_summary: 'Base {{base}} + {{boost}} (solo {{month}})',
     income_boost_remove_title: 'Eliminar el ingreso extra de este mes',
@@ -1719,6 +1725,8 @@ const phase13Translations = {
     ai_send_btn: 'Enviar'
   },
   ar: {
+    log_expense: 'تسجيل مصروف',
+    recurring_label: 'متكرر',
     income_boost_btn: '+ دخل إضافي',
     income_boost_summary: 'الأساسي {{base}} + {{boost}} ({{month}} فقط)',
     income_boost_remove_title: 'إزالة الدخل الإضافي لهذا الشهر',
@@ -1754,8 +1762,8 @@ const phase13Translations = {
     ai_send_btn: 'إرسال'
   }
 };
-
 Object.entries(phase13Translations).forEach(([lang, bundle]) => {
   i18n.addResourceBundle(lang, 'translation', bundle, true, true);
 });
+
 export default i18n;
