@@ -731,8 +731,11 @@ export default function App() {
    * Sends a confirmation reminder email for recurring expenses in the active period.
    * @param {boolean} isManualTrigger - Whether triggered manually by user button click.
    */
+ const autoReminderAttemptedRef = useRef({});
+
   const handleSendRecurringReminder = async (isManualTrigger = true) => {
-    if (!session?.user?.email || isSendingReminder) return false;
+    if (!session?.user?.email || isSendingReminder) return;
+
     const unconfirmedRecurring = activeMonthlyExpenses
       .filter(exp => exp.is_recurring)
       .map(exp => ({
@@ -749,10 +752,13 @@ export default function App() {
           })
         );
       }
-      return false;
+      return;
     }
 
+    const attemptKey = `${session.user.id}_${selectedMonth}`;
+    autoReminderAttemptedRef.current[attemptKey] = true;
     setIsSendingReminder(true);
+
     try {
       const res = await sendRecurringExpenseReminderEmail({
         userId: session.user.id,
@@ -760,7 +766,8 @@ export default function App() {
         username: username || session.user.email.split('@')[0],
         periodKey: selectedMonth,
         pendingExpenses: unconfirmedRecurring,
-        formatCurrency
+        formatCurrency,
+        onlyIfNotSent: !isManualTrigger
       });
 
       if (res.ok) {
@@ -774,17 +781,20 @@ export default function App() {
             })
           );
         }
-        return true;
       } else if (isManualTrigger && res.error) {
         setAlertMsg(res.error);
       }
-      return false;
+    } catch (err) {
+      console.warn('Manual reminder dispatch failed:', err);
+      if (isManualTrigger) {
+        setAlertMsg(err?.message || 'Failed to send reminder email.');
+      }
     } finally {
       setIsSendingReminder(false);
     }
   };
- // Automatically trigger one recurring expense reminder email per period when enabled
-  const autoReminderAttemptedRef = useRef({});
+
+  // Automatically trigger one recurring expense reminder email per period when enabled
   useEffect(() => {
     if (!session?.user?.email || loadingData || isReadOnly) return;
     if (!emailRemindersEnabled) return;
@@ -810,7 +820,7 @@ export default function App() {
 
     if (unconfirmedRecurring.length === 0) return;
 
-    // Lock this (user, period) for the current session so failures do not trigger a retry loop
+    // Keep the marker locked for the session even if delivery fails so re-renders never loop
     autoReminderAttemptedRef.current[attemptKey] = true;
 
     sendRecurringExpenseReminderEmail({
@@ -821,11 +831,15 @@ export default function App() {
       pendingExpenses: unconfirmedRecurring,
       formatCurrency,
       onlyIfNotSent: true
-    }).then((res) => {
-      if (res?.ok) {
-        setLastReminderPeriod(selectedMonth);
-      }
-    });
+    })
+      .then((res) => {
+        if (res?.ok) {
+          setLastReminderPeriod(selectedMonth);
+        }
+      })
+      .catch((err) => {
+        console.warn('Automatic recurring reminder check failed:', err);
+      });
   }, [
     session,
     username,

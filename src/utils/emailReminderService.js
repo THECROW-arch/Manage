@@ -1,5 +1,8 @@
 import { supabase } from '../supabaseClient';
 
+// Prevents concurrent duplicate dispatches for the same user and period
+const inFlightDispatches = new Map();
+
 /**
  * Escapes HTML special characters to prevent injection inside email templates.
  * @param {string} raw - Raw text string.
@@ -95,13 +98,15 @@ export function buildRecurringReminderEmail({ username, periodKey, pendingExpens
 
 /**
  * Checks Supabase across devices to see if a reminder for the given period was already sent.
+ * Distinguishes 'sent', 'not_sent', and 'unverified' so a failed lookup is never treated
+ * as permission to send. Preserves a positive result when either source confirms delivery.
  * @param {string} userId - Authenticated user UUID.
  * @param {string} periodKey - Active period identifier (e.g. "2026-11").
- * @returns {Promise<boolean>} True if a reminder has already been sent for this period.
+ * @returns {Promise<{state: 'sent' | 'not_sent' | 'unverified', error?: string}>} Verification result.
  */
-async function hasAlreadySentReminderForPeriod(userId, periodKey) {
+async function checkReminderDeliveryStatus(userId, periodKey) {
     try {
-        const [{ data: profileData }, { data: queueData }] = await Promise.all([
+        const [profileRes, queueRes] = await Promise.all([
             supabase
                 .from('profiles')
                 .select('last_reminder_period')
@@ -116,21 +121,40 @@ async function hasAlreadySentReminderForPeriod(userId, periodKey) {
                 .limit(1)
         ]);
 
-        if (profileData?.last_reminder_period === periodKey) return true;
-        if (Array.isArray(queueData) && queueData.length > 0) return true;
+        const profileConfirmed =
+            !profileRes.error && profileRes.data?.last_reminder_period === periodKey;
+        const queueConfirmed =
+            !queueRes.error && Array.isArray(queueRes.data) && queueRes.data.length > 0;
+
+        // Preserve a positive result whenever either source confirms delivery
+        if (profileConfirmed || queueConfirmed) {
+            return { state: 'sent' };
+        }
+
+        // If neither source confirmed delivery and either query failed, do not assume 'not_sent'
+        if (profileRes.error || queueRes.error) {
+            const errMsg =
+                profileRes.error?.message ||
+                queueRes.error?.message ||
+                'Unable to verify reminder delivery status.';
+            console.warn('Could not verify cross-device reminder status:', errMsg);
+            return { state: 'unverified', error: errMsg };
+        }
+
+        return { state: 'not_sent' };
     } catch (err) {
+        const errMsg = err?.message || 'Network error while verifying reminder status.';
         console.warn('Could not verify cross-device reminder status:', err);
+        return { state: 'unverified', error: errMsg };
     }
-    return false;
 }
 
 /**
  * Dispatches a recurring expense confirmation reminder email to the authenticated user.
- * Logs every attempt in Supabase (public.email_reminder_queue) so failures stay auditable,
- * persists last_reminder_period in public.profiles across devices, and returns ok: false
- * whenever delivery or period persistence does not succeed.
+ * Deduplicates concurrent in-flight requests, logs attempts in public.email_reminder_queue,
+ * and persists last_reminder_period in public.profiles across devices.
  * @param {object} params - Dispatch parameters.
- * @returns {Promise<{ok: boolean, status?: string, alreadySent?: boolean, error?: string}>} Dispatch result.
+ * @returns {Promise<{ok: boolean, status?: string, alreadySent?: boolean, retryable?: boolean, error?: string}>} Dispatch result.
  */
 export async function sendRecurringExpenseReminderEmail({
     userId,
@@ -148,135 +172,166 @@ export async function sendRecurringExpenseReminderEmail({
         return { ok: false, error: 'No recurring expenses require confirmation for this period.' };
     }
 
-    if (onlyIfNotSent) {
-        const alreadySent = await hasAlreadySentReminderForPeriod(userId, periodKey);
-        if (alreadySent) {
-            try {
-                localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
-            } catch {
-                // Ignore localStorage quota errors
-            }
-            return { ok: true, status: 'already_sent', alreadySent: true };
-        }
+    const dispatchKey = `${userId}_${periodKey}`;
+    if (inFlightDispatches.has(dispatchKey)) {
+        return inFlightDispatches.get(dispatchKey);
     }
 
-    const { subject, textBody, htmlBody } = buildRecurringReminderEmail({
-        username,
-        periodKey,
-        pendingExpenses,
-        formatCurrency
-    });
-
-    let deliveryStatus;
-    let deliveryError = null;
-
-    try {
-        const webhookUrl = import.meta.env?.VITE_EMAIL_WEBHOOK_URL;
-        if (webhookUrl) {
-            const resp = await fetch(webhookUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    to: recipientEmail,
-                    subject,
-                    text: textBody,
-                    html: htmlBody,
-                    periodKey
-                })
-            });
-            if (resp.ok) {
-                deliveryStatus = 'sent';
-            } else {
-                deliveryStatus = 'failed';
-                deliveryError = `Email webhook failed with status ${resp.status}.`;
-            }
-        } else {
-            const { error: fnError } = await supabase.functions.invoke('send-recurring-reminder', {
-                body: {
-                    to: recipientEmail,
-                    subject,
-                    text: textBody,
-                    html: htmlBody,
-                    periodKey
+    const dispatchPromise = (async () => {
+        if (onlyIfNotSent) {
+            const verification = await checkReminderDeliveryStatus(userId, periodKey);
+            if (verification.state === 'sent') {
+                try {
+                    localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
+                } catch {
+                    // Ignore localStorage quota errors
                 }
-            });
-            if (!fnError) {
-                deliveryStatus = 'sent';
+                return { ok: true, status: 'already_sent', alreadySent: true };
+            }
+            if (verification.state === 'unverified') {
+                return {
+                    ok: false,
+                    status: 'verification_failed',
+                    retryable: true,
+                    error: verification.error || 'Could not verify whether reminder was already sent.'
+                };
+            }
+        }
+
+        const { subject, textBody, htmlBody } = buildRecurringReminderEmail({
+            username,
+            periodKey,
+            pendingExpenses,
+            formatCurrency
+        });
+
+        let deliveryStatus;
+        let deliveryError = null;
+
+        try {
+            const webhookUrl = import.meta.env?.VITE_EMAIL_WEBHOOK_URL;
+            if (webhookUrl) {
+                const resp = await fetch(webhookUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        to: recipientEmail,
+                        subject,
+                        text: textBody,
+                        html: htmlBody,
+                        periodKey
+                    })
+                });
+                if (resp.ok) {
+                    deliveryStatus = 'sent';
+                } else {
+                    deliveryStatus = 'failed';
+                    deliveryError = `Email webhook failed with status ${resp.status}.`;
+                }
             } else {
-                deliveryStatus = 'failed';
-                deliveryError = fnError.message || 'Failed to invoke send-recurring-reminder Edge Function.';
+                const { error: fnError } = await supabase.functions.invoke('send-recurring-reminder', {
+                    body: {
+                        to: recipientEmail,
+                        subject,
+                        text: textBody,
+                        html: htmlBody,
+                        periodKey
+                    }
+                });
+                if (!fnError) {
+                    deliveryStatus = 'sent';
+                } else {
+                    deliveryStatus = 'failed';
+                    deliveryError = fnError.message || 'Failed to invoke send-recurring-reminder Edge Function.';
+                }
             }
+        } catch (err) {
+            deliveryStatus = 'failed';
+            deliveryError = err.message || 'Network error while dispatching reminder email.';
         }
-    } catch (err) {
-        deliveryStatus = 'failed';
-        deliveryError = err.message || 'Network error while dispatching reminder email.';
-    }
 
-    // Always insert the audit row into email_reminder_queue so both sent and failed attempts are recorded
-    let queueInserted = false;
-    try {
-        const { error: dbError } = await supabase.from('email_reminder_queue').insert([
-            {
-                user_id: userId,
-                recipient_email: recipientEmail,
-                period_key: periodKey,
-                subject,
-                html_body: htmlBody,
-                text_body: textBody,
-                expense_count: pendingExpenses.length,
-                status: deliveryStatus
+        // Always insert the audit row into email_reminder_queue so both sent and failed attempts are recorded
+        let queueInserted = false;
+        try {
+            const { error: dbError } = await supabase.from('email_reminder_queue').insert([
+                {
+                    user_id: userId,
+                    recipient_email: recipientEmail,
+                    period_key: periodKey,
+                    subject,
+                    html_body: htmlBody,
+                    text_body: textBody,
+                    expense_count: pendingExpenses.length,
+                    status: deliveryStatus
+                }
+            ]);
+
+            if (dbError) {
+                console.warn('Could not write to email_reminder_queue:', dbError.message);
+            } else {
+                queueInserted = true;
             }
-        ]);
-
-        if (dbError) {
-            console.warn('Could not write to email_reminder_queue:', dbError.message);
-        } else {
-            queueInserted = true;
+        } catch (dbErr) {
+            console.warn('Failed to log email reminder attempt:', dbErr);
         }
-    } catch (dbErr) {
-        console.warn('Failed to log email reminder attempt:', dbErr);
-    }
 
-    if (deliveryStatus !== 'sent') {
-        return {
-            ok: false,
-            status: 'failed',
-            error: deliveryError || 'Failed to deliver reminder email.'
-        };
-    }
-
-    // Persist the sent period in Supabase profiles across devices
-    let profileUpdated = false;
-    try {
-        const { error: profileUpdateError } = await supabase
-            .from('profiles')
-            .upsert(
-                { user_id: userId, last_reminder_period: periodKey },
-                { onConflict: 'user_id' }
-            );
-
-        if (profileUpdateError) {
-            console.warn('Could not persist last_reminder_period to profile:', profileUpdateError.message);
-        } else {
-            profileUpdated = true;
+        if (deliveryStatus !== 'sent') {
+            return {
+                ok: false,
+                status: 'failed',
+                error: deliveryError || 'Failed to deliver reminder email.'
+            };
         }
-    } catch (profileErr) {
-        console.warn('Failed to update profile last_reminder_period:', profileErr);
-    }
 
-    if (!profileUpdated && !queueInserted) {
-        return {
-            ok: false,
-            status: 'persistence_failed',
-            error: 'Email was sent, but the sent-period record could not be saved to Supabase.'
-        };
-    }
+        // Persist the sent period in Supabase profiles across devices
+        let profileUpdated = false;
+        try {
+            const { data: updatedRows, error: profileUpdateError } = await supabase
+                .from('profiles')
+                .update({ last_reminder_period: periodKey })
+                .eq('user_id', userId)
+                .select('user_id');
 
+            if (!profileUpdateError && Array.isArray(updatedRows) && updatedRows.length > 0) {
+                profileUpdated = true;
+            } else {
+                const { error: upsertError } = await supabase
+                    .from('profiles')
+                    .upsert(
+                        { user_id: userId, last_reminder_period: periodKey },
+                        { onConflict: 'user_id' }
+                    );
+                if (upsertError) {
+                    console.warn('Could not persist last_reminder_period to profile:', upsertError.message);
+                } else {
+                    profileUpdated = true;
+                }
+            }
+        } catch (profileErr) {
+            console.warn('Failed to update profile last_reminder_period:', profileErr);
+        }
+
+        if (!profileUpdated && !queueInserted) {
+            return {
+                ok: false,
+                status: 'persistence_failed',
+                error: 'Email was sent, but the sent-period record could not be saved to Supabase.'
+            };
+        }
+
+        try {
+            localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
+        } catch {
+            // Ignore storage quota errors
+        }
+
+        return { ok: true, status: 'sent' };
+    })();
+
+    inFlightDispatches.set(dispatchKey, dispatchPromise);
     try {
-        localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
-    } catch {
-        // Ignore storage quota errors
+        return await dispatchPromise;
+    } finally {
+        inFlightDispatches.delete(dispatchKey);
     }
-
-    return { ok: true, status: 'sent' };
 }

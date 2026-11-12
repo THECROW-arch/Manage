@@ -71,10 +71,34 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const { to, subject, text, html, periodKey } = await req.json();
+    // 2. Parse request JSON in its own try block and return 400 on malformed body
+    let payload: Record<string, unknown>;
+    try {
+      const parsed = await req.json();
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return new Response(
+          JSON.stringify({ error: "Request body must be a valid JSON object." }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          }
+        );
+      }
+      payload = parsed as Record<string, unknown>;
+    } catch {
+      return new Response(
+        JSON.stringify({ error: "Malformed JSON in request body." }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        }
+      );
+    }
+
+    const { to, subject, text, html, periodKey } = payload;
     const requestedTo = String(to || "").trim().toLowerCase();
 
-    // 2. Restrict recipient strictly to the authenticated caller's own email address
+    // 3. Restrict recipient strictly to the authenticated caller's own email address
     if (requestedTo && requestedTo !== authenticatedEmail) {
       return new Response(
         JSON.stringify({ error: "Forbidden: recipient email must match the authenticated user." }),
@@ -119,22 +143,27 @@ Deno.serve(async (req: Request) => {
       body: JSON.stringify({
         from: fromAddress,
         to: [authUser.email],
-        subject,
-        html,
-        text,
+        subject: String(subject),
+        html: html ? String(html) : undefined,
+        text: text ? String(text) : undefined,
         tags: periodKey ? [{ name: "period", value: String(periodKey) }] : undefined
       })
     });
 
     const resultData = await resendResponse.json().catch(() => ({}));
 
+    // 4. Return 502 Bad Gateway on upstream provider error so 401/403 API key errors are not misread as user auth errors
     if (!resendResponse.ok) {
+      console.error("Resend provider error:", {
+        status: resendResponse.status,
+        details: resultData
+      });
       return new Response(
         JSON.stringify({
-          error: resultData?.message || `Email provider returned HTTP ${resendResponse.status}`
+          error: "Email delivery provider failed to process the reminder request."
         }),
         {
-          status: resendResponse.status,
+          status: 502,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
         }
       );
@@ -148,10 +177,13 @@ Deno.serve(async (req: Request) => {
       }
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unexpected error in send-recurring-reminder";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
-    });
+    console.error("Unexpected error in send-recurring-reminder:", err);
+    return new Response(
+      JSON.stringify({ error: "Unexpected server error in send-recurring-reminder." }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      }
+    );
   }
 });
