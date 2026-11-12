@@ -810,6 +810,7 @@ export default function App() {
 
     if (unconfirmedRecurring.length === 0) return;
 
+    // Lock this (user, period) for the current session so failures do not trigger a retry loop
     autoReminderAttemptedRef.current[attemptKey] = true;
 
     sendRecurringExpenseReminderEmail({
@@ -818,12 +819,11 @@ export default function App() {
       username: username || session.user.email.split('@')[0],
       periodKey: selectedMonth,
       pendingExpenses: unconfirmedRecurring,
-      formatCurrency
+      formatCurrency,
+      onlyIfNotSent: true
     }).then((res) => {
       if (res?.ok) {
         setLastReminderPeriod(selectedMonth);
-      } else {
-        delete autoReminderAttemptedRef.current[attemptKey];
       }
     });
   }, [

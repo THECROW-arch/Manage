@@ -94,11 +94,43 @@ export function buildRecurringReminderEmail({ username, periodKey, pendingExpens
 }
 
 /**
+ * Checks Supabase across devices to see if a reminder for the given period was already sent.
+ * @param {string} userId - Authenticated user UUID.
+ * @param {string} periodKey - Active period identifier (e.g. "2026-11").
+ * @returns {Promise<boolean>} True if a reminder has already been sent for this period.
+ */
+async function hasAlreadySentReminderForPeriod(userId, periodKey) {
+    try {
+        const [{ data: profileData }, { data: queueData }] = await Promise.all([
+            supabase
+                .from('profiles')
+                .select('last_reminder_period')
+                .eq('user_id', userId)
+                .maybeSingle(),
+            supabase
+                .from('email_reminder_queue')
+                .select('id')
+                .eq('user_id', userId)
+                .eq('period_key', periodKey)
+                .eq('status', 'sent')
+                .limit(1)
+        ]);
+
+        if (profileData?.last_reminder_period === periodKey) return true;
+        if (Array.isArray(queueData) && queueData.length > 0) return true;
+    } catch (err) {
+        console.warn('Could not verify cross-device reminder status:', err);
+    }
+    return false;
+}
+
+/**
  * Dispatches a recurring expense confirmation reminder email to the authenticated user.
  * Logs every attempt in Supabase (public.email_reminder_queue) so failures stay auditable,
- * and returns ok: false whenever delivery does not succeed.
+ * persists last_reminder_period in public.profiles across devices, and returns ok: false
+ * whenever delivery or period persistence does not succeed.
  * @param {object} params - Dispatch parameters.
- * @returns {Promise<{ok: boolean, status?: string, error?: string}>} Dispatch result.
+ * @returns {Promise<{ok: boolean, status?: string, alreadySent?: boolean, error?: string}>} Dispatch result.
  */
 export async function sendRecurringExpenseReminderEmail({
     userId,
@@ -106,13 +138,26 @@ export async function sendRecurringExpenseReminderEmail({
     username,
     periodKey,
     pendingExpenses,
-    formatCurrency
+    formatCurrency,
+    onlyIfNotSent = false
 }) {
     if (!userId || !recipientEmail) {
         return { ok: false, error: 'Missing authenticated user email.' };
     }
     if (!Array.isArray(pendingExpenses) || pendingExpenses.length === 0) {
         return { ok: false, error: 'No recurring expenses require confirmation for this period.' };
+    }
+
+    if (onlyIfNotSent) {
+        const alreadySent = await hasAlreadySentReminderForPeriod(userId, periodKey);
+        if (alreadySent) {
+            try {
+                localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
+            } catch {
+                // Ignore localStorage quota errors
+            }
+            return { ok: true, status: 'already_sent', alreadySent: true };
+        }
     }
 
     const { subject, textBody, htmlBody } = buildRecurringReminderEmail({
@@ -168,6 +213,7 @@ export async function sendRecurringExpenseReminderEmail({
     }
 
     // Always insert the audit row into email_reminder_queue so both sent and failed attempts are recorded
+    let queueInserted = false;
     try {
         const { error: dbError } = await supabase.from('email_reminder_queue').insert([
             {
@@ -184,6 +230,8 @@ export async function sendRecurringExpenseReminderEmail({
 
         if (dbError) {
             console.warn('Could not write to email_reminder_queue:', dbError.message);
+        } else {
+            queueInserted = true;
         }
     } catch (dbErr) {
         console.warn('Failed to log email reminder attempt:', dbErr);
@@ -197,20 +245,37 @@ export async function sendRecurringExpenseReminderEmail({
         };
     }
 
-    // Reliably persist the sent period in Supabase profiles and localStorage immediately upon delivery
+    // Persist the sent period in Supabase profiles across devices
+    let profileUpdated = false;
+    try {
+        const { error: profileUpdateError } = await supabase
+            .from('profiles')
+            .upsert(
+                { user_id: userId, last_reminder_period: periodKey },
+                { onConflict: 'user_id' }
+            );
+
+        if (profileUpdateError) {
+            console.warn('Could not persist last_reminder_period to profile:', profileUpdateError.message);
+        } else {
+            profileUpdated = true;
+        }
+    } catch (profileErr) {
+        console.warn('Failed to update profile last_reminder_period:', profileErr);
+    }
+
+    if (!profileUpdated && !queueInserted) {
+        return {
+            ok: false,
+            status: 'persistence_failed',
+            error: 'Email was sent, but the sent-period record could not be saved to Supabase.'
+        };
+    }
+
     try {
         localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
     } catch {
         // Ignore storage quota errors
-    }
-
-    const { error: profileUpdateError } = await supabase
-        .from('profiles')
-        .update({ last_reminder_period: periodKey })
-        .eq('user_id', userId);
-
-    if (profileUpdateError) {
-        console.warn('Could not persist last_reminder_period to profile:', profileUpdateError.message);
     }
 
     return { ok: true, status: 'sent' };

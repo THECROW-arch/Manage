@@ -1,7 +1,7 @@
 let transcriberPromise = null;
 
 /**
- * Lazily loads the Transformers library and initializes the Whisper
+ * Lazily loads the local Transformers library and initializes the Whisper
  * speech-recognition pipeline only when voice transcription is requested.
  * Resets the cached promise on failure so subsequent voice requests can retry.
  * @param {Function} [onProgress] - Optional callback for model download progress.
@@ -11,9 +11,7 @@ export async function getLocalTranscriber(onProgress) {
     if (!transcriberPromise) {
         transcriberPromise = (async () => {
             try {
-                const cdnUrl = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
-                const transformers = await import(/* @vite-ignore */ cdnUrl);
-                const { pipeline, env } = transformers;
+                const { pipeline, env } = await import('@xenova/transformers');
                 env.allowLocalModels = false;
                 env.useBrowserCache = true;
                 return await pipeline(

@@ -10,6 +10,7 @@ const SUPPORTED_TIERS = [
 ];
 
 const PAID_TIER_SET = new Set(['pro', 'pro_monthly', 'pro_yearly', 'enterprise']);
+const COMPED_PRO_ROLE_SET = new Set(['owner', 'dev', 'special']);
 
 /**
  * Safely encodes a cell for CSV export, quoting all fields, escaping embedded quotes,
@@ -20,7 +21,7 @@ function encodeSafeCSVCell(rawVal) {
     const neutralized = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
     return `"${neutralized.replace(/"/g, '""')}"`;
 }
-/** ... */
+
 export default function OwnerDashboard() {
     const [users, setUsers] = useState([]);
     const [tickets, setTickets] = useState([]);
@@ -37,7 +38,7 @@ export default function OwnerDashboard() {
     const [savingUserIds, setSavingUserIds] = useState(() => new Set());
 
     const fetchRequestIdRef = useRef(0);
-    /** ... */
+
     const fetchCommandCenterData = useCallback(async () => {
         const reqId = ++fetchRequestIdRef.current;
         await Promise.resolve();
@@ -159,7 +160,7 @@ export default function OwnerDashboard() {
         const timer = setTimeout(() => setToastMsg(''), 3500);
         return () => clearTimeout(timer);
     }, [toastMsg]);
-    /** ... */
+
     const handleUpdateUserAccess = async (targetUserId, updates) => {
         const targetUser = users.find((u) => u.user_id === targetUserId);
         if (!targetUser) return;
@@ -188,8 +189,12 @@ export default function OwnerDashboard() {
 
             if (error) throw error;
 
-            // Reconcile from server if a special user was demoted so their true stored tier is reflected
-            if (previousFieldValues.role === 'special' && updates.role && updates.role !== 'special') {
+            // Reconcile from server if a role-comped user (owner/dev/special) was demoted to standard user
+            if (
+                COMPED_PRO_ROLE_SET.has(previousFieldValues.role) &&
+                updates.role &&
+                !COMPED_PRO_ROLE_SET.has(updates.role)
+            ) {
                 const { data: refreshedProfiles, error: refreshErr } = await supabase.rpc('get_all_profiles_for_owner');
                 if (!refreshErr && Array.isArray(refreshedProfiles)) {
                     const serverRow = refreshedProfiles.find((p) => (p.user_id || p.id) === targetUserId);
@@ -199,10 +204,10 @@ export default function OwnerDashboard() {
                             prev.map((u) =>
                                 u.user_id === targetUserId
                                     ? {
-                                        ...u,
-                                        role: String(serverRow.role || updates.role).trim().toLowerCase(),
-                                        subscription_tier: reconciledTier
-                                    }
+                                          ...u,
+                                          role: String(serverRow.role || updates.role).trim().toLowerCase(),
+                                          subscription_tier: reconciledTier
+                                      }
                                     : u
                             )
                         );
@@ -238,7 +243,7 @@ export default function OwnerDashboard() {
             });
         }
     };
-    /** ... */
+
     const handleExportUsersCSV = () => {
         if (users.length === 0) return;
         const headers = ['Username', 'User ID', 'Role', 'Subscription Tier', 'Status', 'Current Streak', 'Joined Date'];
@@ -246,7 +251,9 @@ export default function OwnerDashboard() {
             `@${u.displayName}`,
             u.user_id,
             u.role.toUpperCase(),
-            u.subscription_tier.toUpperCase(),
+            COMPED_PRO_ROLE_SET.has(u.role)
+                ? `FREE PRO (${u.role.toUpperCase()})`
+                : u.subscription_tier.toUpperCase(),
             u.accountStatus.toUpperCase(),
             u.current_streak,
             u.created_at ? new Date(u.created_at).toISOString().slice(0, 10) : 'Active'
@@ -269,8 +276,9 @@ export default function OwnerDashboard() {
     const ownerCount = users.filter((u) => u.role === 'owner').length;
     const devCount = users.filter((u) => u.role === 'dev').length;
     const specialCount = users.filter((u) => u.role === 'special').length;
-    const standardUserCount = Math.max(0, totalUsers - ownerCount - devCount - specialCount);
-    const proUsersCount = users.filter((u) => PAID_TIER_SET.has(u.subscription_tier) && u.role !== 'special').length;
+    const compedProCount = ownerCount + devCount + specialCount;
+    const standardUserCount = Math.max(0, totalUsers - compedProCount);
+    const proUsersCount = users.filter((u) => PAID_TIER_SET.has(u.subscription_tier) && !COMPED_PRO_ROLE_SET.has(u.role)).length;
     const activeBudgetsCount = users.filter((u) => u.salary > 0 || u.current_streak > 0).length;
 
     const totalTickets = tickets.length;
@@ -383,9 +391,9 @@ export default function OwnerDashboard() {
                             RBAC Active
                         </span>
                     </div>
-                    <p className="text-3xl font-black text-gray-900 dark:text-white">{ownerCount + devCount + specialCount}</p>
+                    <p className="text-3xl font-black text-gray-900 dark:text-white">{compedProCount}</p>
                     <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1">
-                        {ownerCount} Owner • {devCount} Dev • {specialCount} Special (Free Pro)
+                        {ownerCount} Owner • {devCount} Dev • {specialCount} Special (All Free Pro)
                     </p>
                 </div>
 
@@ -395,12 +403,12 @@ export default function OwnerDashboard() {
                             Pro Access Breakdown
                         </span>
                         <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
-                            {totalUsers > 0 ? Math.round((proUsersCount / totalUsers) * 100) : 0}% Paid
+                            {totalUsers > 0 ? Math.round(((proUsersCount + compedProCount) / totalUsers) * 100) : 0}% Pro Enabled
                         </span>
                     </div>
-                    <p className="text-3xl font-black text-gray-900 dark:text-white">{proUsersCount + specialCount}</p>
+                    <p className="text-3xl font-black text-gray-900 dark:text-white">{proUsersCount + compedProCount}</p>
                     <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1">
-                        {proUsersCount} Paid Pro • {specialCount} Special (Comped) • {Math.max(0, totalUsers - proUsersCount - specialCount)} Free
+                        {proUsersCount} Paid Pro • {compedProCount} Role-Comped • {Math.max(0, totalUsers - proUsersCount - compedProCount)} Free
                     </p>
                 </div>
 
@@ -438,8 +446,8 @@ export default function OwnerDashboard() {
                         {[
                             { label: 'Standard Users', count: standardUserCount, color: 'bg-emerald-500' },
                             { label: 'Special Users (Free Pro / VIP)', count: specialCount, color: 'bg-amber-500' },
-                            { label: 'Developers (Dev Ops)', count: devCount, color: 'bg-sky-500' },
-                            { label: 'Platform Owners', count: ownerCount, color: 'bg-purple-500' }
+                            { label: 'Developers (Free Pro / Dev Ops)', count: devCount, color: 'bg-sky-500' },
+                            { label: 'Platform Owners (Free Pro)', count: ownerCount, color: 'bg-purple-500' }
                         ].map((item) => {
                             const pct = totalUsers > 0 ? Math.round((item.count / totalUsers) * 100) : 0;
                             return (
@@ -564,6 +572,7 @@ export default function OwnerDashboard() {
                                 filteredUsers.map((u) => {
                                     const isSaving = savingUserIds.has(u.user_id);
                                     const isSpecialRole = u.role === 'special';
+                                    const isCompedProRole = COMPED_PRO_ROLE_SET.has(u.role);
                                     const hasKnownTier = SUPPORTED_TIERS.some((t) => t.value === u.subscription_tier);
 
                                     const roleBadgeClass =
@@ -574,6 +583,13 @@ export default function OwnerDashboard() {
                                                 : u.role === 'special'
                                                     ? 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30'
                                                     : 'bg-gray-100 text-gray-700 border-gray-300 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-700';
+
+                                    const compedTierBadgeClass =
+                                        u.role === 'owner'
+                                            ? 'bg-purple-50 dark:bg-purple-950/50 border-purple-300 dark:border-purple-500/40 text-purple-800 dark:text-purple-300'
+                                            : u.role === 'dev'
+                                                ? 'bg-sky-50 dark:bg-sky-950/50 border-sky-300 dark:border-sky-500/40 text-sky-800 dark:text-sky-300'
+                                                : 'bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-300';
 
                                     return (
                                         <tr
@@ -630,9 +646,9 @@ export default function OwnerDashboard() {
                                             </td>
 
                                             <td className="py-4 px-4">
-                                                {isSpecialRole ? (
-                                                    <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-500/40 text-[11px] font-black text-amber-800 dark:text-amber-300">
-                                                        ★ FREE PRO (SPECIAL)
+                                                {isCompedProRole ? (
+                                                    <span className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-black uppercase ${compedTierBadgeClass}`}>
+                                                        ★ FREE PRO ({u.role})
                                                     </span>
                                                 ) : (
                                                     <select
@@ -667,15 +683,14 @@ export default function OwnerDashboard() {
                                                     value={u.role}
                                                     onChange={(e) => {
                                                         const nextRole = e.target.value;
-                                                        // Preserve the user's underlying subscription_tier when promoting/demoting special role
                                                         handleUpdateUserAccess(u.user_id, { role: nextRole });
                                                     }}
                                                     className="px-2.5 py-1.5 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-700 text-xs font-bold text-gray-800 dark:text-zinc-200 focus:outline-none focus:border-emerald-500 disabled:opacity-50 cursor-pointer"
                                                 >
                                                     <option value="user">USER</option>
                                                     <option value="special">SPECIAL (FREE PRO)</option>
-                                                    <option value="dev">DEV</option>
-                                                    <option value="owner">OWNER</option>
+                                                    <option value="dev">DEV (FREE PRO)</option>
+                                                    <option value="owner">OWNER (FREE PRO)</option>
                                                 </select>
                                             </td>
                                         </tr>
