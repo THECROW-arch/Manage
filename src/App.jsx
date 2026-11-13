@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { supabase } from './supabaseClient';
 import Auth from './Auth';
 import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth } from './utils/constants';
-import { sendRecurringExpenseReminderEmail } from './utils/emailReminderService';
+import { sendRecurringExpenseReminderEmail, parseReminderPeriodMap } from './utils/emailReminderService';
 import Sidebar, { MobileHeader } from './components/Sidebar';
 import CashFlowTab from './components/CashFlowTab';
 import AIAssistantDrawer from './components/AIAssistantDrawer';
@@ -580,36 +580,43 @@ export default function App() {
     return metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
   }, [activeUserId, metaOverridesByUser]);
 
-  const updateExpenseMeta = (expId, patch, syncToDb = true) => {
-    if (!activeUserId || !expId) return;
-    setMetaOverridesByUser(prev => {
-      const current = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
-      const mergedEntry = { ...(current[expId] || {}), ...patch };
-      const next = {
-        ...current,
-        [expId]: mergedEntry
+  const updateExpenseMeta = useCallback((expenseId, patch) => {
+    if (!activeUserId || !expenseId) return;
+    setMetaOverridesByUser((prev) => {
+      const baseMap = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
+      const current = baseMap[expenseId] || {
+        recurrenceType: 'monthly',
+        skippedPeriods: [],
+        confirmedPeriods: []
       };
-      return { ...prev, [activeUserId]: next };
-    });
-
-    if (syncToDb) {
-      const dbPatch = {};
-      if (patch.recurrenceType !== undefined) dbPatch.recurrence_type = patch.recurrenceType;
-      if (patch.skippedPeriods !== undefined) dbPatch.skipped_periods = patch.skippedPeriods;
-      if (patch.lastEditedAt !== undefined) dbPatch.last_edited_at = patch.lastEditedAt;
-
-      if (Object.keys(dbPatch).length > 0) {
-        supabase
-          .from('expenses')
-          .update(dbPatch)
-          .eq('id', expId)
-          .eq('user_id', activeUserId)
-          .then(({ error }) => {
-            if (error) console.warn('Failed to sync expense metadata to Supabase:', error.message);
-          });
+      const merged = typeof patch === 'function' ? patch(current) : { ...current, ...patch };
+      const normalized = {
+        recurrenceType: ['daily', 'monthly', 'yearly'].includes(merged?.recurrenceType)
+          ? merged.recurrenceType
+          : 'monthly',
+        skippedPeriods: Array.isArray(merged?.skippedPeriods)
+          ? Array.from(new Set(merged.skippedPeriods.map(String)))
+          : [],
+        confirmedPeriods: Array.isArray(merged?.confirmedPeriods)
+          ? Array.from(new Set(merged.confirmedPeriods.map(String)))
+          : []
+      };
+      const nextMap = { ...baseMap, [expenseId]: normalized };
+      try {
+        localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(nextMap));
+      } catch {
+        // Ignore storage quota errors
       }
-    }
-  };
+      supabase
+        .from('profiles')
+        .update({ expense_meta: nextMap })
+        .eq('user_id', activeUserId)
+        .then(({ error }) => {
+          if (error) console.warn('Could not sync expense_meta to profile:', error.message);
+        });
+      return { ...prev, [activeUserId]: nextMap };
+    });
+  }, [activeUserId]);
 
   useEffect(() => {
     if (!activeUserId) return;
@@ -731,54 +738,95 @@ export default function App() {
    * Sends a confirmation reminder email for recurring expenses in the active period.
    * @param {boolean} isManualTrigger - Whether triggered manually by user button click.
    */
- const autoReminderAttemptedRef = useRef({});
-
-  // Automatically trigger one recurring expense reminder email per period when enabled
+ // Automatically trigger recurring expense reminder emails per cycle (Daily, Monthly, Yearly)
+  const autoReminderAttemptedRef = useRef({});
   useEffect(() => {
     if (!session?.user?.email || loadingData || isReadOnly) return;
     if (!emailRemindersEnabled) return;
 
-    let cachedPeriod;
+    const currentMonthStr = getCurrentMonth();
+    const todayStr = getToday();
+    const activeYearStr = selectedMonth.slice(0, 4);
+
+    const storedMap = parseReminderPeriodMap(lastReminderPeriod);
     try {
-      cachedPeriod = localStorage.getItem(`managed_last_reminder_${session.user.id}`);
+      const localRaw = localStorage.getItem(`managed_last_reminder_${session.user.id}`);
+      Object.assign(storedMap, parseReminderPeriodMap(localRaw));
     } catch {
-      cachedPeriod = null;
+      // Ignore storage access errors
     }
 
-    if (lastReminderPeriod === selectedMonth || cachedPeriod === selectedMonth) return;
+    const cycleConfigs = [
+      ...(selectedMonth === currentMonthStr
+        ? [{ cycle: 'daily', periodKey: todayStr }]
+        : []),
+      { cycle: 'monthly', periodKey: selectedMonth },
+      { cycle: 'yearly', periodKey: activeYearStr }
+    ];
 
-    const attemptKey = `${session.user.id}_${selectedMonth}`;
-    if (autoReminderAttemptedRef.current[attemptKey]) return;
+    let isCancelled = false;
 
-    const unconfirmedRecurring = activeMonthlyExpenses
-      .filter(exp => exp.is_recurring)
-      .map(exp => ({
-        ...exp,
-        recurrenceType: expenseMetaMap[exp.id]?.recurrenceType || 'monthly'
-      }));
+    (async () => {
+      for (const { cycle, periodKey } of cycleConfigs) {
+        if (isCancelled) break;
 
-    if (unconfirmedRecurring.length === 0) return;
+        // Only remind for recurring items matching this cycle that are neither skipped nor already confirmed
+        const cyclePendingExpenses = activeMonthlyExpenses
+          .filter((exp) => exp.is_recurring)
+          .map((exp) => {
+            const meta = expenseMetaMap[exp.id] || {};
+            const recurrenceType = meta.recurrenceType || 'monthly';
+            const isSkipped = Array.isArray(meta.skippedPeriods) && meta.skippedPeriods.includes(periodKey);
+            const isConfirmed = Array.isArray(meta.confirmedPeriods) && meta.confirmedPeriods.includes(periodKey);
+            return {
+              ...exp,
+              recurrenceType,
+              isAnswered: isSkipped || isConfirmed
+            };
+          })
+          .filter((exp) => exp.recurrenceType === cycle && !exp.isAnswered);
 
-    // Keep the marker locked for the session even if delivery fails so re-renders never loop
-    autoReminderAttemptedRef.current[attemptKey] = true;
+        if (cyclePendingExpenses.length === 0) continue;
 
-    sendRecurringExpenseReminderEmail({
-      userId: session.user.id,
-      recipientEmail: session.user.email,
-      username: username || session.user.email.split('@')[0],
-      periodKey: selectedMonth,
-      pendingExpenses: unconfirmedRecurring,
-      formatCurrency,
-      onlyIfNotSent: true
-    })
-      .then((res) => {
-        if (res?.ok) {
-          setLastReminderPeriod(selectedMonth);
+        let cachedCyclePeriod;
+        try {
+          cachedCyclePeriod = localStorage.getItem(`managed_last_reminder_${session.user.id}_${cycle}`);
+        } catch {
+          cachedCyclePeriod = null;
         }
-      })
-      .catch((err) => {
-        console.warn('Automatic recurring reminder check failed:', err);
-      });
+
+        if (storedMap[cycle] === periodKey || cachedCyclePeriod === periodKey) continue;
+
+        const attemptKey = `${session.user.id}_${cycle}_${periodKey}`;
+        if (autoReminderAttemptedRef.current[attemptKey]) continue;
+
+        autoReminderAttemptedRef.current[attemptKey] = true;
+
+        try {
+          const res = await sendRecurringExpenseReminderEmail({
+            userId: session.user.id,
+            recipientEmail: session.user.email,
+            username: username || session.user.email.split('@')[0],
+            periodKey,
+            recurrenceCycle: cycle,
+            pendingExpenses: cyclePendingExpenses,
+            formatCurrency,
+            onlyIfNotSent: true
+          });
+
+          if (res?.ok && res.serializedMap) {
+            Object.assign(storedMap, parseReminderPeriodMap(res.serializedMap));
+            setLastReminderPeriod(res.serializedMap);
+          }
+        } catch (err) {
+          console.warn(`Automatic ${cycle} recurring reminder check failed:`, err);
+        }
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [
     session,
     username,

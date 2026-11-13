@@ -170,7 +170,7 @@ export default function NotificationBell({
 
     const sigParts = [
         ...alerts.map((a) => a.id),
-        ...pendingRecurringList.map((r) => `${r.id}_${r.freq}_pending`)
+        ...pendingRecurringList.map((r) => `${r.id}_${r.freq}_${getPeriodKeyForFreq(r.freq)}_pending`)
     ];
     const signature = `${selectedMonth}::${sigParts.join('|')}`;
 

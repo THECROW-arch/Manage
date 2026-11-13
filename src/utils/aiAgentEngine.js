@@ -45,8 +45,8 @@ function normalizeTypos(str) {
         .replace(/passer en mode clair|cambiar a modo claro|الوضع الفاتح/g, 'switch to light mode')
         .replace(/verrouiller mon tableau|bloquear mi tablero|قفل اللوحة الذكي/g, 'smart lock my board')
         .replace(/déverrouiller toutes les catégories|desbloquear todas las categorías|إلغاء قفل جميع الفئات/g, 'unlock all categories')
-        .replace(/^(?:bonjour|salut|bonsoir|hola|buenos días|buenas tardes|مرحبا|أهلا|السلام عليكم)\b/g, 'hello')
-        .replace(/^(?:merci|gracias|شكرا|شكراً)\b/g, 'thanks')
+        .replace(/^(?:bonjour|salut|bonsoir|hola|buenos días|buenas tardes|مرحبا|أهلا|السلام عليكم)(?=$|\s|[^\p{L}\p{N}])/iu, 'hello')
+        .replace(/^(?:merci|gracias|شكرا|شكراً)(?=$|\s|[^\p{L}\p{N}])/iu, 'thanks')
         .replace(/\s+/g, ' ')
         .trim();
 }
@@ -132,6 +132,9 @@ export function runMoneyParserSelfTest() {
 // Captures the complete contiguous numeric token including optional k/m shorthand suffix
 const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/i;
 
+// Leading logging verbs in EN, FR, ES, AR with Unicode-aware trailing boundary
+const LOG_VERB_PREFIX_REGEX = /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل|سجل|أضف)(?=$|\s|[^\p{L}\p{N}])\s*/iu;
+
 /**
  * Processes a conversational or action turn for the Sterling AI Financial Assistant.
  * Uses centralized translations from src/i18n.js via i18n.t(...).
@@ -151,7 +154,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     const lower = normalizeTypos(text);
-    const isWhereOrHowQuestion = /^(?:where|how\s+do\s+i|how\s+can\s+i|can\s+you\s+tell\s+me\s+where|can\s+you\s+tell\s+me\s+how|où|comment\s+puis-je|dónde|cómo\s+puedo|أين|كيف)\b/i.test(lower);
+    const isWhereOrHowQuestion = /^(?:where|how\s+do\s+i|how\s+can\s+i|can\s+you\s+tell\s+me\s+where|can\s+you\s+tell\s+me\s+how|où|comment\s+puis-je|dónde|cómo\s+puedo|أين|كيف)(?=$|\s|[^\p{L}\p{N}])/iu.test(lower);
 
     const {
         parsedSalary = 0,
@@ -212,10 +215,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     const findCategoryInText = (inputStr) => {
         if (!Array.isArray(categories) || categories.length === 0) return null;
-        const cleanedLookup = String(inputStr || '').replace(
-            /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل)\b\s*/i,
-            ''
-        );
+        const cleanedLookup = String(inputStr || '').replace(LOG_VERB_PREFIX_REGEX, '');
         const aliases = {
             wants: ['wants', 'want', 'once', 'entertainment', 'lifestyle', 'envies', 'loisirs', 'deseos', 'رغبات'],
             needs: ['needs', 'need', 'bills', 'essentials', 'besoins', 'necesidades', 'احتياجات'],
@@ -228,7 +228,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             const list = [cName, stem, ...(aliases[cName] || []), ...(aliases[`${stem}s`] || [])];
             for (const word of list) {
                 const escaped = escapeRegExp(word);
-                if (new RegExp(`(?:^|\\W)${escaped}(?=$|\\W)`, 'i').test(cleanedLookup)) {
+                if (new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'iu').test(cleanedLookup)) {
                     return cat;
                 }
             }
@@ -271,7 +271,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // 1. "WHERE / HOW DO I..." NAVIGATION & HELP QUESTIONS
     // =========================================================================
     if (isWhereOrHowQuestion) {
-        if (/\b(dark|light|theme|mode|appearance|sombre|clair|oscuro|claro)\b/i.test(lower)) {
+        if (/(?<![\p{L}\p{N}])(dark|light|theme|mode|appearance|sombre|clair|oscuro|claro)(?![\p{L}\p{N}])/iu.test(lower)) {
             return {
                 reply: `You can switch between **Light Mode** and **Dark Mode** inside the **Settings** tab (under **Appearance**).\n\nOr tell me *"Switch to light mode"* or *"Switch to dark mode"* and I'll toggle it for you right now!`,
                 suggestions: [
@@ -280,19 +280,19 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 ]
             };
         }
-        if (/\b(currency|mad|dollar|euro|symbol|devise|moneda|عملة)\b/i.test(lower)) {
+        if (/(?<![\p{L}\p{N}])(currency|mad|dollar|euro|symbol|devise|moneda|عملة)(?![\p{L}\p{N}])/iu.test(lower)) {
             return {
                 reply: `You can change your **Currency** in the **Settings** tab—or tell me *"Change my currency to MAD"* (or $, €, £) and I'll update it immediately!`,
                 suggestions: ['Change my currency to MAD', t('ai_sug_open_settings')]
             };
         }
-        if (/\b(salary|income|paycheck|boost|bonus|extra\s+income|salaire|revenu|salario|راتب)\b/i.test(lower)) {
+        if (/(?<![\p{L}\p{N}])(salary|income|paycheck|boost|bonus|extra\s+income|salaire|revenu|salario|راتب)(?![\p{L}\p{N}])/iu.test(lower)) {
             return {
                 reply: `You can update your base **Salary** in the **Settings** tab, or click **+ Income Boost** on the **Cash Flow** tab to add temporary extra income for **${selectedMonth}** only!`,
                 suggestions: [t('ai_sug_open_settings'), t('ai_sug_audit')]
             };
         }
-        if (/\b(export|excel|csv|download|report|exporter|exportar|تصدير)\b/i.test(lower)) {
+        if (/(?<![\p{L}\p{N}])(export|excel|csv|download|report|exporter|exportar|تصدير)(?![\p{L}\p{N}])/iu.test(lower)) {
             return {
                 reply: `You can download your **Formal Audit** or **Visual Dashboard** Excel spreadsheets inside the **Settings** tab under **Data Export**.`,
                 suggestions: [t('ai_sug_open_settings'), t('ai_sug_audit')]
@@ -303,7 +303,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 2. DELETE / REMOVE A WEALTH OBJECTIVE
     // =========================================================================
-    if (/\b(delete|remove|erase|clear|supprimer|eliminar|حذف)\b.*\b(wealth\s+objective|objective|objectives|goal|objectif|objetivo|هدف)\b/i.test(lower) && setWealthObjectives) {
+    if (/(?<![\p{L}\p{N}])(delete|remove|erase|clear|supprimer|eliminar|حذف)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(wealth\s+objective|objective|objectives|goal|objectif|objetivo|هدف)(?![\p{L}\p{N}])/iu.test(lower) && setWealthObjectives) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
@@ -314,7 +314,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             };
         }
 
-        const isLast = /\b(last|latest|recent|dernier|último|الأخير)\b/i.test(lower);
+        const isLast = /(?<![\p{L}\p{N}])(last|latest|recent|dernier|último|الأخير)(?![\p{L}\p{N}])/iu.test(lower);
         let targetObj = isLast ? wealthObjectives[0] : null;
 
         if (!targetObj) {
@@ -344,7 +344,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 3. DELETE / REMOVE A SANDBOX SHEET
     // =========================================================================
-    if (/\b(delete|remove|erase|supprimer|eliminar|حذف)\b.*\b(sandbox|calculation\s+sheet|temp\s+sheet|sheet)\b/i.test(lower) && handleDeleteSandboxSheet) {
+    if (/(?<![\p{L}\p{N}])(delete|remove|erase|supprimer|eliminar|حذف)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(sandbox|calculation\s+sheet|temp\s+sheet|sheet)(?![\p{L}\p{N}])/iu.test(lower) && handleDeleteSandboxSheet) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
@@ -352,7 +352,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             return { reply: 'You do not have any Sandbox calculation sheets to delete.' };
         }
 
-        const isLast = /\b(last|latest|recent|dernier|último|الأخير)\b/i.test(lower);
+        const isLast = /(?<![\p{L}\p{N}])(last|latest|recent|dernier|último|الأخير)(?![\p{L}\p{N}])/iu.test(lower);
         let targetSheet = isLast ? sandboxSheets[0] : null;
 
         if (!targetSheet) {
@@ -384,7 +384,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 4. DELETE / REMOVE A SPECIAL OCCASION BUNDLE
     // =========================================================================
-    if (/\b(delete|remove|erase|supprimer|eliminar|حذف)\b.*\b(special\s+occasion|occasion|bundle|occasione?s?)\b/i.test(lower) && handleDeleteBundle) {
+    if (/(?<![\p{L}\p{N}])(delete|remove|erase|supprimer|eliminar|حذف)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(special\s+occasion|occasion|bundle|occasione?s?)(?![\p{L}\p{N}])/iu.test(lower) && handleDeleteBundle) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
@@ -392,7 +392,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             return { reply: 'You do not have any Special Occasion bundles to delete.' };
         }
 
-        const isLast = /\b(last|latest|recent|dernier|último|الأخير)\b/i.test(lower);
+        const isLast = /(?<![\p{L}\p{N}])(last|latest|recent|dernier|último|الأخير)(?![\p{L}\p{N}])/iu.test(lower);
         let targetBundle = isLast ? bundles[0] : null;
 
         if (!targetBundle) {
@@ -424,7 +424,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 5. CREATE A SPECIAL OCCASION BUNDLE WITH MULTI-CATEGORY PULLS
     // =========================================================================
-    if (/\b(create|make|add|new|start|créer|crear|إنشاء)\b.*\b(special\s+occasion|occasion|bundle)\b/i.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(create|make|add|new|start|créer|crear|إنشاء)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(special\s+occasion|occasion|bundle)(?![\p{L}\p{N}])/iu.test(lower)) {
         if (!onDirectCreateBundle) {
             return { reply: 'Special Occasion creation handler is not connected.' };
         }
@@ -483,7 +483,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 6. CREATE A SANDBOX CALCULATION SHEET
     // =========================================================================
-    if (/\b(create|make|add|new|créer|crear|إنشاء)\b.*\b(sandbox|calculation\s+sheet|temp\s+sheet)\b/i.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(create|make|add|new|créer|crear|إنشاء)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(sandbox|calculation\s+sheet|temp\s+sheet)(?![\p{L}\p{N}])/iu.test(lower)) {
         if (!onDirectCreateSandbox) {
             return { reply: 'Sandbox creation handler is not connected.' };
         }
@@ -513,7 +513,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 7. CREATE A WEALTH OBJECTIVE (Uses shared onCreateWealthObjective Pro gate)
     // =========================================================================
-    if (/\b(create|make|add|new|créer|crear|إنشاء)\b.*\b(wealth\s+objective|objective)\b/i.test(lower) && (onCreateWealthObjective || setWealthObjectives)) {
+    if (/(?<![\p{L}\p{N}])(create|make|add|new|créer|crear|إنشاء)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(wealth\s+objective|objective)(?![\p{L}\p{N}])/iu.test(lower) && (onCreateWealthObjective || setWealthObjectives)) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
@@ -583,7 +583,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 8. ONE-MONTH INCOME BOOST
     // =========================================================================
-    if (/\b(clear|remove|reset|supprimer|eliminar|إزالة)\b.*\b(boost|bonus|extra\s+income|income\s+gift)\b/i.test(lower) && handleClearMonthlyBoost) {
+    if (/(?<![\p{L}\p{N}])(clear|remove|reset|supprimer|eliminar|إزالة)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(boost|bonus|extra\s+income|income\s+gift)(?![\p{L}\p{N}])/iu.test(lower) && handleClearMonthlyBoost) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
@@ -624,7 +624,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 (/\b(?:boost|bonus|gift)\b/i.test(lower) && /\b(?:income|salary|paycheck)\b/i.test(lower));
 
             const hasExpensePurchaseVerb = /\b(spent|paid|bought|purchase|purchased|log|record|save|fill|prefill)\b/i.test(lower);
-            const strippedForCatCheck = lower.replace(/^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill)\b\s*/i, '');
+            const strippedForCatCheck = lower.replace(LOG_VERB_PREFIX_REGEX, '');
             const hasCategoryTarget = Boolean(findCategoryInText(strippedForCatCheck));
             const isClearGiftExpense = !hasExplicitIncomeContext && (hasExpensePurchaseVerb || hasCategoryTarget);
 
@@ -767,7 +767,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 10. REMOVE / DELETE / UNDO AN EXPENSE
     // =========================================================================
-    if (/\b(remove|delete|undo|erase|cancel|supprimer|eliminar|حذف)\b.*\b(expense|expenses|transaction|item|purchase|last|latest|recent|dépense|gasto|مصروف)\b/i.test(lower) || /\b(remove|delete)\s+the\s+last\b/i.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(remove|delete|undo|erase|cancel|supprimer|eliminar|حذف)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(expense|expenses|transaction|item|purchase|last|latest|recent|dépense|gasto|مصروف)(?![\p{L}\p{N}])/iu.test(lower) || /\b(remove|delete)\s+the\s+last\b/i.test(lower)) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
@@ -775,7 +775,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
             return { reply: `You don't have any expenses in **${selectedMonth}** to remove.` };
         }
 
-        const isLastIntent = /\b(last|latest|recent|previous|just\s+added|i\s+added|dernière|último|آخر)\b/i.test(lower);
+        const isLastIntent = /(?<![\p{L}\p{N}])(last|latest|recent|previous|just\s+added|i\s+added|dernière|último|آخر)(?![\p{L}\p{N}])/iu.test(lower);
         let targetExp = null;
 
         if (isLastIntent) {
@@ -861,7 +861,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 12. CHANGE CURRENCY / SALARY / MONTH / THEME / TAB / LOCKS
     // =========================================================================
-    if (/\b(currency|devise|moneda|عملة)\b/i.test(lower) || /\b(?:change|set|switch|use)\s+(?:my\s+)?currency\b/i.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(currency|devise|moneda|عملة)(?![\p{L}\p{N}])/iu.test(lower) || /\b(?:change|set|switch|use)\s+(?:my\s+)?currency\b/i.test(lower)) {
         if (!setCurrency) return { reply: 'Currency setting handler is not connected.' };
 
         let newCurr = null;
@@ -1010,20 +1010,20 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 13. LOG OR PRE-FILL AN EXPENSE
+    // 13. LOG OR PRE-FILL AN EXPENSE (Supports EN, FR, ES, AR Unicode boundaries)
     // =========================================================================
-    const isLogIntent = /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل)\b/i.test(lower);
+    const isLogIntent = LOG_VERB_PREFIX_REGEX.test(lower);
     const hasNumber = /\d+/.test(lower);
-    if (isLogIntent && hasNumber && !/\b(tax|afford|if\s+i|how\s+many|how\s+much|salary|currency|occasion|sandbox|objective)\b/i.test(lower)) {
+    if (isLogIntent && hasNumber && !/(?<![\p{L}\p{N}])(tax|afford|if\s+i|how\s+many|how\s+much|salary|currency|occasion|sandbox|objective|impôts?|impuestos?|ضرائب|ضريبة)(?![\p{L}\p{N}])/iu.test(lower)) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
 
-        const isPrefillOnly = /^(?:please\s+|can\s+you\s+)?(?:fill|prefill)\b/i.test(lower);
-        const recFlag = /\b(recurring|monthly|daily|yearly|every\s+month|récurrent|mensuel|recurrente|متكرر|شهري)\b/i.test(lower);
-        const batchFlag = /\b(batch|batched|month\s+end|groupé|lote|دفعة)\b/i.test(lower);
+        const isPrefillOnly = /^(?:please\s+|can\s+you\s+)?(?:fill|prefill)(?=$|\s|[^\p{L}\p{N}])/iu.test(lower);
+        const recFlag = /(?<![\p{L}\p{N}])(recurring|monthly|daily|yearly|every\s+month|récurrent|mensuel|recurrente|متكرر|شهري|يومي|سنوي)(?![\p{L}\p{N}])/iu.test(lower);
+        const batchFlag = /(?<![\p{L}\p{N}])(batch|batched|month\s+end|groupé|lote|دفعة)(?![\p{L}\p{N}])/iu.test(lower);
 
-        const categoryText = lower.replace(/^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل)\b\s*/i, '');
+        const categoryText = lower.replace(LOG_VERB_PREFIX_REGEX, '');
         const matchedCat = findCategoryInText(categoryText) || categories.find(c => c.type !== 'asset') || categories[0];
         const amtMatch = text.match(MONEY_TOKEN_REGEX);
         const costVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
@@ -1037,12 +1037,12 @@ export async function processAIAgentTurn(rawInput, ctx) {
         const escapedCatName = escapeRegExp(matchedCat.name);
         let cleanItem = text
             .replace(amtMatch[0], ' ')
-            .replace(new RegExp(`(^|\\W)${escapedCatName}(?=$|\\W)`, 'gi'), '$1 ')
-            .replace(/\b(please|can\s+you|add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|recurring|recuring|monthly|daily|yearly|every\s+month|batch|batched|at\s+month\s+end|month\s+end)\b/gi, ' ')
-            .replace(/\b(expenses?|expences?|transactions?|items?|purchases?|named|called)\b/gi, ' ')
-            .replace(/\b(dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks)\b/gi, ' ')
-            .replace(/\b(in|under|into|for|on|at|to|from|with|of|dans|en|para|por|category|bucket|a|an|the|my)\b/gi, ' ')
-            .replace(/[.,!?;:$/€£]+/g, ' ')
+            .replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapedCatName}(?![\\p{L}\\p{N}])`, 'giu'), ' ')
+            .replace(/(?<![\p{L}\p{N}])(please|can\s+you|add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل|سجل|أضف|recurring|recuring|monthly|daily|yearly|every\s+month|récurrent|mensuel|recurrente|متكرر|شهري|يومي|سنوي|batch|batched|at\s+month\s+end|month\s+end|groupé|lote|دفعة)(?![\p{L}\p{N}])/giu, ' ')
+            .replace(/(?<![\p{L}\p{N}])(expenses?|expences?|transactions?|items?|purchases?|named|called|dépenses?|gastos?|مصروف|مصاريف)(?![\p{L}\p{N}])/giu, ' ')
+            .replace(/(?<![\p{L}\p{N}])(dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks|درهم|دولار|يورو)(?![\p{L}\p{N}])/giu, ' ')
+            .replace(/(?<![\p{L}\p{N}])(in|under|into|for|on|at|to|from|with|of|dans|en|para|por|في|من|إلى|على|category|bucket|a|an|the|my)(?![\p{L}\p{N}])/giu, ' ')
+            .replace(/[.,!?;:$/€£،؟]+/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
 
@@ -1094,7 +1094,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 14. ANALYST ENGINE: DAILY SAFE-SPEND PACE
     // =========================================================================
-    if (/\b(per\s+day|daily|a\s+day|safe\s+to\s+spend|burn\s+rate|pace|par\s+jour|por\s+día|في\s+اليوم)\b/i.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(per\s+day|daily|a\s+day|safe\s+to\s+spend|burn\s+rate|pace|par\s+jour|por\s+día|في\s+اليوم)(?![\p{L}\p{N}])/iu.test(lower)) {
         const now = new Date();
         const [selYear, selMonth] = (selectedMonth || getToday().slice(0, 7)).split('-').map(Number);
         const daysInMonth = new Date(selYear, selMonth, 0).getDate();
@@ -1185,7 +1185,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 17. SPECIFIC QUESTION: "HOW MUCH DID I SPEND?" / "HOW MUCH IS LEFT IN X?"
     // =========================================================================
-    if (/\b(how\s+much|combien|cuánto|كم)\b.*\b(spend|spent|used|left|remaining|have\s+in|dépensé|restant|gastado|queda|أنفقت|متبقي)\b/i.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(how\s+much|combien|cuánto|كم)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(spend|spent|used|left|remaining|have\s+in|dépensé|restant|gastado|queda|أنفقت|متبقي)(?![\p{L}\p{N}])/iu.test(lower)) {
         const targetCat = findCategoryInText(lower);
         if (targetCat) {
             const { allocated, spent, remaining } = getCategoryStats(targetCat);
@@ -1207,7 +1207,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 18. ANALYST ENGINE: AFFORDABILITY CHECK
     // =========================================================================
-    if (/\b(can\s+i\s+afford|afford|do\s+i\s+have\s+enough\s+for|what\s+if\s+i\s+spend|puis-je\s+me\s+permettre|puedo\s+permitirme|هل\s+يمكنني\s+تحمل)\b/i.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|do\s+i\s+have\s+enough\s+for|what\s+if\s+i\s+spend|puis-je\s+me\s+permettre|puedo\s+permitirme|هل\s+يمكنني\s+تحمل)(?![\p{L}\p{N}])/iu.test(lower)) {
         const amtMatch = text.match(MONEY_TOKEN_REGEX);
         const testCost = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
         const targetCat = findCategoryInText(lower);
@@ -1325,7 +1325,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 21. ANALYST ENGINE: ACCURATE PROGRESSIVE TAX ESTIMATOR
     // =========================================================================
-    if (/\b(tax|taxes|impôts?|impuestos?|ضرائب|ضريبة)\b/i.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(tax|taxes|impôts?|impuestos?|ضرائب|ضريبة)(?![\p{L}\p{N}])/iu.test(lower)) {
         const withoutYear = text.replace(/\b20\d{2}\b/g, ' ');
         const amtMatch = withoutYear.match(MONEY_TOKEN_REGEX);
         const annualIncome = amtMatch ? parseMoneyAmount(amtMatch[1]) : (parsedSalary * 12);
