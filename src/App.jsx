@@ -575,10 +575,67 @@ export default function App() {
     t
   ]);
 
+  const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
+
   const expenseMetaMap = useMemo(() => {
     if (!activeUserId) return {};
     return metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
   }, [activeUserId, metaOverridesByUser]);
+
+  // Hydrate recurring expense metadata (recurrenceType, skippedPeriods, confirmedPeriods) across devices
+  useEffect(() => {
+    if (!activeUserId) return;
+    let isCancelled = false;
+
+    supabase
+      .from('profiles')
+      .select('expense_meta')
+      .eq('user_id', activeUserId)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (isCancelled) return;
+        if (!error && data?.expense_meta && typeof data.expense_meta === 'object') {
+          setMetaOverridesByUser((prev) => {
+            const baseMap = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
+            const mergedMap = { ...baseMap };
+            Object.entries(data.expense_meta).forEach(([expId, val]) => {
+              const existing = mergedMap[expId] || {};
+              mergedMap[expId] = {
+                recurrenceType: ['daily', 'monthly', 'yearly'].includes(val?.recurrenceType)
+                  ? val.recurrenceType
+                  : existing.recurrenceType || 'monthly',
+                skippedPeriods: Array.from(
+                  new Set([
+                    ...(Array.isArray(existing.skippedPeriods) ? existing.skippedPeriods.map(String) : []),
+                    ...(Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [])
+                  ])
+                ),
+                confirmedPeriods: Array.from(
+                  new Set([
+                    ...(Array.isArray(existing.confirmedPeriods) ? existing.confirmedPeriods.map(String) : []),
+                    ...(Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [])
+                  ])
+                )
+              };
+            });
+            try {
+              localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(mergedMap));
+            } catch {
+              // Ignore storage quota errors
+            }
+            return { ...prev, [activeUserId]: mergedMap };
+          });
+        }
+        setMetaHydratedUserId(activeUserId);
+      })
+      .catch(() => {
+        if (!isCancelled) setMetaHydratedUserId(activeUserId);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeUserId]);
 
   const updateExpenseMeta = useCallback((expenseId, patch) => {
     if (!activeUserId || !expenseId) return;
@@ -740,8 +797,11 @@ export default function App() {
    */
  // Automatically trigger recurring expense reminder emails per cycle (Daily, Monthly, Yearly)
   const autoReminderAttemptedRef = useRef({});
+  const autoReminderRetryCountRef = useRef({});
+  const [reminderRetryTick, setReminderRetryTick] = useState(0);
+
   useEffect(() => {
-    if (!session?.user?.email || loadingData || isReadOnly) return;
+    if (!session?.user?.email || loadingData || isReadOnly || metaHydratedUserId !== session.user.id) return;
     if (!emailRemindersEnabled) return;
 
     const currentMonthStr = getCurrentMonth();
@@ -765,8 +825,11 @@ export default function App() {
     ];
 
     let isCancelled = false;
+    let retryTimerId = null;
 
     (async () => {
+      let shouldScheduleRetry = false;
+
       for (const { cycle, periodKey } of cycleConfigs) {
         if (isCancelled) break;
 
@@ -815,29 +878,54 @@ export default function App() {
           });
 
           if (res?.ok && res.serializedMap) {
+            delete autoReminderRetryCountRef.current[attemptKey];
             Object.assign(storedMap, parseReminderPeriodMap(res.serializedMap));
             setLastReminderPeriod(res.serializedMap);
+          } else {
+            delete autoReminderAttemptedRef.current[attemptKey];
+            const retriesSoFar = autoReminderRetryCountRef.current[attemptKey] || 0;
+            if (retriesSoFar < 2) {
+              autoReminderRetryCountRef.current[attemptKey] = retriesSoFar + 1;
+              shouldScheduleRetry = true;
+            }
           }
         } catch (err) {
+          delete autoReminderAttemptedRef.current[attemptKey];
+          const retriesSoFar = autoReminderRetryCountRef.current[attemptKey] || 0;
+          if (retriesSoFar < 2) {
+            autoReminderRetryCountRef.current[attemptKey] = retriesSoFar + 1;
+            shouldScheduleRetry = true;
+          }
           console.warn(`Automatic ${cycle} recurring reminder check failed:`, err);
         }
+      }
+
+      if (shouldScheduleRetry && !isCancelled) {
+        retryTimerId = setTimeout(() => {
+          if (!isCancelled) {
+            setReminderRetryTick((prev) => prev + 1);
+          }
+        }, 15000);
       }
     })();
 
     return () => {
       isCancelled = true;
+      if (retryTimerId) clearTimeout(retryTimerId);
     };
   }, [
     session,
     username,
     loadingData,
     isReadOnly,
+    metaHydratedUserId,
     emailRemindersEnabled,
     lastReminderPeriod,
     selectedMonth,
     activeMonthlyExpenses,
     expenseMetaMap,
-    formatCurrency
+    formatCurrency,
+    reminderRetryTick
   ]);
   const handleExportData = async (exportFormat) => {
     if (exportFormat === 'visual' && !hasProAccess) {
@@ -2545,7 +2633,7 @@ export default function App() {
             setIsRecurring(Boolean(rec));
             setIsBatched(Boolean(bat));
           }}
-          onDirectLogExpense={async ({ name, cost, categoryId, expenseDate: expDate, isRecurring: rec, isBatched: bat }) => {
+          onDirectLogExpense={async ({ name, cost, categoryId, expenseDate: expDate, isRecurring: rec, recurrenceType = 'monthly', isBatched: bat }) => {
             if (isReadOnly) {
               return { ok: false, error: `The ledger for **${selectedMonth}** is closed and read-only.` };
             }
@@ -2579,6 +2667,14 @@ export default function App() {
             const { data, error } = await supabase.from('expenses').insert([payload]).select();
             if (error || !data || data.length === 0) {
               return { ok: false, error: 'Database error while saving expense. Please try again.' };
+            }
+
+            if (rec) {
+              updateExpenseMeta(data[0].id, {
+                recurrenceType: ['daily', 'monthly', 'yearly'].includes(recurrenceType) ? recurrenceType : 'monthly',
+                skippedPeriods: [],
+                confirmedPeriods: []
+              });
             }
 
             setExpenses(prev => [data[0], ...prev]);

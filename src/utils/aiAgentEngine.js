@@ -135,6 +135,9 @@ const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/i;
 // Leading logging verbs in EN, FR, ES, AR with Unicode-aware trailing boundary
 const LOG_VERB_PREFIX_REGEX = /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل|سجل|أضف)(?=$|\s|[^\p{L}\p{N}])\s*/iu;
 
+// Multilingual affordability question detector (EN, FR, ES, AR)
+const AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|can\s+i\s+spend|do\s+i\s+have\s+enough(?:\s+for)?|enough\s+for|what\s+if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|puis-je\s+me\s+permettre|me\s+permettre|puis-je\s+dépenser|ai-je\s+assez(?:\s+pour)?|puedo\s+permitirme|permitirme|puedo\s+gastar|tengo\s+suficiente(?:\s+para)?|هل\s+يمكنني\s+تحمل|هل\s+أستطيع\s+تحمل|هل\s+يمكنني\s+إنفاق|هل\s+لدي\s+ما\s+يكفي)(?![\p{L}\p{N}])/iu;
+
 /**
  * Processes a conversational or action turn for the Sterling AI Financial Assistant.
  * Uses centralized translations from src/i18n.js via i18n.t(...).
@@ -217,9 +220,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
         if (!Array.isArray(categories) || categories.length === 0) return null;
         const cleanedLookup = String(inputStr || '').replace(LOG_VERB_PREFIX_REGEX, '');
         const aliases = {
-            wants: ['wants', 'want', 'once', 'entertainment', 'lifestyle', 'envies', 'loisirs', 'deseos', 'رغبات'],
-            needs: ['needs', 'need', 'bills', 'essentials', 'besoins', 'necesidades', 'احتياجات'],
-            savings: ['savings', 'saving', 'save', 'invest', 'investment', 'épargne', 'ahorros', 'ادخار']
+            wants: ['wants', 'want', 'once', 'entertainment', 'lifestyle', 'envies', 'envie', 'loisirs', 'deseos', 'deseo', 'رغبات'],
+            needs: ['needs', 'need', 'bills', 'essentials', 'besoins', 'besoin', 'necesidades', 'necesidad', 'احتياجات'],
+            savings: ['savings', 'saving', 'save', 'invest', 'investment', 'épargne', 'epargne', 'ahorros', 'ahorro', 'ادخار']
         };
         const sorted = [...categories].sort((a, b) => b.name.length - a.name.length);
         for (const cat of sorted) {
@@ -384,7 +387,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 4. DELETE / REMOVE A SPECIAL OCCASION BUNDLE
     // =========================================================================
-    if (/(?<![\p{L}\p{N}])(delete|remove|erase|supprimer|eliminar|حذف)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(special\s+occasion|occasion|bundle|occasione?s?)(?![\p{L}\p{N}])/iu.test(lower) && handleDeleteBundle) {
+    if (/(?<![\p{L}\p{N}])(delete|remove|erase|supprimer|eliminar|حذف)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(special\s+occasion|occasion\s+spéciale|occasions?|ocasión|ocasion|bundle|مناسبة)(?![\p{L}\p{N}])/iu.test(lower) && handleDeleteBundle) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
@@ -422,22 +425,35 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 5. CREATE A SPECIAL OCCASION BUNDLE WITH MULTI-CATEGORY PULLS
+    // 5. CREATE A SPECIAL OCCASION BUNDLE WITH MULTI-CATEGORY PULLS (EN, FR, ES, AR)
     // =========================================================================
-    if (/(?<![\p{L}\p{N}])(create|make|add|new|start|créer|crear|إنشاء)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(special\s+occasion|occasion|bundle)(?![\p{L}\p{N}])/iu.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(create|make|add|new|start|créer|crée|creer|ajouter|nouvelle|crear|añadir|nueva|إنشاء|أنشئ|إضافة|أضف)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(special\s+occasion|occasion\s+spéciale|occasions?|ocasión\s+especial|ocasión|ocasion|bundle|مناسبة\s+خاصة|مناسبة)(?![\p{L}\p{N}])/iu.test(lower)) {
         if (!onDirectCreateBundle) {
             return { reply: 'Special Occasion creation handler is not connected.' };
         }
 
         let occasionName = 'Special Occasion';
-        const nameMatch = text.match(/\b(?:named|called|titled)\s+([a-zA-Z0-9\s'-]+?)(?=\s+(?:and\s+it|that\s+takes|taking|takes|pulling|pulls|with\b|from\b)|\s+\d|[,.]|$)/i);
+        const nameMatch = text.match(
+            /(?<![\p{L}\p{N}])(?:named|called|titled|nommée?|appelée?|intitulée?|llamad[oa]|titulad[oa]|باسم|بعنوان|اسمها|اسمه)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:and\s+it|that\s+takes|taking|takes|pulling|pulls|with|from|et\s+qui|qui\s+prend|prenant|prend|avec|de|du|des|dans|sur|y\s+que|tomando|toma|con|من|و)|\s+[$€£]?\d|[,.]|$)/iu
+        );
         if (nameMatch && nameMatch[1]) {
             occasionName = nameMatch[1].trim();
+        } else {
+            // Also allow "occasion <Name> avec/with/con <amount>" without an explicit "named/nommée" keyword
+            const afterOccasionMatch = text.match(
+                /(?<![\p{L}\p{N}])(?:special\s+occasion|occasion\s+spéciale|occasion|ocasión\s+especial|ocasión|ocasion|bundle|مناسبة\s+خاصة|مناسبة)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:and\s+it|that\s+takes|taking|takes|pulling|pulls|with|from|et\s+qui|qui\s+prend|prenant|prend|avec|de|du|des|dans|sur|y\s+que|tomando|toma|con|من|و)|\s+[$€£]?\d|[,.]|$)/iu
+            );
+            if (afterOccasionMatch && afterOccasionMatch[1]) {
+                const candidate = afterOccasionMatch[1]
+                    .replace(/^(?:named|called|titled|nommée?|appelée?|intitulée?|llamad[oa]|titulad[oa]|باسم|بعنوان)\s+/iu, '')
+                    .trim();
+                if (candidate) occasionName = candidate;
+            }
         }
 
         const allocations = {};
         const splitSummary = [];
-        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:dollars?|mad|dhs?|euros?)?\s*(?:from|in|out\s+of|off)\s+([a-zA-Z]+)\b/gi;
+        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:dollars?|usd|mad|dhs?|dirhams?|euros?|eur|pounds?|gbp|درهم|دولار|يورو)?\s*(?:from|in|out\s+of|off|de\s+la\s+catégorie|de\s+la\s+categoría|de|du|des|dans|sur|d'|del|en|من\s+فئة|من|في)\s*([\p{L}\p{N}_-]+)(?![\p{L}\p{N}])/giu;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
             const amt = parseMoneyAmount(match[1]);
@@ -447,10 +463,11 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 };
             }
             const catWord = match[2];
-            const matchedCat = categories.find(c =>
-                c.name.toLowerCase() === catWord.toLowerCase() ||
-                c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, ''))
-            );
+            const matchedCat =
+                categories.find(c =>
+                    c.name.toLowerCase() === catWord.toLowerCase() ||
+                    c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, ''))
+                ) || findCategoryInText(catWord);
             if (matchedCat) {
                 allocations[matchedCat.id] = Number(((allocations[matchedCat.id] || 0) + amt).toFixed(2));
                 splitSummary.push(`**${formatCurrency(amt)}** from **${matchedCat.name}**`);
@@ -483,12 +500,12 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 6. CREATE A SANDBOX CALCULATION SHEET
     // =========================================================================
-    if (/(?<![\p{L}\p{N}])(create|make|add|new|créer|crear|إنشاء)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(sandbox|calculation\s+sheet|temp\s+sheet)(?![\p{L}\p{N}])/iu.test(lower)) {
+    if (/(?<![\p{L}\p{N}])(create|make|add|new|créer|crée|creer|crear|إنشاء|أنشئ)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(sandbox|calculation\s+sheet|temp\s+sheet)(?![\p{L}\p{N}])/iu.test(lower)) {
         if (!onDirectCreateSandbox) {
             return { reply: 'Sandbox creation handler is not connected.' };
         }
 
-        const nameMatch = text.match(/\b(?:named|called|titled)\s+([a-zA-Z0-9\s'-]+?)(?=\s+(?:with\b|having\b|budget\b|of\b|at\b|for\b)|\s+[$€£]?\d|[,.]|$)/i);
+        const nameMatch = text.match(/(?<![\p{L}\p{N}])(?:named|called|titled|nommée?|appelée?|llamad[oa]|باسم)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:with|having|budget|of|at|for|avec|con|بميزانية)|\s+[$€£]?\d|[,.]|$)/iu);
         const amtMatch = text.match(MONEY_TOKEN_REGEX);
         const rawTitle = nameMatch?.[1]?.trim() || 'Sandbox Plan';
         const sheetTitle = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
@@ -513,11 +530,11 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 7. CREATE A WEALTH OBJECTIVE (Uses shared onCreateWealthObjective Pro gate)
     // =========================================================================
-    if (/(?<![\p{L}\p{N}])(create|make|add|new|créer|crear|إنشاء)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(wealth\s+objective|objective)(?![\p{L}\p{N}])/iu.test(lower) && (onCreateWealthObjective || setWealthObjectives)) {
+    if (/(?<![\p{L}\p{N}])(create|make|add|new|créer|crée|creer|crear|إنشاء|أنشئ)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(wealth\s+objective|objective|objectif|objetivo|هدف)(?![\p{L}\p{N}])/iu.test(lower) && (onCreateWealthObjective || setWealthObjectives)) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
-        const nameMatch = text.match(/\b(?:named|called|titled)\s+([a-zA-Z0-9\s'-]+?)(?=\s+(?:for\b|with\b|costing\b|cost\b|target\b|at\b|pulling\b|and\s+it\b)|\s+[$€£]?\d|[,.]|$)/i);
+        const nameMatch = text.match(/(?<![\p{L}\p{N}])(?:named|called|titled|nommée?|appelée?|llamad[oa]|باسم)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:for|with|costing|cost|target|at|pulling|and\s+it|pour|avec|de|por|con|بقيمة|بهدف)|\s+[$€£]?\d|[,.]|$)/iu);
         const rawObjTitle = nameMatch?.[1]?.trim() || 'Wealth Objective';
         const objTitle = rawObjTitle.charAt(0).toUpperCase() + rawObjTitle.slice(1);
 
@@ -529,7 +546,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const autoPulls = {};
-        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:from|in)\s+([a-zA-Z]+)\b/gi;
+        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:from|in|de|du|des|dans|en|من|في)\s+([\p{L}\p{N}_-]+)(?![\p{L}\p{N}])/giu;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
             const amt = parseMoneyAmount(match[1]);
@@ -537,7 +554,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 return { reply: `Invalid auto-pull amount **"${match[1]}"**. Please provide a valid positive amount.` };
             }
             const catWord = match[2];
-            const matchedCat = categories.find(c => c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, '')));
+            const matchedCat =
+                categories.find(c => c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, ''))) ||
+                findCategoryInText(catWord);
             if (matchedCat) autoPulls[matchedCat.id] = amt;
         }
 
@@ -596,28 +615,26 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     const mentionsBoostWord = /\b(gift|bonus|boost|extra\s+income|extra\s+money)\b/i.test(lower);
-    if (mentionsBoostWord && handleAddMonthlyBoost) {
+    if (mentionsBoostWord && handleAddMonthlyBoost && !AFFORDABILITY_REGEX.test(lower)) {
         const isDirectBoostCommand = /^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:add|boost|apply|give|include|put|log|record|set|increase)\b/i.test(lower);
         const isQuestionAboutBoost =
             !isDirectBoostCommand &&
-            (/\?$/.test(text) ||
+            (/[?؟]$/.test(text) ||
                 /^(?:what|how|why|where|when|who|which|is|are|do|did|does|have|has|can\s+i|should\s+i|would\s+i|will\s+i|if\s+i|what\s+if)\b/i.test(lower) ||
-                /\b(?:how\s+much|what\s+is|do\s+i\s+have|can\s+i\s+afford)\b/i.test(lower));
+                /\b(?:how\s+much|what\s+is|do\s+i\s+have)\b/i.test(lower));
 
         if (isQuestionAboutBoost) {
-            if (!/\b(afford)\b/i.test(lower)) {
-                return {
-                    reply:
-                        currentMonthBoost > 0
-                            ? `You currently have a temporary **+${formatCurrency(currentMonthBoost)}** income boost active for **${selectedMonth}**, bringing your total **${selectedMonth}** income to **${formatCurrency(parsedSalary)}**.`
-                            : `You currently have **${formatCurrency(0)}** in extra income boosts for **${selectedMonth}** (your active income is **${formatCurrency(parsedSalary)}**). To add one, say: *"Add a 500 gift to my income for this month"*.`,
-                    actionBadge: `Boost (${selectedMonth}): ${formatCurrency(currentMonthBoost)}`,
-                    suggestions: [
-                        'Add a 500 gift to my income for this month',
-                        t('ai_sug_audit')
-                    ]
-                };
-            }
+            return {
+                reply:
+                    currentMonthBoost > 0
+                        ? `You currently have a temporary **+${formatCurrency(currentMonthBoost)}** income boost active for **${selectedMonth}**, bringing your total **${selectedMonth}** income to **${formatCurrency(parsedSalary)}**.`
+                        : `You currently have **${formatCurrency(0)}** in extra income boosts for **${selectedMonth}** (your active income is **${formatCurrency(parsedSalary)}**). To add one, say: *"Add a 500 gift to my income for this month"*.`,
+                actionBadge: `Boost (${selectedMonth}): ${formatCurrency(currentMonthBoost)}`,
+                suggestions: [
+                    'Add a 500 gift to my income for this month',
+                    t('ai_sug_audit')
+                ]
+            };
         } else {
             const hasExplicitIncomeContext =
                 /\b(income\s+boost|salary\s+boost|boost\s+(?:my\s+)?(?:income|salary)|extra\s+income|extra\s+money|(?:to|into|for)\s+(?:my\s+|this\s+month'?s?\s+)?(?:income|salary|paycheck)|gifted\s+me)\b/i.test(lower) ||
@@ -1010,204 +1027,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 13. LOG OR PRE-FILL AN EXPENSE (Supports EN, FR, ES, AR Unicode boundaries)
+    // 13. ANALYST ENGINE: AFFORDABILITY CHECK (Evaluated BEFORE Log Expense so questions never log!)
     // =========================================================================
-    const isLogIntent = LOG_VERB_PREFIX_REGEX.test(lower);
-    const hasNumber = /\d+/.test(lower);
-    if (isLogIntent && hasNumber && !/(?<![\p{L}\p{N}])(tax|afford|if\s+i|how\s+many|how\s+much|salary|currency|occasion|sandbox|objective|impôts?|impuestos?|ضرائب|ضريبة)(?![\p{L}\p{N}])/iu.test(lower)) {
-        if (isReadOnly) {
-            return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
-        }
-
-        const isPrefillOnly = /^(?:please\s+|can\s+you\s+)?(?:fill|prefill)(?=$|\s|[^\p{L}\p{N}])/iu.test(lower);
-        const recFlag = /(?<![\p{L}\p{N}])(recurring|monthly|daily|yearly|every\s+month|récurrent|mensuel|recurrente|متكرر|شهري|يومي|سنوي)(?![\p{L}\p{N}])/iu.test(lower);
-        const batchFlag = /(?<![\p{L}\p{N}])(batch|batched|month\s+end|groupé|lote|دفعة)(?![\p{L}\p{N}])/iu.test(lower);
-
-        const categoryText = lower.replace(LOG_VERB_PREFIX_REGEX, '');
-        const matchedCat = findCategoryInText(categoryText) || categories.find(c => c.type !== 'asset') || categories[0];
-        const amtMatch = text.match(MONEY_TOKEN_REGEX);
-        const costVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
-
-        if (!matchedCat || isNaN(costVal) || costVal <= 0) {
-            return {
-                reply: 'Please include both an item name and a valid positive amount with at most 2 decimal places (for example: *"Log 45 for coffee in Wants"*).'
-            };
-        }
-
-        const escapedCatName = escapeRegExp(matchedCat.name);
-        let cleanItem = text
-            .replace(amtMatch[0], ' ')
-            .replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapedCatName}(?![\\p{L}\\p{N}])`, 'giu'), ' ')
-            .replace(/(?<![\p{L}\p{N}])(please|can\s+you|add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل|سجل|أضف|recurring|recuring|monthly|daily|yearly|every\s+month|récurrent|mensuel|recurrente|متكرر|شهري|يومي|سنوي|batch|batched|at\s+month\s+end|month\s+end|groupé|lote|دفعة)(?![\p{L}\p{N}])/giu, ' ')
-            .replace(/(?<![\p{L}\p{N}])(expenses?|expences?|transactions?|items?|purchases?|named|called|dépenses?|gastos?|مصروف|مصاريف)(?![\p{L}\p{N}])/giu, ' ')
-            .replace(/(?<![\p{L}\p{N}])(dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks|درهم|دولار|يورو)(?![\p{L}\p{N}])/giu, ' ')
-            .replace(/(?<![\p{L}\p{N}])(in|under|into|for|on|at|to|from|with|of|dans|en|para|por|في|من|إلى|على|category|bucket|a|an|the|my)(?![\p{L}\p{N}])/giu, ' ')
-            .replace(/[.,!?;:$/€£،؟]+/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-        cleanItem = cleanItem
-            ? cleanItem.charAt(0).toUpperCase() + cleanItem.slice(1)
-            : 'Expense';
-
-        if (isPrefillOnly && onPrefillExpense) {
-            onPrefillExpense({
-                name: cleanItem,
-                cost: costVal.toString(),
-                categoryId: matchedCat.id,
-                isRecurring: recFlag,
-                isBatched: batchFlag
-            });
-            return {
-                reply: `Pre-filled the Log Expense form with **${cleanItem}** (${formatCurrency(costVal)}) under **${matchedCat.name}**.`,
-                actionBadge: `Form Filled → ${cleanItem}`,
-                suggestions: [t('ai_sug_audit'), t('ai_sug_how_many_exp')]
-            };
-        }
-
-        if (onDirectLogExpense) {
-            const result = await onDirectLogExpense({
-                name: cleanItem,
-                cost: costVal,
-                categoryId: matchedCat.id,
-                expenseDate: getExpenseDateForActiveMonth(),
-                isRecurring: recFlag,
-                isBatched: batchFlag
-            });
-
-            if (!result.ok) {
-                return {
-                    reply: result.error,
-                    actionBadge: 'Blocked → Budget Ceiling',
-                    suggestions: [t('ai_sug_audit'), t('ai_sug_daily_spend')]
-                };
-            }
-
-            return {
-                reply: `Logged **${cleanItem}** for **${formatCurrency(costVal)}** under **${matchedCat.name}**${recFlag ? ' (Recurring)' : ''}${batchFlag ? ' (Batched)' : ''}. You now have **${formatCurrency(result.newRemaining)}** left in **${matchedCat.name}**.`,
-                actionBadge: `Saved → ${cleanItem} (${formatCurrency(costVal)})`,
-                suggestions: [t('ai_sug_remove_last'), t('ai_sug_how_many_exp'), t('ai_sug_audit')]
-            };
-        }
-    }
-
-    // =========================================================================
-    // 14. ANALYST ENGINE: DAILY SAFE-SPEND PACE
-    // =========================================================================
-    if (/(?<![\p{L}\p{N}])(per\s+day|daily|a\s+day|safe\s+to\s+spend|burn\s+rate|pace|par\s+jour|por\s+día|في\s+اليوم)(?![\p{L}\p{N}])/iu.test(lower)) {
-        const now = new Date();
-        const [selYear, selMonth] = (selectedMonth || getToday().slice(0, 7)).split('-').map(Number);
-        const daysInMonth = new Date(selYear, selMonth, 0).getDate();
-        const isCurrentMonth = now.getFullYear() === selYear && (now.getMonth() + 1) === selMonth;
-        const daysLeft = isCurrentMonth ? Math.max(1, daysInMonth - now.getDate() + 1) : daysInMonth;
-
-        const dailyTotal = totalRemaining / daysLeft;
-        const expCats = categories.filter(c => c.type !== 'asset');
-        const breakdownLines = expCats.map(c => {
-            const { remaining } = getCategoryStats(c);
-            return t('ai_daily_line', {
-                name: c.name,
-                perDay: formatCurrency(remaining / daysLeft),
-                remaining: formatCurrency(remaining),
-                days: daysLeft
-            });
-        }).join('\n');
-
-        return {
-            reply: t('ai_daily_reply', {
-                daysLeft,
-                month: selectedMonth,
-                dailyTotal: formatCurrency(dailyTotal),
-                lines: breakdownLines
-            }),
-            actionBadge: `${formatCurrency(dailyTotal)} / day`,
-            suggestions: [t('ai_sug_audit'), t('ai_sug_biggest_exp')]
-        };
-    }
-
-    // =========================================================================
-    // 15. SPECIFIC QUESTION: RECURRING OR BATCHED EXPENSES
-    // =========================================================================
-    if (/\b(what|which|show|list|how\s+many)\b.*\b(recurring|batched)\b/i.test(lower)) {
-        const checkBatched = /\bbatched\b/i.test(lower);
-        const filtered = monthlyExpenses.filter(e => checkBatched ? e.is_batched : e.is_recurring);
-        const label = checkBatched ? 'Batched' : 'Recurring';
-
-        if (filtered.length === 0) {
-            return {
-                reply: `You currently have **0 ${label.toLowerCase()} expenses** in **${selectedMonth}**.`,
-                actionBadge: `0 ${label} Expenses`,
-                suggestions: [t('ai_sug_how_many_exp'), t('ai_sug_audit')]
-            };
-        }
-
-        const total = filtered.reduce((s, e) => s + parseFloat(e.cost || 0), 0);
-        const lines = filtered.map((e, i) => `${i + 1}. **${e.name}** — ${formatCurrency(e.cost)} *(${e.category})*`).join('\n');
-        return {
-            reply: `You have **${filtered.length} ${label} expense${filtered.length === 1 ? '' : 's'}** in **${selectedMonth}** totaling **${formatCurrency(total)}**:\n\n${lines}`,
-            actionBadge: `${filtered.length} ${label} (${formatCurrency(total)})`,
-            suggestions: [t('ai_sug_audit'), t('ai_sug_daily_spend')]
-        };
-    }
-
-    // =========================================================================
-    // 16. SPECIFIC QUESTION: "HOW MANY EXPENSES / TRANSACTIONS DO I HAVE?"
-    // =========================================================================
-    if (/\b(how\s+many|count|number\s+of|list\s+my|what\s+are\s+my|show\s+my)\s+(?:expenses|transactions|items|purchases)\b/i.test(lower) || /\bexpenses\s+do\s+i\s+have\b/i.test(lower)) {
-        const targetCat = findCategoryInText(lower);
-        const list = targetCat
-            ? monthlyExpenses.filter(e => e.category_id === targetCat.id)
-            : monthlyExpenses;
-
-        if (list.length === 0) {
-            return {
-                reply: targetCat
-                    ? `You have **0 expenses** logged under **${targetCat.name}** in **${selectedMonth}**.`
-                    : `You have **0 expenses** logged in **${selectedMonth}** so far.`,
-                actionBadge: '0 Transactions',
-                suggestions: ['Log 35 for coffee in Wants', t('ai_sug_audit')]
-            };
-        }
-
-        const totalAmt = list.reduce((s, e) => s + parseFloat(e.cost || 0), 0);
-        const previewItems = list
-            .slice(0, 6)
-            .map((e, i) => `${i + 1}. **${e.name}** — ${formatCurrency(e.cost)} *(${e.category} • ${e.expense_date}${e.is_recurring ? ' • Recurring' : ''}${e.is_batched ? ' • Batched' : ''})*`)
-            .join('\n');
-
-        return {
-            reply: `You have **${list.length} expense${list.length === 1 ? '' : 's'}**${targetCat ? ` in **${targetCat.name}**` : ''} for **${selectedMonth}**, totaling **${formatCurrency(totalAmt)}**:\n\n${previewItems}${list.length > 6 ? `\n\n*...and ${list.length - 6} more.*` : ''}`,
-            actionBadge: `${list.length} Expense${list.length === 1 ? '' : 's'} (${formatCurrency(totalAmt)})`,
-            suggestions: [t('ai_sug_remove_last'), t('ai_sug_daily_spend'), t('ai_sug_audit')]
-        };
-    }
-
-    // =========================================================================
-    // 17. SPECIFIC QUESTION: "HOW MUCH DID I SPEND?" / "HOW MUCH IS LEFT IN X?"
-    // =========================================================================
-    if (/(?<![\p{L}\p{N}])(how\s+much|combien|cuánto|كم)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(spend|spent|used|left|remaining|have\s+in|dépensé|restant|gastado|queda|أنفقت|متبقي)(?![\p{L}\p{N}])/iu.test(lower)) {
-        const targetCat = findCategoryInText(lower);
-        if (targetCat) {
-            const { allocated, spent, remaining } = getCategoryStats(targetCat);
-            const count = monthlyExpenses.filter(e => e.category_id === targetCat.id).length;
-            return {
-                reply: `**${targetCat.name} (${selectedMonth}):**\n\n• **Allocated Budget:** ${formatCurrency(allocated)} (${Math.round(targetCat.percentage)}%)\n• **Spent So Far:** ${formatCurrency(spent)} across ${count} transaction${count === 1 ? '' : 's'}\n• **Remaining Available:** **${formatCurrency(remaining)}**`,
-                actionBadge: `${targetCat.name}: ${formatCurrency(remaining)} left`,
-                suggestions: [`Can I afford 100 in ${targetCat.name}?`, t('ai_sug_daily_spend')]
-            };
-        }
-
-        return {
-            reply: `In **${selectedMonth}**, you have spent **${formatCurrency(totalSpent)}** across **${monthlyExpenses.length} transaction${monthlyExpenses.length === 1 ? '' : 's'}**, with **${formatCurrency(totalAutomatedAssets)}** allocated to Wealth Assets and **${formatCurrency(totalRemaining)}** in remaining cash.`,
-            actionBadge: `Spent: ${formatCurrency(totalSpent)}`,
-            suggestions: [t('ai_sug_daily_spend'), t('ai_sug_audit')]
-        };
-    }
-
-    // =========================================================================
-    // 18. ANALYST ENGINE: AFFORDABILITY CHECK
-    // =========================================================================
-    if (/(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|do\s+i\s+have\s+enough\s+for|what\s+if\s+i\s+spend|puis-je\s+me\s+permettre|puedo\s+permitirme|هل\s+يمكنني\s+تحمل)(?![\p{L}\p{N}])/iu.test(lower)) {
+    if (AFFORDABILITY_REGEX.test(lower)) {
         const amtMatch = text.match(MONEY_TOKEN_REGEX);
         const testCost = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
         const targetCat = findCategoryInText(lower);
@@ -1245,6 +1067,214 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 suggestions: [t('ai_sug_audit'), t('ai_sug_open_occasions')]
             };
         }
+    }
+
+    // =========================================================================
+    // 14. LOG OR PRE-FILL AN EXPENSE (Supports EN, FR, ES, AR + Daily/Monthly/Yearly recurrence)
+    // =========================================================================
+    const isLogIntent = LOG_VERB_PREFIX_REGEX.test(lower);
+    const hasNumber = /\d+/.test(lower);
+    const isQuestionForm = /[?؟]\s*$/.test(text);
+    if (
+        isLogIntent &&
+        hasNumber &&
+        !isQuestionForm &&
+        !AFFORDABILITY_REGEX.test(lower) &&
+        !/(?<![\p{L}\p{N}])(tax|if\s+i|how\s+many|how\s+much|salary|currency|occasion|sandbox|objective|impôts?|impuestos?|ضرائب|ضريبة)(?![\p{L}\p{N}])/iu.test(lower)
+    ) {
+        if (isReadOnly) {
+            return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
+        }
+
+        const isPrefillOnly = /^(?:please\s+|can\s+you\s+)?(?:fill|prefill)(?=$|\s|[^\p{L}\p{N}])/iu.test(lower);
+        const isDailyRec = /(?<![\p{L}\p{N}])(daily|every\s+day|quotidien(?:ne)?|journali(?:er|ère)|chaque\s+jour|tous\s+les\s+jours|diario|diariamente|cada\s+día|يومي|يوميا|يومياً|كل\s+يوم)(?![\p{L}\p{N}])/iu.test(lower);
+        const isYearlyRec = /(?<![\p{L}\p{N}])(yearly|annual|annually|every\s+year|annuel(?:le)?|chaque\s+année|tous\s+les\s+ans|anual|anualmente|cada\s+año|سنوي|سنويا|سنوياً|كل\s+سنة|كل\s+عام)(?![\p{L}\p{N}])/iu.test(lower);
+        const isMonthlyRec = /(?<![\p{L}\p{N}])(recurring|monthly|every\s+month|récurrent(?:e)?|mensuel(?:le)?|chaque\s+mois|recurrente|mensual|cada\s+mes|متكرر|متكررة|شهري|شهريا|شهرياً|كل\s+شهر)(?![\p{L}\p{N}])/iu.test(lower);
+        const recFlag = isDailyRec || isYearlyRec || isMonthlyRec;
+        const recurrenceType = isDailyRec ? 'daily' : isYearlyRec ? 'yearly' : 'monthly';
+        const batchFlag = /(?<![\p{L}\p{N}])(batch|batched|month\s+end|groupé|lote|دفعة)(?![\p{L}\p{N}])/iu.test(lower);
+
+        const categoryText = lower.replace(LOG_VERB_PREFIX_REGEX, '');
+        const matchedCat = findCategoryInText(categoryText) || categories.find(c => c.type !== 'asset') || categories[0];
+        const amtMatch = text.match(MONEY_TOKEN_REGEX);
+        const costVal = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
+
+        if (!matchedCat || isNaN(costVal) || costVal <= 0) {
+            return {
+                reply: 'Please include both an item name and a valid positive amount with at most 2 decimal places (for example: *"Log 45 for coffee in Wants"*).'
+            };
+        }
+
+        const escapedCatName = escapeRegExp(matchedCat.name);
+        let cleanItem = text
+            .replace(amtMatch[0], ' ')
+            .replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapedCatName}(?![\\p{L}\\p{N}])`, 'giu'), ' ')
+            .replace(/(?<![\p{L}\p{N}])(please|can\s+you|add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل|سجل|أضف|recurring|recuring|monthly|daily|yearly|annual|annually|every\s+day|every\s+month|every\s+year|récurrent(?:e)?|mensuel(?:le)?|quotidien(?:ne)?|journali(?:er|ère)|annuel(?:le)?|chaque\s+jour|chaque\s+mois|chaque\s+année|tous\s+les\s+jours|tous\s+les\s+ans|recurrente|mensual|diario|diariamente|anual|anualmente|cada\s+día|cada\s+mes|cada\s+año|متكرر|متكررة|شهري|شهريا|شهرياً|يومي|يوميا|يومياً|سنوي|سنويا|سنوياً|كل\s+يوم|كل\s+شهر|كل\s+سنة|كل\s+عام|batch|batched|at\s+month\s+end|month\s+end|groupé|lote|دفعة)(?![\p{L}\p{N}])/giu, ' ')
+            .replace(/(?<![\p{L}\p{N}])(expenses?|expences?|transactions?|items?|purchases?|named|called|dépenses?|gastos?|مصروف|مصاريف)(?![\p{L}\p{N}])/giu, ' ')
+            .replace(/(?<![\p{L}\p{N}])(dollars?|usd|dirhams?|mad|dhs?|euros?|eur|pounds?|gbp|bucks|درهم|دولار|يورو)(?![\p{L}\p{N}])/giu, ' ')
+            .replace(/(?<![\p{L}\p{N}])(in|under|into|for|on|at|to|from|with|of|dans|en|para|por|في|من|إلى|على|category|bucket|a|an|the|my)(?![\p{L}\p{N}])/giu, ' ')
+            .replace(/[.,!?;:$/€£،؟]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        cleanItem = cleanItem
+            ? cleanItem.charAt(0).toUpperCase() + cleanItem.slice(1)
+            : 'Expense';
+
+        if (isPrefillOnly && onPrefillExpense) {
+            onPrefillExpense({
+                name: cleanItem,
+                cost: costVal.toString(),
+                categoryId: matchedCat.id,
+                isRecurring: recFlag,
+                recurrenceType: recFlag ? recurrenceType : 'monthly',
+                isBatched: batchFlag
+            });
+            return {
+                reply: `Pre-filled the Log Expense form with **${cleanItem}** (${formatCurrency(costVal)}) under **${matchedCat.name}**.`,
+                actionBadge: `Form Filled → ${cleanItem}`,
+                suggestions: [t('ai_sug_audit'), t('ai_sug_how_many_exp')]
+            };
+        }
+
+        if (onDirectLogExpense) {
+            const result = await onDirectLogExpense({
+                name: cleanItem,
+                cost: costVal,
+                categoryId: matchedCat.id,
+                expenseDate: getExpenseDateForActiveMonth(),
+                isRecurring: recFlag,
+                recurrenceType: recFlag ? recurrenceType : 'monthly',
+                isBatched: batchFlag
+            });
+
+            if (!result.ok) {
+                return {
+                    reply: result.error,
+                    actionBadge: 'Blocked → Budget Ceiling',
+                    suggestions: [t('ai_sug_audit'), t('ai_sug_daily_spend')]
+                };
+            }
+
+            return {
+                reply: `Logged **${cleanItem}** for **${formatCurrency(costVal)}** under **${matchedCat.name}**${recFlag ? ` (Recurring • ${recurrenceType})` : ''}${batchFlag ? ' (Batched)' : ''}. You now have **${formatCurrency(result.newRemaining)}** left in **${matchedCat.name}**.`,
+                actionBadge: `Saved → ${cleanItem} (${formatCurrency(costVal)})`,
+                suggestions: [t('ai_sug_remove_last'), t('ai_sug_how_many_exp'), t('ai_sug_audit')]
+            };
+        }
+    }
+
+    // =========================================================================
+    // 15. ANALYST ENGINE: DAILY SAFE-SPEND PACE
+    // =========================================================================
+    if (/(?<![\p{L}\p{N}])(per\s+day|daily|a\s+day|safe\s+to\s+spend|burn\s+rate|pace|par\s+jour|por\s+día|في\s+اليوم)(?![\p{L}\p{N}])/iu.test(lower)) {
+        const now = new Date();
+        const [selYear, selMonth] = (selectedMonth || getToday().slice(0, 7)).split('-').map(Number);
+        const daysInMonth = new Date(selYear, selMonth, 0).getDate();
+        const isCurrentMonth = now.getFullYear() === selYear && (now.getMonth() + 1) === selMonth;
+        const daysLeft = isCurrentMonth ? Math.max(1, daysInMonth - now.getDate() + 1) : daysInMonth;
+
+        const dailyTotal = totalRemaining / daysLeft;
+        const expCats = categories.filter(c => c.type !== 'asset');
+        const breakdownLines = expCats.map(c => {
+            const { remaining } = getCategoryStats(c);
+            return t('ai_daily_line', {
+                name: c.name,
+                perDay: formatCurrency(remaining / daysLeft),
+                remaining: formatCurrency(remaining),
+                days: daysLeft
+            });
+        }).join('\n');
+
+        return {
+            reply: t('ai_daily_reply', {
+                daysLeft,
+                month: selectedMonth,
+                dailyTotal: formatCurrency(dailyTotal),
+                lines: breakdownLines
+            }),
+            actionBadge: `${formatCurrency(dailyTotal)} / day`,
+            suggestions: [t('ai_sug_audit'), t('ai_sug_biggest_exp')]
+        };
+    }
+
+    // =========================================================================
+    // 16. SPECIFIC QUESTION: RECURRING OR BATCHED EXPENSES
+    // =========================================================================
+    if (/\b(what|which|show|list|how\s+many)\b.*\b(recurring|batched)\b/i.test(lower)) {
+        const checkBatched = /\bbatched\b/i.test(lower);
+        const filtered = monthlyExpenses.filter(e => checkBatched ? e.is_batched : e.is_recurring);
+        const label = checkBatched ? 'Batched' : 'Recurring';
+
+        if (filtered.length === 0) {
+            return {
+                reply: `You currently have **0 ${label.toLowerCase()} expenses** in **${selectedMonth}**.`,
+                actionBadge: `0 ${label} Expenses`,
+                suggestions: [t('ai_sug_how_many_exp'), t('ai_sug_audit')]
+            };
+        }
+
+        const total = filtered.reduce((s, e) => s + parseFloat(e.cost || 0), 0);
+        const lines = filtered.map((e, i) => `${i + 1}. **${e.name}** — ${formatCurrency(e.cost)} *(${e.category})*`).join('\n');
+        return {
+            reply: `You have **${filtered.length} ${label} expense${filtered.length === 1 ? '' : 's'}** in **${selectedMonth}** totaling **${formatCurrency(total)}**:\n\n${lines}`,
+            actionBadge: `${filtered.length} ${label} (${formatCurrency(total)})`,
+            suggestions: [t('ai_sug_audit'), t('ai_sug_daily_spend')]
+        };
+    }
+
+    // =========================================================================
+    // 17. SPECIFIC QUESTION: "HOW MANY EXPENSES / TRANSACTIONS DO I HAVE?"
+    // =========================================================================
+    if (/\b(how\s+many|count|number\s+of|list\s+my|what\s+are\s+my|show\s+my)\s+(?:expenses|transactions|items|purchases)\b/i.test(lower) || /\bexpenses\s+do\s+i\s+have\b/i.test(lower)) {
+        const targetCat = findCategoryInText(lower);
+        const list = targetCat
+            ? monthlyExpenses.filter(e => e.category_id === targetCat.id)
+            : monthlyExpenses;
+
+        if (list.length === 0) {
+            return {
+                reply: targetCat
+                    ? `You have **0 expenses** logged under **${targetCat.name}** in **${selectedMonth}**.`
+                    : `You have **0 expenses** logged in **${selectedMonth}** so far.`,
+                actionBadge: '0 Transactions',
+                suggestions: ['Log 35 for coffee in Wants', t('ai_sug_audit')]
+            };
+        }
+
+        const totalAmt = list.reduce((s, e) => s + parseFloat(e.cost || 0), 0);
+        const previewItems = list
+            .slice(0, 6)
+            .map((e, i) => `${i + 1}. **${e.name}** — ${formatCurrency(e.cost)} *(${e.category} • ${e.expense_date}${e.is_recurring ? ' • Recurring' : ''}${e.is_batched ? ' • Batched' : ''})*`)
+            .join('\n');
+
+        return {
+            reply: `You have **${list.length} expense${list.length === 1 ? '' : 's'}**${targetCat ? ` in **${targetCat.name}**` : ''} for **${selectedMonth}**, totaling **${formatCurrency(totalAmt)}**:\n\n${previewItems}${list.length > 6 ? `\n\n*...and ${list.length - 6} more.*` : ''}`,
+            actionBadge: `${list.length} Expense${list.length === 1 ? '' : 's'} (${formatCurrency(totalAmt)})`,
+            suggestions: [t('ai_sug_remove_last'), t('ai_sug_daily_spend'), t('ai_sug_audit')]
+        };
+    }
+
+    // =========================================================================
+    // 18. SPECIFIC QUESTION: "HOW MUCH DID I SPEND?" / "HOW MUCH IS LEFT IN X?"
+    // =========================================================================
+    if (/(?<![\p{L}\p{N}])(how\s+much|combien|cuánto|كم)(?![\p{L}\p{N}]).*(?<![\p{L}\p{N}])(spend|spent|used|left|remaining|have\s+in|dépensé|restant|gastado|queda|أنفقت|متبقي)(?![\p{L}\p{N}])/iu.test(lower)) {
+        const targetCat = findCategoryInText(lower);
+        if (targetCat) {
+            const { allocated, spent, remaining } = getCategoryStats(targetCat);
+            const count = monthlyExpenses.filter(e => e.category_id === targetCat.id).length;
+            return {
+                reply: `**${targetCat.name} (${selectedMonth}):**\n\n• **Allocated Budget:** ${formatCurrency(allocated)} (${Math.round(targetCat.percentage)}%)\n• **Spent So Far:** ${formatCurrency(spent)} across ${count} transaction${count === 1 ? '' : 's'}\n• **Remaining Available:** **${formatCurrency(remaining)}**`,
+                actionBadge: `${targetCat.name}: ${formatCurrency(remaining)} left`,
+                suggestions: [`Can I afford 100 in ${targetCat.name}?`, t('ai_sug_daily_spend')]
+            };
+        }
+
+        return {
+            reply: `In **${selectedMonth}**, you have spent **${formatCurrency(totalSpent)}** across **${monthlyExpenses.length} transaction${monthlyExpenses.length === 1 ? '' : 's'}**, with **${formatCurrency(totalAutomatedAssets)}** allocated to Wealth Assets and **${formatCurrency(totalRemaining)}** in remaining cash.`,
+            actionBadge: `Spent: ${formatCurrency(totalSpent)}`,
+            suggestions: [t('ai_sug_daily_spend'), t('ai_sug_audit')]
+        };
     }
 
     // =========================================================================
