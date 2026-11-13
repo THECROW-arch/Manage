@@ -5,10 +5,11 @@ import { useTranslation } from 'react-i18next';
 import { supabase } from './supabaseClient';
 import Auth from './Auth';
 import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth } from './utils/constants';
-import { sendRecurringExpenseReminderEmail } from './utils/emailReminderService';
+import { sendRecurringExpenseReminderEmail, parseReminderPeriodMap } from './utils/emailReminderService';
 import Sidebar, { MobileHeader } from './components/Sidebar';
 import CashFlowTab from './components/CashFlowTab';
 import AIAssistantDrawer from './components/AIAssistantDrawer';
+import NotificationBell from './components/NotificationBell';
 
 const HistoryTab = lazy(() => import('./components/HistoryTab'));
 const TaxCenterTab = lazy(() => import('./components/TaxCenterTab'));
@@ -113,7 +114,6 @@ export default function App() {
   const [upgradePromptFeature, setUpgradePromptFeature] = useState(null);
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
   const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
-  const [isSendingReminder, setIsSendingReminder] = useState(false);
 
   const hasProAccess = useMemo(() => {
     const cleanRole = String(userRole || '').trim().toLowerCase();
@@ -575,41 +575,108 @@ export default function App() {
     t
   ]);
 
+const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
+
   const expenseMetaMap = useMemo(() => {
     if (!activeUserId) return {};
     return metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
   }, [activeUserId, metaOverridesByUser]);
 
-  const updateExpenseMeta = (expId, patch, syncToDb = true) => {
-    if (!activeUserId || !expId) return;
-    setMetaOverridesByUser(prev => {
-      const current = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
-      const mergedEntry = { ...(current[expId] || {}), ...patch };
-      const next = {
-        ...current,
-        [expId]: mergedEntry
-      };
-      return { ...prev, [activeUserId]: next };
-    });
+  // Hydrate recurring expense metadata after expense-row loading completes so profile skips/confirmations are never overwritten
+  useEffect(() => {
+    if (!activeUserId || loadingData) return;
+    let isCancelled = false;
 
-    if (syncToDb) {
-      const dbPatch = {};
-      if (patch.recurrenceType !== undefined) dbPatch.recurrence_type = patch.recurrenceType;
-      if (patch.skippedPeriods !== undefined) dbPatch.skipped_periods = patch.skippedPeriods;
-      if (patch.lastEditedAt !== undefined) dbPatch.last_edited_at = patch.lastEditedAt;
+    supabase
+      .from('profiles')
+      .select('expense_meta')
+      .eq('user_id', activeUserId)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (isCancelled) return;
+        if (!error && data?.expense_meta && typeof data.expense_meta === 'object') {
+          setMetaOverridesByUser((prev) => {
+            const baseMap = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
+            const mergedMap = { ...baseMap };
+            Object.entries(data.expense_meta).forEach(([expId, val]) => {
+              const existing = mergedMap[expId] || {};
+              const profileConfirmed = Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [];
+              const profileSkipped = Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [];
+              const existingConfirmed = Array.isArray(existing.confirmedPeriods) ? existing.confirmedPeriods.map(String) : [];
+              const existingSkipped = Array.isArray(existing.skippedPeriods) ? existing.skippedPeriods.map(String) : [];
 
-      if (Object.keys(dbPatch).length > 0) {
-        supabase
-          .from('expenses')
-          .update(dbPatch)
-          .eq('id', expId)
-          .eq('user_id', activeUserId)
-          .then(({ error }) => {
-            if (error) console.warn('Failed to sync expense metadata to Supabase:', error.message);
+              const mergedSkipped = Array.from(
+                new Set([...existingSkipped, ...profileSkipped])
+              ).filter((p) => !profileConfirmed.includes(p));
+
+              const mergedConfirmed = Array.from(
+                new Set([...existingConfirmed, ...profileConfirmed])
+              ).filter((p) => !mergedSkipped.includes(p));
+
+              mergedMap[expId] = {
+                recurrenceType: ['daily', 'monthly', 'yearly'].includes(val?.recurrenceType)
+                  ? val.recurrenceType
+                  : existing.recurrenceType || 'monthly',
+                skippedPeriods: mergedSkipped,
+                confirmedPeriods: mergedConfirmed
+              };
+            });
+            try {
+              localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(mergedMap));
+            } catch {
+              // Ignore storage quota errors
+            }
+            return { ...prev, [activeUserId]: mergedMap };
           });
+        }
+        setMetaHydratedUserId(activeUserId);
+      })
+      .catch(() => {
+        if (!isCancelled) setMetaHydratedUserId(activeUserId);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeUserId, loadingData]);
+
+  const updateExpenseMeta = useCallback((expenseId, patch) => {
+    if (!activeUserId || !expenseId) return;
+    setMetaOverridesByUser((prev) => {
+      const baseMap = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
+      const current = baseMap[expenseId] || {
+        recurrenceType: 'monthly',
+        skippedPeriods: [],
+        confirmedPeriods: []
+      };
+      const merged = typeof patch === 'function' ? patch(current) : { ...current, ...patch };
+      const normalized = {
+        recurrenceType: ['daily', 'monthly', 'yearly'].includes(merged?.recurrenceType)
+          ? merged.recurrenceType
+          : 'monthly',
+        skippedPeriods: Array.isArray(merged?.skippedPeriods)
+          ? Array.from(new Set(merged.skippedPeriods.map(String)))
+          : [],
+        confirmedPeriods: Array.isArray(merged?.confirmedPeriods)
+          ? Array.from(new Set(merged.confirmedPeriods.map(String)))
+          : []
+      };
+      const nextMap = { ...baseMap, [expenseId]: normalized };
+      try {
+        localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(nextMap));
+      } catch {
+        // Ignore storage quota errors
       }
-    }
-  };
+      supabase
+        .from('profiles')
+        .update({ expense_meta: nextMap })
+        .eq('user_id', activeUserId)
+        .then(({ error }) => {
+          if (error) console.warn('Could not sync expense_meta to profile:', error.message);
+        });
+      return { ...prev, [activeUserId]: nextMap };
+    });
+  }, [activeUserId]);
 
   useEffect(() => {
     if (!activeUserId) return;
@@ -731,126 +798,166 @@ export default function App() {
    * Sends a confirmation reminder email for recurring expenses in the active period.
    * @param {boolean} isManualTrigger - Whether triggered manually by user button click.
    */
- const autoReminderAttemptedRef = useRef({});
+ // Automatically trigger recurring expense reminder emails per cycle (Daily, Monthly, Yearly)
+  const autoReminderAttemptedRef = useRef({});
+  const autoReminderRetryCountRef = useRef({});
+  const autoReminderNextRetryAtRef = useRef({});
+  const autoReminderRetryTimersRef = useRef({});
+  const [reminderRetryTick, setReminderRetryTick] = useState(0);
 
-  const handleSendRecurringReminder = async (isManualTrigger = true) => {
-    if (!session?.user?.email || isSendingReminder) return;
-
-    const unconfirmedRecurring = activeMonthlyExpenses
-      .filter(exp => exp.is_recurring)
-      .map(exp => ({
-        ...exp,
-        recurrenceType: expenseMetaMap[exp.id]?.recurrenceType || 'monthly'
-      }));
-
-    if (unconfirmedRecurring.length === 0) {
-      if (isManualTrigger) {
-        setAlertMsg(
-          t('err_no_unconfirmed_recurring', {
-            period: selectedMonth,
-            defaultValue: `All recurring expenses for ${selectedMonth} are already confirmed or skipped.`
-          })
-        );
-      }
-      return;
-    }
-
-    const attemptKey = `${session.user.id}_${selectedMonth}`;
-    autoReminderAttemptedRef.current[attemptKey] = true;
-    setIsSendingReminder(true);
-
-    try {
-      const res = await sendRecurringExpenseReminderEmail({
-        userId: session.user.id,
-        recipientEmail: session.user.email,
-        username: username || session.user.email.split('@')[0],
-        periodKey: selectedMonth,
-        pendingExpenses: unconfirmedRecurring,
-        formatCurrency,
-        onlyIfNotSent: !isManualTrigger
-      });
-
-      if (res.ok) {
-        setLastReminderPeriod(selectedMonth);
-        if (isManualTrigger) {
-          setAlertMsg(
-            t('succ_reminder_sent', {
-              email: session.user.email,
-              count: unconfirmedRecurring.length,
-              defaultValue: `Confirmation reminder email queued for ${session.user.email} (${unconfirmedRecurring.length} recurring item(s)).`
-            })
-          );
-        }
-      } else if (isManualTrigger && res.error) {
-        setAlertMsg(res.error);
-      }
-    } catch (err) {
-      console.warn('Manual reminder dispatch failed:', err);
-      if (isManualTrigger) {
-        setAlertMsg(err?.message || 'Failed to send reminder email.');
-      }
-    } finally {
-      setIsSendingReminder(false);
-    }
-  };
-
-  // Automatically trigger one recurring expense reminder email per period when enabled
+  // Clean up any scheduled retry timers only when App unmounts
   useEffect(() => {
-    if (!session?.user?.email || loadingData || isReadOnly) return;
+    const timersMap = autoReminderRetryTimersRef.current;
+    return () => {
+      Object.values(timersMap).forEach((timerId) => clearTimeout(timerId));
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session?.user?.email || loadingData || isReadOnly || metaHydratedUserId !== session.user.id) return;
     if (!emailRemindersEnabled) return;
 
-    let cachedPeriod;
+    const currentMonthStr = getCurrentMonth();
+    const todayStr = getToday();
+    const activeYearStr = selectedMonth.slice(0, 4);
+
+    const storedMap = parseReminderPeriodMap(lastReminderPeriod);
     try {
-      cachedPeriod = localStorage.getItem(`managed_last_reminder_${session.user.id}`);
+      const localRaw = localStorage.getItem(`managed_last_reminder_${session.user.id}`);
+      Object.assign(storedMap, parseReminderPeriodMap(localRaw));
     } catch {
-      cachedPeriod = null;
+      // Ignore storage access errors
     }
 
-    if (lastReminderPeriod === selectedMonth || cachedPeriod === selectedMonth) return;
+    const cycleConfigs = [
+      ...(selectedMonth === currentMonthStr
+        ? [{ cycle: 'daily', periodKey: todayStr }]
+        : []),
+      { cycle: 'monthly', periodKey: selectedMonth },
+      { cycle: 'yearly', periodKey: activeYearStr }
+    ];
 
-    const attemptKey = `${session.user.id}_${selectedMonth}`;
-    if (autoReminderAttemptedRef.current[attemptKey]) return;
+    let isCancelled = false;
 
-    const unconfirmedRecurring = activeMonthlyExpenses
-      .filter(exp => exp.is_recurring)
-      .map(exp => ({
-        ...exp,
-        recurrenceType: expenseMetaMap[exp.id]?.recurrenceType || 'monthly'
-      }));
+    const scheduleBoundedRetry = (attemptKey) => {
+      const retriesSoFar = autoReminderRetryCountRef.current[attemptKey] || 0;
+      if (retriesSoFar >= 2) {
+        autoReminderAttemptedRef.current[attemptKey] = 'exhausted';
+        return;
+      }
+      const nextRetryCount = retriesSoFar + 1;
+      autoReminderRetryCountRef.current[attemptKey] = nextRetryCount;
+      const delayMs = 15000;
+      autoReminderNextRetryAtRef.current[attemptKey] = Date.now() + delayMs;
+      autoReminderAttemptedRef.current[attemptKey] = 'cooldown';
 
-    if (unconfirmedRecurring.length === 0) return;
+      if (!autoReminderRetryTimersRef.current[attemptKey]) {
+        autoReminderRetryTimersRef.current[attemptKey] = setTimeout(() => {
+          delete autoReminderRetryTimersRef.current[attemptKey];
+          if (autoReminderAttemptedRef.current[attemptKey] === 'cooldown') {
+            delete autoReminderAttemptedRef.current[attemptKey];
+          }
+          setReminderRetryTick((prev) => prev + 1);
+        }, delayMs);
+      }
+    };
 
-    // Keep the marker locked for the session even if delivery fails so re-renders never loop
-    autoReminderAttemptedRef.current[attemptKey] = true;
+    (async () => {
+      for (const { cycle, periodKey } of cycleConfigs) {
+        if (isCancelled) break;
 
-    sendRecurringExpenseReminderEmail({
-      userId: session.user.id,
-      recipientEmail: session.user.email,
-      username: username || session.user.email.split('@')[0],
-      periodKey: selectedMonth,
-      pendingExpenses: unconfirmedRecurring,
-      formatCurrency,
-      onlyIfNotSent: true
-    })
-      .then((res) => {
-        if (res?.ok) {
-          setLastReminderPeriod(selectedMonth);
+        // Only remind for recurring items matching this cycle that are neither skipped nor already confirmed
+        const cyclePendingExpenses = activeMonthlyExpenses
+          .filter((exp) => exp.is_recurring)
+          .map((exp) => {
+            const meta = expenseMetaMap[exp.id] || {};
+            const recurrenceType = meta.recurrenceType || 'monthly';
+            const isSkipped = Array.isArray(meta.skippedPeriods) && meta.skippedPeriods.includes(periodKey);
+            const isConfirmed = Array.isArray(meta.confirmedPeriods) && meta.confirmedPeriods.includes(periodKey);
+            return {
+              ...exp,
+              recurrenceType,
+              isAnswered: isSkipped || isConfirmed
+            };
+          })
+          .filter((exp) => exp.recurrenceType === cycle && !exp.isAnswered);
+
+        if (cyclePendingExpenses.length === 0) continue;
+
+        let cachedCyclePeriod;
+        try {
+          cachedCyclePeriod = localStorage.getItem(`managed_last_reminder_${session.user.id}_${cycle}`);
+        } catch {
+          cachedCyclePeriod = null;
         }
-      })
-      .catch((err) => {
-        console.warn('Automatic recurring reminder check failed:', err);
-      });
+
+        if (storedMap[cycle] === periodKey || cachedCyclePeriod === periodKey) continue;
+
+        const attemptKey = `${session.user.id}_${cycle}_${periodKey}`;
+        const currentStatus = autoReminderAttemptedRef.current[attemptKey];
+        const retriesUsed = autoReminderRetryCountRef.current[attemptKey] || 0;
+        const nextAllowedAt = autoReminderNextRetryAtRef.current[attemptKey] || 0;
+
+        if (
+          currentStatus === 'inflight' ||
+          currentStatus === 'done' ||
+          currentStatus === 'exhausted' ||
+          retriesUsed > 2 ||
+          Date.now() < nextAllowedAt
+        ) {
+          continue;
+        }
+
+        autoReminderAttemptedRef.current[attemptKey] = 'inflight';
+
+        try {
+          const res = await sendRecurringExpenseReminderEmail({
+            userId: session.user.id,
+            recipientEmail: session.user.email,
+            username: username || session.user.email.split('@')[0],
+            periodKey,
+            recurrenceCycle: cycle,
+            pendingExpenses: cyclePendingExpenses,
+            formatCurrency,
+            onlyIfNotSent: true
+          });
+
+          if (res?.ok && res.serializedMap) {
+            autoReminderAttemptedRef.current[attemptKey] = 'done';
+            delete autoReminderRetryCountRef.current[attemptKey];
+            delete autoReminderNextRetryAtRef.current[attemptKey];
+            if (autoReminderRetryTimersRef.current[attemptKey]) {
+              clearTimeout(autoReminderRetryTimersRef.current[attemptKey]);
+              delete autoReminderRetryTimersRef.current[attemptKey];
+            }
+            Object.assign(storedMap, parseReminderPeriodMap(res.serializedMap));
+            setLastReminderPeriod(res.serializedMap);
+          } else {
+            scheduleBoundedRetry(attemptKey);
+          }
+        } catch (err) {
+          scheduleBoundedRetry(attemptKey);
+          console.warn(`Automatic ${cycle} recurring reminder check failed:`, err);
+        }
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [
     session,
     username,
     loadingData,
     isReadOnly,
+    metaHydratedUserId,
     emailRemindersEnabled,
     lastReminderPeriod,
     selectedMonth,
     activeMonthlyExpenses,
     expenseMetaMap,
-    formatCurrency
+    formatCurrency,
+    reminderRetryTick
   ]);
   const handleExportData = async (exportFormat) => {
     if (exportFormat === 'visual' && !hasProAccess) {
@@ -2157,19 +2264,35 @@ export default function App() {
           )}
 
           <MobileHeader
-            activeTab={activeTab}
-            setActiveTab={setActiveTab}
-            setAlertMsg={setAlertMsg}
-            currentStreak={currentStreak}
-            longestStreak={longestStreak}
-            userRole={userRole}
-            username={username}
-            handleLogout={handleLogoutRequest}
-            subscriptionTier={subscriptionTier}
-            hasProAccess={hasProAccess}
-          />
+         activeTab={activeTab}
+         setActiveTab={setActiveTab}
+         setAlertMsg={setAlertMsg}
+         currentStreak={currentStreak}
+         longestStreak={longestStreak}
+         userRole={userRole}
+         username={username}
+         handleLogout={handleLogoutRequest}
+         subscriptionTier={subscriptionTier}
+         hasProAccess={hasProAccess}
+       />
 
-          <Suspense fallback={<div className="py-12 text-center text-xs font-semibold text-gray-500 dark:text-zinc-400 animate-pulse">{t('loading_data')}</div>}>
+       <NotificationBell
+         userId={activeUserId}
+         selectedMonth={selectedMonth}
+         isPastMonth={isPastMonth}
+         closedMonths={closedMonths}
+         isReadOnly={isReadOnly}
+         parsedSalary={parsedSalary}
+         categories={categories}
+         monthlyExpenses={activeMonthlyExpenses}
+         expenseMetaMap={expenseMetaMap}
+         updateExpenseMeta={updateExpenseMeta}
+         isExpenseSkippedForCurrentPeriod={isExpenseSkippedForCurrentPeriod}
+         formatCurrency={formatCurrency}
+         setActiveTab={setActiveTab}
+       />
+
+       <Suspense fallback={<div className="py-12 text-center text-xs font-semibold text-gray-500 dark:text-zinc-400 animate-pulse">{t('loading_data')}</div>}>
 
             {activeTab === 'cashflow' && (
               <CashFlowTab
@@ -2413,8 +2536,6 @@ export default function App() {
                 handleExportData={handleExportData}
                 emailRemindersEnabled={emailRemindersEnabled}
                 setEmailRemindersEnabled={setEmailRemindersEnabled}
-                onSendRecurringReminder={() => handleSendRecurringReminder(true)}
-                isSendingReminder={isSendingReminder}
                 userEmail={session?.user?.email || ''}
               />
             )}
@@ -2461,6 +2582,7 @@ export default function App() {
           setSelectedMonth={setSelectedMonth}
           isReadOnly={isReadOnly}
           formatCurrency={formatCurrency}
+          getCategoryAvailablePool={getCategoryAvailablePool}
           taxCountry={taxCountry}
           setTaxCountry={setTaxCountry}
           taxFilingStatus={taxFilingStatus}
@@ -2536,15 +2658,22 @@ export default function App() {
             setActiveSheetId(tempId);
             return { ok: true, sheet: newSheet };
           }}
-          onPrefillExpense={({ name, cost, categoryId, isRecurring: rec, isBatched: bat }) => {
+          onPrefillExpense={({ name, cost, categoryId, isRecurring: rec, recurrenceType = 'monthly', isBatched: bat }) => {
             setActiveTab('cashflow');
             setExpenseName(name);
             setExpenseCost(cost);
             if (categoryId) setExpenseCategoryId(categoryId);
             setIsRecurring(Boolean(rec));
             setIsBatched(Boolean(bat));
+            if (rec && ['daily', 'monthly', 'yearly'].includes(recurrenceType)) {
+              try {
+                sessionStorage.setItem('managed_prefill_recurrence_type', recurrenceType);
+              } catch {
+                // Ignore storage errors
+              }
+            }
           }}
-          onDirectLogExpense={async ({ name, cost, categoryId, expenseDate: expDate, isRecurring: rec, isBatched: bat }) => {
+          onDirectLogExpense={async ({ name, cost, categoryId, expenseDate: expDate, isRecurring: rec, recurrenceType = 'monthly', isBatched: bat }) => {
             if (isReadOnly) {
               return { ok: false, error: `The ledger for **${selectedMonth}** is closed and read-only.` };
             }
@@ -2563,7 +2692,8 @@ export default function App() {
               };
             }
 
-            const payload = {
+            const validRecType = ['daily', 'monthly', 'yearly'].includes(recurrenceType) ? recurrenceType : 'monthly';
+            const basePayload = {
               user_id: session.user.id,
               name,
               cost,
@@ -2575,9 +2705,27 @@ export default function App() {
               bundle_id: null
             };
 
-            const { data, error } = await supabase.from('expenses').insert([payload]).select();
+            let { data, error } = await supabase
+              .from('expenses')
+              .insert([rec ? { ...basePayload, recurrence_type: validRecType } : basePayload])
+              .select();
+
+            if (error && rec) {
+              const fallbackRes = await supabase.from('expenses').insert([basePayload]).select();
+              data = fallbackRes.data;
+              error = fallbackRes.error;
+            }
+
             if (error || !data || data.length === 0) {
               return { ok: false, error: 'Database error while saving expense. Please try again.' };
+            }
+
+            if (rec) {
+              updateExpenseMeta(data[0].id, {
+                recurrenceType: validRecType,
+                skippedPeriods: [],
+                confirmedPeriods: []
+              });
             }
 
             setExpenses(prev => [data[0], ...prev]);

@@ -3,17 +3,24 @@ import { useTranslation } from 'react-i18next';
 import { processAIAgentTurn } from '../utils/aiAgentEngine';
 import { getLocalTranscriber, mergeAndResampleTo16kHz } from '../utils/voiceTranscriber';
 
-const DEFAULT_WELCOME_MESSAGE = {
-    id: 'welcome',
-    role: 'assistant',
-    text: 'Hi! I am **Sterling**, your MANAGED AI Assistant. I can analyze your live budget, tell you how many expenses you have, check if you can afford a purchase, or log expenses and adjust categories directly for you.',
-    suggestions: [
-        'How many expenses do I have this month?',
-        'Audit my budget',
-        'How much can I spend per day?',
-        'When will I reach my Savings goal?'
-    ]
-};
+/**
+ * Builds the localized initial welcome message using i18n translation keys.
+ * @param {Function} t - i18next translation function.
+ * @returns {{id: string, role: string, text: string, suggestions: string[]}} Welcome message object.
+ */
+function buildWelcomeMessage(t) {
+    return {
+        id: 'welcome',
+        role: 'assistant',
+        text: t('ai_welcome_text'),
+        suggestions: [
+            t('ai_sug_how_many_exp'),
+            t('ai_sug_audit'),
+            t('ai_sug_daily_spend'),
+            t('ai_sug_savings_goal')
+        ]
+    };
+}
 
 /**
  * Returns the account-scoped localStorage key for AI chat history.
@@ -23,21 +30,28 @@ const getChatStorageKey = (uid) => (uid ? `managed_ai_chat_history_${uid}` : nul
 /**
  * Loads the saved AI conversation history for a specific authenticated user ID.
  */
-const loadAccountChatHistory = (uid) => {
+const loadAccountChatHistory = (uid, t) => {
+    const fallbackWelcome = buildWelcomeMessage(t);
     const key = getChatStorageKey(uid);
-    if (!key) return [DEFAULT_WELCOME_MESSAGE];
+    if (!key) return [fallbackWelcome];
     try {
         const saved = localStorage.getItem(key);
         const parsed = saved ? JSON.parse(saved) : null;
-        return Array.isArray(parsed) && parsed.length > 0 ? parsed : [DEFAULT_WELCOME_MESSAGE];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed.map((m) => (m?.id === 'welcome' ? fallbackWelcome : m));
+        }
+        return [fallbackWelcome];
     } catch {
-        return [DEFAULT_WELCOME_MESSAGE];
+        return [fallbackWelcome];
     }
 };
 
 export default function AIAssistantDrawer(props) {
     const { userId } = props;
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
+    const activeLang = (i18n.resolvedLanguage || i18n.language || 'en').slice(0, 2).toLowerCase();
+    const isRtl = activeLang === 'ar';
+
     const [isOpen, setIsOpen] = useState(false);
     const [input, setInput] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
@@ -45,7 +59,7 @@ export default function AIAssistantDrawer(props) {
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
 
-    const [messages, setMessages] = useState(() => loadAccountChatHistory(userId));
+    const [messages, setMessages] = useState(() => loadAccountChatHistory(userId, t));
     const msgIdCounterRef = useRef(
         messages.reduce((max, msg) => {
             const match = typeof msg?.id === 'string' ? /^[uae]_(\d+)$/.exec(msg.id) : null;
@@ -160,7 +174,7 @@ export default function AIAssistantDrawer(props) {
                 {
                     id: nextErrMsgId,
                     role: 'assistant',
-                    text: 'Something went wrong while processing that request. Please try again.'
+                    text: t('ai_error_text')
                 }
             ]);
         } finally {
@@ -171,7 +185,6 @@ export default function AIAssistantDrawer(props) {
     const toggleAssistantVoice = async () => {
         if (isTranscribing) return;
 
-        // If microphone startup is pending, cancel the pending attempt immediately
         if (isStartingMicRef.current || isStartingMic) {
             releaseMic();
             setIsStartingMic(false);
@@ -179,7 +192,6 @@ export default function AIAssistantDrawer(props) {
             return;
         }
 
-        // If actively recording, stop and transcribe
         if (isRecordingRef.current || isRecording) {
             const sampleRate = audioContextRef.current?.sampleRate || 16000;
             const chunks = [...audioChunksRef.current];
@@ -222,7 +234,6 @@ export default function AIAssistantDrawer(props) {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-            // If canceled or superseded while waiting for permission, stop tracks and exit
             if (micAttemptRef.current !== attemptId || !isStartingMicRef.current) {
                 stream.getTracks().forEach(track => {
                     try { track.stop(); } catch { /* ignore */ }
@@ -301,6 +312,7 @@ export default function AIAssistantDrawer(props) {
             {isOpen && (
                 <div
                     role="dialog"
+                    dir={isRtl ? 'rtl' : 'ltr'}
                     aria-label="MANAGED AI Financial Assistant"
                     onKeyDown={(e) => { if (e.key === 'Escape') handleCloseDrawer(); }}
                     className="fixed bottom-20 right-6 z-50 w-[92vw] sm:w-[400px] h-[540px] max-h-[80vh] bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-fade-in"
@@ -310,21 +322,21 @@ export default function AIAssistantDrawer(props) {
                             <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse" />
                             <div>
                                 <h3 className="text-xs font-black uppercase tracking-wider">
-                                    {t('ai_drawer_title', 'Sterling • MANAGED AI')}
+                                    {t('ai_drawer_title')}
                                 </h3>
                                 <p className="text-[10px] text-emerald-100">
-                                    {t('ai_drawer_subtitle', 'Personal Financial Advisor & Action Agent')}
+                                    {t('ai_drawer_subtitle')}
                                 </p>
                             </div>
                         </div>
                         <div className="flex items-center gap-2">
                             <button
                                 type="button"
-                                onClick={() => setMessages([DEFAULT_WELCOME_MESSAGE])}
-                                title={t('ai_clear_chat_title', 'Clear conversation history')}
+                                onClick={() => setMessages([buildWelcomeMessage(t)])}
+                                title={t('ai_clear_chat_title')}
                                 className="px-2 py-0.5 rounded bg-emerald-800 hover:bg-emerald-900 text-[10px] font-bold text-emerald-100 transition-colors"
                             >
-                                {t('ai_clear_chat', 'Clear Chat')}
+                                {t('ai_clear_chat')}
                             </button>
                             <button
                                 type="button"
@@ -338,41 +350,44 @@ export default function AIAssistantDrawer(props) {
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar bg-gray-50/60 dark:bg-zinc-950/60">
-                        {messages.map((msg) => (
-                            <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                                {msg.actionBadge && (
-                                    <span className="mb-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
-                                        ✓ {msg.actionBadge}
-                                    </span>
-                                )}
-                                <div
-                                    className={`max-w-[88%] px-3.5 py-2.5 rounded-xl text-xs ${msg.role === 'user'
-                                            ? 'bg-emerald-700 text-white rounded-br-none'
-                                            : 'bg-white dark:bg-zinc-900 text-gray-700 dark:text-zinc-300 border border-gray-200 dark:border-zinc-800 rounded-bl-none shadow-sm'
-                                        }`}
-                                >
-                                    {renderFormattedText(msg.text)}
-                                </div>
-
-                                {msg.suggestions && msg.suggestions.length > 0 && (
-                                    <div className="flex flex-wrap gap-1.5 mt-2">
-                                        {msg.suggestions.map((sug, i) => (
-                                            <button
-                                                key={i}
-                                                type="button"
-                                                onClick={() => handleSendPrompt(sug)}
-                                                className="text-[11px] px-2.5 py-1 rounded-full bg-white dark:bg-zinc-900 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 font-medium transition-colors"
-                                            >
-                                                {sug}
-                                            </button>
-                                        ))}
+                        {messages.map((rawMsg) => {
+                            const msg = rawMsg?.id === 'welcome' ? buildWelcomeMessage(t) : rawMsg;
+                            return (
+                                <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                                    {msg.actionBadge && (
+                                        <span className="mb-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30">
+                                            ✓ {msg.actionBadge}
+                                        </span>
+                                    )}
+                                    <div
+                                        className={`max-w-[88%] px-3.5 py-2.5 rounded-xl text-xs ${msg.role === 'user'
+                                                ? 'bg-emerald-700 text-white rounded-br-none'
+                                                : 'bg-white dark:bg-zinc-900 text-gray-700 dark:text-zinc-300 border border-gray-200 dark:border-zinc-800 rounded-bl-none shadow-sm'
+                                            }`}
+                                    >
+                                        {renderFormattedText(msg.text)}
                                     </div>
-                                )}
-                            </div>
-                        ))}
+
+                                    {msg.suggestions && msg.suggestions.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5 mt-2">
+                                            {msg.suggestions.map((sug, i) => (
+                                                <button
+                                                    key={i}
+                                                    type="button"
+                                                    onClick={() => handleSendPrompt(sug)}
+                                                    className="text-[11px] px-2.5 py-1 rounded-full bg-white dark:bg-zinc-900 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30 font-medium transition-colors"
+                                                >
+                                                    {sug}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
                         {isProcessing && (
                             <div className="text-xs text-gray-500 dark:text-zinc-400 italic px-2">
-                                {t('ai_analyzing_ledger', 'Analyzing your ledger...')}
+                                {t('ai_analyzing_ledger')}
                             </div>
                         )}
                         <div ref={messagesEndRef} />
@@ -413,9 +428,9 @@ export default function AIAssistantDrawer(props) {
                             {isTranscribing
                                 ? '⏳'
                                 : isRecording
-                                    ? t('ai_voice_stop_btn', 'Stop')
+                                    ? t('ai_voice_stop_btn')
                                     : isStartingMic
-                                        ? t('cancel_btn', 'Cancel')
+                                        ? t('cancel_btn')
                                         : '🎤'}
                         </button>
                         <input
@@ -425,10 +440,10 @@ export default function AIAssistantDrawer(props) {
                             onChange={(e) => setInput(e.target.value)}
                             placeholder={
                                 isRecording
-                                    ? t('ai_voice_listening', 'Recording... Click Stop when done')
+                                    ? t('ai_voice_listening')
                                     : isStartingMic
-                                        ? t('ai_voice_waiting_mic', 'Waiting for microphone permission...')
-                                        : t('ai_input_placeholder', 'Ask or command (e.g. "How many expenses?")')
+                                        ? t('ai_voice_waiting_mic')
+                                        : t('ai_input_placeholder')
                             }
                             aria-label="Message MANAGED AI Assistant"
                             className="flex-1 px-3 py-2 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-300 dark:border-zinc-800 text-xs text-gray-900 dark:text-white focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/30"
@@ -438,7 +453,7 @@ export default function AIAssistantDrawer(props) {
                             disabled={!input.trim() || isProcessing}
                             className="px-3 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 text-white font-bold text-xs transition-colors"
                         >
-                            {t('ai_send_btn', 'Send')}
+                            {t('ai_send_btn')}
                         </button>
                     </form>
                 </div>
