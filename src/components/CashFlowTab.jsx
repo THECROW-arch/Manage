@@ -138,7 +138,7 @@ export default function CashFlowTab({
         return meta.skippedPeriods.includes(periodKey);
     };
 
-    const togglePeriodConfirmation = (exp) => {
+    const togglePeriodConfirmation = (exp, explicitDecision) => {
         const meta = expenseMetaMap[exp.id] || {};
         const freq = meta.recurrenceType || 'monthly';
         const periodKey = freq === 'daily'
@@ -147,11 +147,26 @@ export default function CashFlowTab({
                 ? selectedMonth.slice(0, 4)
                 : selectedMonth;
         const currentSkipped = Array.isArray(meta.skippedPeriods) ? meta.skippedPeriods : [];
+        const currentConfirmed = Array.isArray(meta.confirmedPeriods) ? meta.confirmedPeriods : [];
         const isSkipped = currentSkipped.includes(periodKey);
-        const nextSkipped = isSkipped
-            ? currentSkipped.filter(k => k !== periodKey)
-            : [...currentSkipped, periodKey];
-        updateExpenseMeta(exp.id, { recurrenceType: freq, skippedPeriods: nextSkipped });
+
+        const targetDecision = explicitDecision || (isSkipped ? 'confirm' : 'skip');
+
+        const nextSkipped =
+            targetDecision === 'skip'
+                ? Array.from(new Set([...currentSkipped, periodKey]))
+                : currentSkipped.filter((k) => k !== periodKey);
+
+        const nextConfirmed =
+            targetDecision === 'confirm'
+                ? Array.from(new Set([...currentConfirmed, periodKey]))
+                : currentConfirmed.filter((k) => k !== periodKey);
+
+        updateExpenseMeta(exp.id, {
+            recurrenceType: freq,
+            skippedPeriods: nextSkipped,
+            confirmedPeriods: nextConfirmed
+        });
     };
 
     const [isListening, setIsListening] = useState(false);
@@ -587,8 +602,13 @@ export default function CashFlowTab({
             alerts.push({
                 type: 'notice',
                 text: diff > 0
-                    ? `You have ${diff}% (${formatCurrency(parsedSalary * (diff / 100))}) of your income unallocated. Use "Smart Lock Board" or drag a category slider to put every dollar to work.`
-                    : `Your categories currently total ${Math.round(totalPctAllocated)}%. Click "Smart Lock Board" to normalize them to 100%.`
+                    ? t('insight_unallocated', {
+                        diff,
+                        amount: formatCurrency(parsedSalary * (diff / 100))
+                    })
+                    : t('insight_overallocated', {
+                        total: Math.round(totalPctAllocated)
+                    })
             });
         }
 
@@ -604,12 +624,22 @@ export default function CashFlowTab({
                 if (burnPct >= 90) {
                     alerts.push({
                         type: 'warning',
-                        text: `High burn alert in "${cat.name}": You have used ${Math.round(burnPct)}% (${formatCurrency(catSpent)} of ${formatCurrency(catBudget)}) with ${formatCurrency(Math.max(0, catBudget - catSpent))} left.`
+                        text: t('insight_high_burn', {
+                            name: cat.name,
+                            pct: Math.round(burnPct),
+                            spent: formatCurrency(catSpent),
+                            budget: formatCurrency(catBudget),
+                            left: formatCurrency(Math.max(0, catBudget - catSpent))
+                        })
                     });
                 } else if (cat.percentage > 60) {
                     alerts.push({
                         type: 'notice',
-                        text: `"${cat.name}" holds ${Math.round(cat.percentage)}% (${formatCurrency(catBudget)}) of your total income—consider splitting or trimming it if you want more flexibility.`
+                        text: t('insight_high_concentration', {
+                            name: cat.name,
+                            pct: Math.round(cat.percentage),
+                            budget: formatCurrency(catBudget)
+                        })
                     });
                 }
             });
@@ -620,13 +650,20 @@ export default function CashFlowTab({
         if (assetCats.length === 0) {
             alerts.push({
                 type: 'tip',
-                text: `You have ${expenseCats.length} spending categories (${expenseCats.map(c => c.name).join(', ')}) but no Wealth Asset category yet. Add an Asset category to automate month-end wealth sweeps.`
+                text: t('insight_no_asset', {
+                    count: expenseCats.length,
+                    names: expenseCats.map(c => c.name).join(', ')
+                })
             });
         } else if (assetPctTotal < 15) {
-            const assetNames = assetCats.map(c => `"${c.name}"`).join(' & ');
             alerts.push({
                 type: 'tip',
-                text: `Your wealth allocation across ${assetNames} is currently ${Math.round(assetPctTotal)}% (${formatCurrency(parsedSalary * (assetPctTotal / 100))}). Boosting it toward 20% would add ${formatCurrency(parsedSalary * ((20 - assetPctTotal) / 100))}/mo to your portfolio.`
+                text: t('insight_low_asset', {
+                    names: assetCats.map(c => `"${c.name}"`).join(' & '),
+                    pct: Math.round(assetPctTotal),
+                    amount: formatCurrency(parsedSalary * (assetPctTotal / 100)),
+                    boost: formatCurrency(parsedSalary * ((20 - assetPctTotal) / 100))
+                })
             });
         }
 
@@ -635,7 +672,12 @@ export default function CashFlowTab({
             const topCat = [...categories].sort((a, b) => (b.percentage || 0) - (a.percentage || 0))[0];
             alerts.push({
                 type: 'success',
-                text: `Your ${categories.length} categories (led by "${topCat.name}" at ${Math.round(topCat.percentage)}%) are well-balanced and pacing safely within budget (${formatCurrency(totalRemaining)} remaining).`
+                text: t('insight_balanced', {
+                    count: categories.length,
+                    name: topCat.name,
+                    pct: Math.round(topCat.percentage),
+                    remaining: formatCurrency(totalRemaining)
+                })
             });
         }
 
@@ -1456,24 +1498,55 @@ export default function CashFlowTab({
                                                                     {t('batched_short', 'Batched')}
                                                                 </span>
                                                             )}
-                                                            {exp.is_recurring && !isReadOnly && (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        togglePeriodConfirmation(exp);
-                                                                    }}
-                                                                    title="Toggle whether you paid this recurring expense during this period"
-                                                                    className={`text-[10px] px-2 py-0.5 rounded font-bold border transition-colors ${isSkippedThisPeriod
-                                                                        ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-300'
-                                                                        : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300'
-                                                                        }`}
-                                                                >
-                                                                    {isSkippedThisPeriod
-                                                                        ? `${t('recurring_skipped_badge', '⏭ Skipped')} (${periodLabel})`
-                                                                        : `${t('recurring_confirmed_badge', '✓ Confirmed')} (${periodLabel})`}
-                                                                </button>
-                                                            )}
+                                                            {exp.is_recurring && !isReadOnly && (() => {
+                                                                const periodKey = freq === 'daily'
+                                                                    ? todayDateStr
+                                                                    : freq === 'yearly'
+                                                                        ? selectedMonth.slice(0, 4)
+                                                                        : selectedMonth;
+                                                                const isConfirmedThisPeriod = Array.isArray(meta.confirmedPeriods) && meta.confirmedPeriods.includes(periodKey);
+                                                                const isAnsweredThisPeriod = isSkippedThisPeriod || isConfirmedThisPeriod;
+
+                                                                if (!isAnsweredThisPeriod) {
+                                                                    return (
+                                                                        <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => togglePeriodConfirmation(exp, 'confirm')}
+                                                                                className="text-[10px] px-2 py-0.5 rounded font-bold border bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100"
+                                                                            >
+                                                                                {t('notif_confirm_period_btn')} ({periodLabel})
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => togglePeriodConfirmation(exp, 'skip')}
+                                                                                className="text-[10px] px-2 py-0.5 rounded font-bold border bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-300 hover:bg-amber-100"
+                                                                            >
+                                                                                {t('notif_skip_period_btn')} ({periodLabel})
+                                                                            </button>
+                                                                        </span>
+                                                                    );
+                                                                }
+
+                                                                return (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            togglePeriodConfirmation(exp);
+                                                                        }}
+                                                                        title="Toggle whether you paid this recurring expense during this period"
+                                                                        className={`text-[10px] px-2 py-0.5 rounded font-bold border transition-colors ${isSkippedThisPeriod
+                                                                            ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-300'
+                                                                            : 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-500/40 text-emerald-800 dark:text-emerald-300'
+                                                                            }`}
+                                                                    >
+                                                                        {isSkippedThisPeriod
+                                                                            ? `${t('recurring_skipped_badge', '⏭ Skipped')} (${periodLabel})`
+                                                                            : `${t('recurring_confirmed_badge', '✓ Confirmed')} (${periodLabel})`}
+                                                                    </button>
+                                                                );
+                                                            })()}
                                                         </div>
                                                         <span className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5 flex flex-wrap items-center gap-2">
                                                             <span>

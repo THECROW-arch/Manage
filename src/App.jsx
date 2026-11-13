@@ -9,6 +9,7 @@ import { sendRecurringExpenseReminderEmail } from './utils/emailReminderService'
 import Sidebar, { MobileHeader } from './components/Sidebar';
 import CashFlowTab from './components/CashFlowTab';
 import AIAssistantDrawer from './components/AIAssistantDrawer';
+import NotificationBell from './components/NotificationBell';
 
 const HistoryTab = lazy(() => import('./components/HistoryTab'));
 const TaxCenterTab = lazy(() => import('./components/TaxCenterTab'));
@@ -113,7 +114,6 @@ export default function App() {
   const [upgradePromptFeature, setUpgradePromptFeature] = useState(null);
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
   const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
-  const [isSendingReminder, setIsSendingReminder] = useState(false);
 
   const hasProAccess = useMemo(() => {
     const cleanRole = String(userRole || '').trim().toLowerCase();
@@ -732,67 +732,6 @@ export default function App() {
    * @param {boolean} isManualTrigger - Whether triggered manually by user button click.
    */
  const autoReminderAttemptedRef = useRef({});
-
-  const handleSendRecurringReminder = async (isManualTrigger = true) => {
-    if (!session?.user?.email || isSendingReminder) return;
-
-    const unconfirmedRecurring = activeMonthlyExpenses
-      .filter(exp => exp.is_recurring)
-      .map(exp => ({
-        ...exp,
-        recurrenceType: expenseMetaMap[exp.id]?.recurrenceType || 'monthly'
-      }));
-
-    if (unconfirmedRecurring.length === 0) {
-      if (isManualTrigger) {
-        setAlertMsg(
-          t('err_no_unconfirmed_recurring', {
-            period: selectedMonth,
-            defaultValue: `All recurring expenses for ${selectedMonth} are already confirmed or skipped.`
-          })
-        );
-      }
-      return;
-    }
-
-    const attemptKey = `${session.user.id}_${selectedMonth}`;
-    autoReminderAttemptedRef.current[attemptKey] = true;
-    setIsSendingReminder(true);
-
-    try {
-      const res = await sendRecurringExpenseReminderEmail({
-        userId: session.user.id,
-        recipientEmail: session.user.email,
-        username: username || session.user.email.split('@')[0],
-        periodKey: selectedMonth,
-        pendingExpenses: unconfirmedRecurring,
-        formatCurrency,
-        onlyIfNotSent: !isManualTrigger
-      });
-
-      if (res.ok) {
-        setLastReminderPeriod(selectedMonth);
-        if (isManualTrigger) {
-          setAlertMsg(
-            t('succ_reminder_sent', {
-              email: session.user.email,
-              count: unconfirmedRecurring.length,
-              defaultValue: `Confirmation reminder email queued for ${session.user.email} (${unconfirmedRecurring.length} recurring item(s)).`
-            })
-          );
-        }
-      } else if (isManualTrigger && res.error) {
-        setAlertMsg(res.error);
-      }
-    } catch (err) {
-      console.warn('Manual reminder dispatch failed:', err);
-      if (isManualTrigger) {
-        setAlertMsg(err?.message || 'Failed to send reminder email.');
-      }
-    } finally {
-      setIsSendingReminder(false);
-    }
-  };
 
   // Automatically trigger one recurring expense reminder email per period when enabled
   useEffect(() => {
@@ -2157,19 +2096,35 @@ export default function App() {
           )}
 
           <MobileHeader
-            activeTab={activeTab}
-            setActiveTab={setActiveTab}
-            setAlertMsg={setAlertMsg}
-            currentStreak={currentStreak}
-            longestStreak={longestStreak}
-            userRole={userRole}
-            username={username}
-            handleLogout={handleLogoutRequest}
-            subscriptionTier={subscriptionTier}
-            hasProAccess={hasProAccess}
-          />
+         activeTab={activeTab}
+         setActiveTab={setActiveTab}
+         setAlertMsg={setAlertMsg}
+         currentStreak={currentStreak}
+         longestStreak={longestStreak}
+         userRole={userRole}
+         username={username}
+         handleLogout={handleLogoutRequest}
+         subscriptionTier={subscriptionTier}
+         hasProAccess={hasProAccess}
+       />
 
-          <Suspense fallback={<div className="py-12 text-center text-xs font-semibold text-gray-500 dark:text-zinc-400 animate-pulse">{t('loading_data')}</div>}>
+       <NotificationBell
+         userId={activeUserId}
+         selectedMonth={selectedMonth}
+         isPastMonth={isPastMonth}
+         closedMonths={closedMonths}
+         isReadOnly={isReadOnly}
+         parsedSalary={parsedSalary}
+         categories={categories}
+         monthlyExpenses={activeMonthlyExpenses}
+         expenseMetaMap={expenseMetaMap}
+         updateExpenseMeta={updateExpenseMeta}
+         isExpenseSkippedForCurrentPeriod={isExpenseSkippedForCurrentPeriod}
+         formatCurrency={formatCurrency}
+         setActiveTab={setActiveTab}
+       />
+
+       <Suspense fallback={<div className="py-12 text-center text-xs font-semibold text-gray-500 dark:text-zinc-400 animate-pulse">{t('loading_data')}</div>}>
 
             {activeTab === 'cashflow' && (
               <CashFlowTab
@@ -2413,8 +2368,6 @@ export default function App() {
                 handleExportData={handleExportData}
                 emailRemindersEnabled={emailRemindersEnabled}
                 setEmailRemindersEnabled={setEmailRemindersEnabled}
-                onSendRecurringReminder={() => handleSendRecurringReminder(true)}
-                isSendingReminder={isSendingReminder}
                 userEmail={session?.user?.email || ''}
               />
             )}

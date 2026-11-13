@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { getToday, getCurrentMonth } from '../utils/constants';
 import { useTranslation } from 'react-i18next';
-import { supabase } from '../supabaseClient'; // Ensure supabase client is imported
+import { supabase } from '../supabaseClient';
 
 /**
  * Renders the user account preferences, theme toggle, baseline salary configuration,
@@ -29,8 +29,6 @@ export default function SettingsTab({
   handleExportData,
   emailRemindersEnabled = true,
   setEmailRemindersEnabled,
-  onSendRecurringReminder,
-  isSendingReminder = false,
   userEmail = ''
 }) {
   const { t, i18n } = useTranslation();
@@ -80,9 +78,9 @@ export default function SettingsTab({
       return;
     }
 
-    setIsProcessingDanger(true); // 1. Lock the buttons
+    setIsProcessingDanger(true);
 
-    try { // 2. Start the protected block
+    try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
@@ -94,7 +92,6 @@ export default function SettingsTab({
         supabase.from('closed_months').delete().eq('user_id', session.user.id),
       ]);
 
-      // Explicitly check if any of the delete operations returned an error
       const hasError = results.some(res => res.error !== null);
       if (hasError) {
         console.error("Partial wipe failure:", results.filter(r => r.error));
@@ -108,7 +105,7 @@ export default function SettingsTab({
       console.error(error);
       alert(t('err_data_wipe', 'An error occurred while wiping data.'));
     } finally {
-      setIsProcessingDanger(false); // 3. Unlock the buttons ALWAYS, even if it failed
+      setIsProcessingDanger(false);
     }
   };
 
@@ -120,11 +117,9 @@ export default function SettingsTab({
       return;
     }
 
-    setIsProcessingDanger(true); // 1. Lock the buttons
+    setIsProcessingDanger(true);
 
-    try { // 2. Start the protected block
-      // NOTE: Supabase client-side JS cannot delete users directly for security reasons.
-      // You must create a SECURITY DEFINER function in the database to handle this.
+    try {
       const { error } = await supabase.rpc('delete_user_account');
 
       if (error) {
@@ -135,10 +130,9 @@ export default function SettingsTab({
         window.location.reload();
       }
     } finally {
-      setIsProcessingDanger(false); // 3. Unlock the buttons ALWAYS
+      setIsProcessingDanger(false);
     }
   };
-
 
   return (
     <div className="max-w-2xl mx-auto space-y-8 pb-12">
@@ -410,17 +404,18 @@ export default function SettingsTab({
           </button>
         </div>
       </div>
-      {/* Recurring Expense Confirmation Email Reminders */}
-      <div className="bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 shadow-sm space-y-4">
+
+      {/* Automatic Recurring Expense Email Reminders (Daily, Monthly & Yearly) */}
+      <div className="bg-white dark:bg-zinc-900 p-6 rounded-lg border border-gray-200 dark:border-zinc-800 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-bold text-gray-900 dark:text-white">
-              {t('email_reminders_title', 'Recurring Expense Email Reminders')}
+              {t('email_reminders_title', 'Automatic Recurring Expense Reminders')}
             </h3>
             <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1">
               {t('email_reminders_desc', {
                 email: userEmail || 'your account email',
-                defaultValue: `Receive an email reminder at ${userEmail || 'your account email'} when recurring expenses need to be confirmed or skipped for the active period.`
+                defaultValue: `Automatically receive daily, monthly, and yearly email reminders at ${userEmail || 'your account email'} for recurring expenses that match each cycle.`
               })}
             </p>
           </div>
@@ -438,21 +433,6 @@ export default function SettingsTab({
             </label>
           )}
         </div>
-
-        {onSendRecurringReminder && (
-          <div className="pt-2 border-t border-gray-100 dark:border-zinc-800 flex justify-end">
-            <button
-              type="button"
-              disabled={isSendingReminder}
-              onClick={onSendRecurringReminder}
-              className="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-colors"
-            >
-              {isSendingReminder
-                ? t('sending_reminder_btn', 'Sending Reminder...')
-                : t('send_reminder_now_btn', 'Send Confirmation Reminder Now')}
-            </button>
-          </div>
-        )}
       </div>
     </div>
   );
