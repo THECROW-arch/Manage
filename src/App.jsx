@@ -575,16 +575,16 @@ export default function App() {
     t
   ]);
 
-  const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
+const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
 
   const expenseMetaMap = useMemo(() => {
     if (!activeUserId) return {};
     return metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
   }, [activeUserId, metaOverridesByUser]);
 
-  // Hydrate recurring expense metadata (recurrenceType, skippedPeriods, confirmedPeriods) across devices
+  // Hydrate recurring expense metadata after expense-row loading completes so profile skips/confirmations are never overwritten
   useEffect(() => {
-    if (!activeUserId) return;
+    if (!activeUserId || loadingData) return;
     let isCancelled = false;
 
     supabase
@@ -600,22 +600,25 @@ export default function App() {
             const mergedMap = { ...baseMap };
             Object.entries(data.expense_meta).forEach(([expId, val]) => {
               const existing = mergedMap[expId] || {};
+              const profileConfirmed = Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [];
+              const profileSkipped = Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [];
+              const existingConfirmed = Array.isArray(existing.confirmedPeriods) ? existing.confirmedPeriods.map(String) : [];
+              const existingSkipped = Array.isArray(existing.skippedPeriods) ? existing.skippedPeriods.map(String) : [];
+
+              const mergedSkipped = Array.from(
+                new Set([...existingSkipped, ...profileSkipped])
+              ).filter((p) => !profileConfirmed.includes(p));
+
+              const mergedConfirmed = Array.from(
+                new Set([...existingConfirmed, ...profileConfirmed])
+              ).filter((p) => !mergedSkipped.includes(p));
+
               mergedMap[expId] = {
                 recurrenceType: ['daily', 'monthly', 'yearly'].includes(val?.recurrenceType)
                   ? val.recurrenceType
                   : existing.recurrenceType || 'monthly',
-                skippedPeriods: Array.from(
-                  new Set([
-                    ...(Array.isArray(existing.skippedPeriods) ? existing.skippedPeriods.map(String) : []),
-                    ...(Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [])
-                  ])
-                ),
-                confirmedPeriods: Array.from(
-                  new Set([
-                    ...(Array.isArray(existing.confirmedPeriods) ? existing.confirmedPeriods.map(String) : []),
-                    ...(Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [])
-                  ])
-                )
+                skippedPeriods: mergedSkipped,
+                confirmedPeriods: mergedConfirmed
               };
             });
             try {
@@ -635,7 +638,7 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [activeUserId]);
+  }, [activeUserId, loadingData]);
 
   const updateExpenseMeta = useCallback((expenseId, patch) => {
     if (!activeUserId || !expenseId) return;
@@ -798,7 +801,17 @@ export default function App() {
  // Automatically trigger recurring expense reminder emails per cycle (Daily, Monthly, Yearly)
   const autoReminderAttemptedRef = useRef({});
   const autoReminderRetryCountRef = useRef({});
+  const autoReminderNextRetryAtRef = useRef({});
+  const autoReminderRetryTimersRef = useRef({});
   const [reminderRetryTick, setReminderRetryTick] = useState(0);
+
+  // Clean up any scheduled retry timers only when App unmounts
+  useEffect(() => {
+    const timersMap = autoReminderRetryTimersRef.current;
+    return () => {
+      Object.values(timersMap).forEach((timerId) => clearTimeout(timerId));
+    };
+  }, []);
 
   useEffect(() => {
     if (!session?.user?.email || loadingData || isReadOnly || metaHydratedUserId !== session.user.id) return;
@@ -825,11 +838,31 @@ export default function App() {
     ];
 
     let isCancelled = false;
-    let retryTimerId = null;
+
+    const scheduleBoundedRetry = (attemptKey) => {
+      const retriesSoFar = autoReminderRetryCountRef.current[attemptKey] || 0;
+      if (retriesSoFar >= 2) {
+        autoReminderAttemptedRef.current[attemptKey] = 'exhausted';
+        return;
+      }
+      const nextRetryCount = retriesSoFar + 1;
+      autoReminderRetryCountRef.current[attemptKey] = nextRetryCount;
+      const delayMs = 15000;
+      autoReminderNextRetryAtRef.current[attemptKey] = Date.now() + delayMs;
+      autoReminderAttemptedRef.current[attemptKey] = 'cooldown';
+
+      if (!autoReminderRetryTimersRef.current[attemptKey]) {
+        autoReminderRetryTimersRef.current[attemptKey] = setTimeout(() => {
+          delete autoReminderRetryTimersRef.current[attemptKey];
+          if (autoReminderAttemptedRef.current[attemptKey] === 'cooldown') {
+            delete autoReminderAttemptedRef.current[attemptKey];
+          }
+          setReminderRetryTick((prev) => prev + 1);
+        }, delayMs);
+      }
+    };
 
     (async () => {
-      let shouldScheduleRetry = false;
-
       for (const { cycle, periodKey } of cycleConfigs) {
         if (isCancelled) break;
 
@@ -861,9 +894,21 @@ export default function App() {
         if (storedMap[cycle] === periodKey || cachedCyclePeriod === periodKey) continue;
 
         const attemptKey = `${session.user.id}_${cycle}_${periodKey}`;
-        if (autoReminderAttemptedRef.current[attemptKey]) continue;
+        const currentStatus = autoReminderAttemptedRef.current[attemptKey];
+        const retriesUsed = autoReminderRetryCountRef.current[attemptKey] || 0;
+        const nextAllowedAt = autoReminderNextRetryAtRef.current[attemptKey] || 0;
 
-        autoReminderAttemptedRef.current[attemptKey] = true;
+        if (
+          currentStatus === 'inflight' ||
+          currentStatus === 'done' ||
+          currentStatus === 'exhausted' ||
+          retriesUsed > 2 ||
+          Date.now() < nextAllowedAt
+        ) {
+          continue;
+        }
+
+        autoReminderAttemptedRef.current[attemptKey] = 'inflight';
 
         try {
           const res = await sendRecurringExpenseReminderEmail({
@@ -878,40 +923,27 @@ export default function App() {
           });
 
           if (res?.ok && res.serializedMap) {
+            autoReminderAttemptedRef.current[attemptKey] = 'done';
             delete autoReminderRetryCountRef.current[attemptKey];
+            delete autoReminderNextRetryAtRef.current[attemptKey];
+            if (autoReminderRetryTimersRef.current[attemptKey]) {
+              clearTimeout(autoReminderRetryTimersRef.current[attemptKey]);
+              delete autoReminderRetryTimersRef.current[attemptKey];
+            }
             Object.assign(storedMap, parseReminderPeriodMap(res.serializedMap));
             setLastReminderPeriod(res.serializedMap);
           } else {
-            delete autoReminderAttemptedRef.current[attemptKey];
-            const retriesSoFar = autoReminderRetryCountRef.current[attemptKey] || 0;
-            if (retriesSoFar < 2) {
-              autoReminderRetryCountRef.current[attemptKey] = retriesSoFar + 1;
-              shouldScheduleRetry = true;
-            }
+            scheduleBoundedRetry(attemptKey);
           }
         } catch (err) {
-          delete autoReminderAttemptedRef.current[attemptKey];
-          const retriesSoFar = autoReminderRetryCountRef.current[attemptKey] || 0;
-          if (retriesSoFar < 2) {
-            autoReminderRetryCountRef.current[attemptKey] = retriesSoFar + 1;
-            shouldScheduleRetry = true;
-          }
+          scheduleBoundedRetry(attemptKey);
           console.warn(`Automatic ${cycle} recurring reminder check failed:`, err);
         }
-      }
-
-      if (shouldScheduleRetry && !isCancelled) {
-        retryTimerId = setTimeout(() => {
-          if (!isCancelled) {
-            setReminderRetryTick((prev) => prev + 1);
-          }
-        }, 15000);
       }
     })();
 
     return () => {
       isCancelled = true;
-      if (retryTimerId) clearTimeout(retryTimerId);
     };
   }, [
     session,
@@ -2550,6 +2582,7 @@ export default function App() {
           setSelectedMonth={setSelectedMonth}
           isReadOnly={isReadOnly}
           formatCurrency={formatCurrency}
+          getCategoryAvailablePool={getCategoryAvailablePool}
           taxCountry={taxCountry}
           setTaxCountry={setTaxCountry}
           taxFilingStatus={taxFilingStatus}
@@ -2625,13 +2658,20 @@ export default function App() {
             setActiveSheetId(tempId);
             return { ok: true, sheet: newSheet };
           }}
-          onPrefillExpense={({ name, cost, categoryId, isRecurring: rec, isBatched: bat }) => {
+          onPrefillExpense={({ name, cost, categoryId, isRecurring: rec, recurrenceType = 'monthly', isBatched: bat }) => {
             setActiveTab('cashflow');
             setExpenseName(name);
             setExpenseCost(cost);
             if (categoryId) setExpenseCategoryId(categoryId);
             setIsRecurring(Boolean(rec));
             setIsBatched(Boolean(bat));
+            if (rec && ['daily', 'monthly', 'yearly'].includes(recurrenceType)) {
+              try {
+                sessionStorage.setItem('managed_prefill_recurrence_type', recurrenceType);
+              } catch {
+                // Ignore storage errors
+              }
+            }
           }}
           onDirectLogExpense={async ({ name, cost, categoryId, expenseDate: expDate, isRecurring: rec, recurrenceType = 'monthly', isBatched: bat }) => {
             if (isReadOnly) {
@@ -2652,7 +2692,8 @@ export default function App() {
               };
             }
 
-            const payload = {
+            const validRecType = ['daily', 'monthly', 'yearly'].includes(recurrenceType) ? recurrenceType : 'monthly';
+            const basePayload = {
               user_id: session.user.id,
               name,
               cost,
@@ -2664,14 +2705,24 @@ export default function App() {
               bundle_id: null
             };
 
-            const { data, error } = await supabase.from('expenses').insert([payload]).select();
+            let { data, error } = await supabase
+              .from('expenses')
+              .insert([rec ? { ...basePayload, recurrence_type: validRecType } : basePayload])
+              .select();
+
+            if (error && rec) {
+              const fallbackRes = await supabase.from('expenses').insert([basePayload]).select();
+              data = fallbackRes.data;
+              error = fallbackRes.error;
+            }
+
             if (error || !data || data.length === 0) {
               return { ok: false, error: 'Database error while saving expense. Please try again.' };
             }
 
             if (rec) {
               updateExpenseMeta(data[0].id, {
-                recurrenceType: ['daily', 'monthly', 'yearly'].includes(recurrenceType) ? recurrenceType : 'monthly',
+                recurrenceType: validRecType,
                 skippedPeriods: [],
                 confirmedPeriods: []
               });

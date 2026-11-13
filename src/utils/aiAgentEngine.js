@@ -135,8 +135,11 @@ const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/i;
 // Leading logging verbs in EN, FR, ES, AR with Unicode-aware trailing boundary
 const LOG_VERB_PREFIX_REGEX = /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل|سجل|أضف)(?=$|\s|[^\p{L}\p{N}])\s*/iu;
 
-// Multilingual affordability question detector (EN, FR, ES, AR)
-const AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|can\s+i\s+spend|do\s+i\s+have\s+enough(?:\s+for)?|enough\s+for|what\s+if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|puis-je\s+me\s+permettre|me\s+permettre|puis-je\s+dépenser|ai-je\s+assez(?:\s+pour)?|puedo\s+permitirme|permitirme|puedo\s+gastar|tengo\s+suficiente(?:\s+para)?|هل\s+يمكنني\s+تحمل|هل\s+أستطيع\s+تحمل|هل\s+يمكنني\s+إنفاق|هل\s+لدي\s+ما\s+يكفي)(?![\p{L}\p{N}])/iu;
+// Daily safe-spend / burn-rate question detector
+const DAILY_PACE_REGEX = /(?<![\p{L}\p{N}])(per\s+day|daily\s+allowance|safe\s+to\s+spend|burn\s+rate|pace|spend\s+per\s+day|spend\s+a\s+day|spend\s+daily|par\s+jour|por\s+día|في\s+اليوم)(?![\p{L}\p{N}])/iu;
+
+// Multilingual purchase affordability detector (excludes daily-spend pace questions)
+const AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|can\s+i\s+spend(?!\s+(?:per|a|each)\s+day)|do\s+i\s+have\s+enough(?:\s+for)?|enough\s+for|what\s+if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|puis-je\s+me\s+permettre|me\s+permettre|puis-je\s+dépenser(?!\s+par\s+jour)|ai-je\s+assez(?:\s+pour)?|puedo\s+permitirme|permitirme|puedo\s+gastar(?!\s+por\s+día)|tengo\s+suficiente(?:\s+para)?|هل\s+يمكنني\s+تحمل|هل\s+أستطيع\s+تحمل|هل\s+يمكنني\s+إنفاق(?!\s+في\s+اليوم)|هل\s+لدي\s+ما\s+يكفي)(?![\p{L}\p{N}])/iu;
 
 /**
  * Processes a conversational or action turn for the Sterling AI Financial Assistant.
@@ -177,6 +180,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         setSelectedMonth,
         isReadOnly,
         formatCurrency,
+        getCategoryAvailablePool,
         taxCountry,
         taxFilingStatus,
         theme,
@@ -237,6 +241,23 @@ export async function processAIAgentTurn(rawInput, ctx) {
             }
         }
         return null;
+    };
+
+    /**
+     * Resolves a category token captured after an allocation connector without allowing
+     * empty or 1-character stems to false-match the first category.
+     */
+    const resolveCategoryToken = (catWord) => {
+        const cleanWord = String(catWord || '').trim().toLowerCase();
+        if (!cleanWord) return null;
+        const stem = cleanWord.replace(/s$/, '');
+        return (
+            categories.find(
+                (c) =>
+                    c.name.toLowerCase() === cleanWord ||
+                    (stem.length >= 2 && c.name.toLowerCase().startsWith(stem))
+            ) || findCategoryInText(cleanWord)
+        );
     };
 
     const getCategoryStats = (cat) => {
@@ -434,14 +455,13 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
         let occasionName = 'Special Occasion';
         const nameMatch = text.match(
-            /(?<![\p{L}\p{N}])(?:named|called|titled|nommée?|appelée?|intitulée?|llamad[oa]|titulad[oa]|باسم|بعنوان|اسمها|اسمه)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:and\s+it|that\s+takes|taking|takes|pulling|pulls|with|from|et\s+qui|qui\s+prend|prenant|prend|avec|de|du|des|dans|sur|y\s+que|tomando|toma|con|من|و)|\s+[$€£]?\d|[,.]|$)/iu
+            /(?<![\p{L}\p{N}])(?:named|called|titled|nommée?|appelée?|intitulée?|llamad[oa]|titulad[oa]|باسم|بعنوان|اسمها|اسمه)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:and\s+it|that\s+takes|taking|takes|pulling|pulls|with|from|et\s+qui|qui\s+prend|prenant|prend|avec|des|du|de|dans|sur|y\s+que|tomando|toma|con|من|و)|\s+[$€£]?\d|[,.]|$)/iu
         );
         if (nameMatch && nameMatch[1]) {
             occasionName = nameMatch[1].trim();
         } else {
-            // Also allow "occasion <Name> avec/with/con <amount>" without an explicit "named/nommée" keyword
             const afterOccasionMatch = text.match(
-                /(?<![\p{L}\p{N}])(?:special\s+occasion|occasion\s+spéciale|occasion|ocasión\s+especial|ocasión|ocasion|bundle|مناسبة\s+خاصة|مناسبة)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:and\s+it|that\s+takes|taking|takes|pulling|pulls|with|from|et\s+qui|qui\s+prend|prenant|prend|avec|de|du|des|dans|sur|y\s+que|tomando|toma|con|من|و)|\s+[$€£]?\d|[,.]|$)/iu
+                /(?<![\p{L}\p{N}])(?:special\s+occasion|occasion\s+spéciale|occasion|ocasión\s+especial|ocasión|ocasion|bundle|مناسبة\s+خاصة|مناسبة)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:and\s+it|that\s+takes|taking|takes|pulling|pulls|with|from|et\s+qui|qui\s+prend|prenant|prend|avec|des|du|de|dans|sur|y\s+que|tomando|toma|con|من|و)|\s+[$€£]?\d|[,.]|$)/iu
             );
             if (afterOccasionMatch && afterOccasionMatch[1]) {
                 const candidate = afterOccasionMatch[1]
@@ -453,7 +473,8 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
         const allocations = {};
         const splitSummary = [];
-        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:dollars?|usd|mad|dhs?|dirhams?|euros?|eur|pounds?|gbp|درهم|دولار|يورو)?\s*(?:from|in|out\s+of|off|de\s+la\s+catégorie|de\s+la\s+categoría|de|du|des|dans|sur|d'|del|en|من\s+فئة|من|في)\s*([\p{L}\p{N}_-]+)(?![\p{L}\p{N}])/giu;
+        // Require trailing whitespace after word connectors (ordered longest-first: des/du/del before de) so "des envies" never splits into "de" + "s"
+        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:dollars?|usd|mad|dhs?|dirhams?|euros?|eur|pounds?|gbp|درهم|دولار|يورو)?\s*(?:d'\s*|(?:from|out\s+of|de\s+la\s+catégorie|de\s+la\s+categoría|من\s+فئة|dans|des|del|sur|off|du|de|in|en|من|في)\s+)([\p{L}\p{N}_-]+)(?![\p{L}\p{N}])/giu;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
             const amt = parseMoneyAmount(match[1]);
@@ -462,12 +483,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
                     reply: `Invalid allocation amount **"${match[1]}"**. Please provide a valid positive amount with at most 2 decimal places.`
                 };
             }
-            const catWord = match[2];
-            const matchedCat =
-                categories.find(c =>
-                    c.name.toLowerCase() === catWord.toLowerCase() ||
-                    c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, ''))
-                ) || findCategoryInText(catWord);
+            const matchedCat = resolveCategoryToken(match[2]);
             if (matchedCat) {
                 allocations[matchedCat.id] = Number(((allocations[matchedCat.id] || 0) + amt).toFixed(2));
                 splitSummary.push(`**${formatCurrency(amt)}** from **${matchedCat.name}**`);
@@ -534,7 +550,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         if (isReadOnly) {
             return { reply: t('ai_read_only_msg', { month: selectedMonth }) };
         }
-        const nameMatch = text.match(/(?<![\p{L}\p{N}])(?:named|called|titled|nommée?|appelée?|llamad[oa]|باسم)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:for|with|costing|cost|target|at|pulling|and\s+it|pour|avec|de|por|con|بقيمة|بهدف)|\s+[$€£]?\d|[,.]|$)/iu);
+        const nameMatch = text.match(/(?<![\p{L}\p{N}])(?:named|called|titled|nommée?|appelée?|llamad[oa]|باسم)\s+([\p{L}\p{N}\s'-]+?)(?=\s+(?:for|with|costing|cost|target|at|pulling|and\s+it|pour|avec|des|du|de|por|con|بقيمة|بهدف)|\s+[$€£]?\d|[,.]|$)/iu);
         const rawObjTitle = nameMatch?.[1]?.trim() || 'Wealth Objective';
         const objTitle = rawObjTitle.charAt(0).toUpperCase() + rawObjTitle.slice(1);
 
@@ -546,17 +562,14 @@ export async function processAIAgentTurn(rawInput, ctx) {
         }
 
         const autoPulls = {};
-        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:from|in|de|du|des|dans|en|من|في)\s+([\p{L}\p{N}_-]+)(?![\p{L}\p{N}])/giu;
+        const pairRegex = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)\s*(?:d'\s*|(?:from|dans|des|del|du|de|in|en|من|في)\s+)([\p{L}\p{N}_-]+)(?![\p{L}\p{N}])/giu;
         let match;
         while ((match = pairRegex.exec(text)) !== null) {
             const amt = parseMoneyAmount(match[1]);
             if (isNaN(amt) || amt <= 0) {
                 return { reply: `Invalid auto-pull amount **"${match[1]}"**. Please provide a valid positive amount.` };
             }
-            const catWord = match[2];
-            const matchedCat =
-                categories.find(c => c.name.toLowerCase().startsWith(catWord.toLowerCase().replace(/s$/, ''))) ||
-                findCategoryInText(catWord);
+            const matchedCat = resolveCategoryToken(match[2]);
             if (matchedCat) autoPulls[matchedCat.id] = amt;
         }
 
@@ -1027,9 +1040,43 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 13. ANALYST ENGINE: AFFORDABILITY CHECK (Evaluated BEFORE Log Expense so questions never log!)
+    // 13. ANALYST ENGINE: DAILY SAFE-SPEND PACE (Evaluated BEFORE Affordability & Log Expense)
     // =========================================================================
-    if (AFFORDABILITY_REGEX.test(lower)) {
+    if (DAILY_PACE_REGEX.test(lower) && !LOG_VERB_PREFIX_REGEX.test(lower)) {
+        const now = new Date();
+        const [selYear, selMonth] = (selectedMonth || getToday().slice(0, 7)).split('-').map(Number);
+        const daysInMonth = new Date(selYear, selMonth, 0).getDate();
+        const isCurrentMonth = now.getFullYear() === selYear && (now.getMonth() + 1) === selMonth;
+        const daysLeft = isCurrentMonth ? Math.max(1, daysInMonth - now.getDate() + 1) : daysInMonth;
+
+        const dailyTotal = totalRemaining / daysLeft;
+        const expCats = categories.filter(c => c.type !== 'asset');
+        const breakdownLines = expCats.map(c => {
+            const { remaining } = getCategoryStats(c);
+            return t('ai_daily_line', {
+                name: c.name,
+                perDay: formatCurrency(remaining / daysLeft),
+                remaining: formatCurrency(remaining),
+                days: daysLeft
+            });
+        }).join('\n');
+
+        return {
+            reply: t('ai_daily_reply', {
+                daysLeft,
+                month: selectedMonth,
+                dailyTotal: formatCurrency(dailyTotal),
+                lines: breakdownLines
+            }),
+            actionBadge: `${formatCurrency(dailyTotal)} / day`,
+            suggestions: [t('ai_sug_audit'), t('ai_sug_biggest_exp')]
+        };
+    }
+
+    // =========================================================================
+    // 14. ANALYST ENGINE: AFFORDABILITY CHECK (Uses getCategoryAvailablePool so reserved bundles are subtracted)
+    // =========================================================================
+    if (AFFORDABILITY_REGEX.test(lower) && !DAILY_PACE_REGEX.test(lower)) {
         const amtMatch = text.match(MONEY_TOKEN_REGEX);
         const testCost = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
         const targetCat = findCategoryInText(lower);
@@ -1050,7 +1097,14 @@ export async function processAIAgentTurn(rawInput, ctx) {
             };
         }
 
-        const { remaining, allocated } = getCategoryStats(targetCat);
+        const { remaining: rawRemaining, allocated } = getCategoryStats(targetCat);
+        const reservedInOpenBundles = (Array.isArray(bundles) ? bundles : [])
+            .filter(b => b.month === selectedMonth && b.status === 'open')
+            .reduce((sum, b) => sum + (parseFloat(b.target_budget?.[targetCat.id]) || 0), 0);
+        const remaining = typeof getCategoryAvailablePool === 'function'
+            ? Math.max(0, Number(getCategoryAvailablePool(targetCat.id)) || 0)
+            : Math.max(0, rawRemaining - reservedInOpenBundles);
+
         if (testCost <= remaining) {
             const afterPurchase = remaining - testCost;
             const pctOfRemaining = remaining > 0 ? Math.round((testCost / remaining) * 100) : 100;
@@ -1070,7 +1124,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 14. LOG OR PRE-FILL AN EXPENSE (Supports EN, FR, ES, AR + Daily/Monthly/Yearly recurrence)
+    // 15. LOG OR PRE-FILL AN EXPENSE (Supports EN, FR, ES, AR + Daily/Monthly/Yearly recurrence)
     // =========================================================================
     const isLogIntent = LOG_VERB_PREFIX_REGEX.test(lower);
     const hasNumber = /\d+/.test(lower);
@@ -1162,40 +1216,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
                 suggestions: [t('ai_sug_remove_last'), t('ai_sug_how_many_exp'), t('ai_sug_audit')]
             };
         }
-    }
-
-    // =========================================================================
-    // 15. ANALYST ENGINE: DAILY SAFE-SPEND PACE
-    // =========================================================================
-    if (/(?<![\p{L}\p{N}])(per\s+day|daily|a\s+day|safe\s+to\s+spend|burn\s+rate|pace|par\s+jour|por\s+día|في\s+اليوم)(?![\p{L}\p{N}])/iu.test(lower)) {
-        const now = new Date();
-        const [selYear, selMonth] = (selectedMonth || getToday().slice(0, 7)).split('-').map(Number);
-        const daysInMonth = new Date(selYear, selMonth, 0).getDate();
-        const isCurrentMonth = now.getFullYear() === selYear && (now.getMonth() + 1) === selMonth;
-        const daysLeft = isCurrentMonth ? Math.max(1, daysInMonth - now.getDate() + 1) : daysInMonth;
-
-        const dailyTotal = totalRemaining / daysLeft;
-        const expCats = categories.filter(c => c.type !== 'asset');
-        const breakdownLines = expCats.map(c => {
-            const { remaining } = getCategoryStats(c);
-            return t('ai_daily_line', {
-                name: c.name,
-                perDay: formatCurrency(remaining / daysLeft),
-                remaining: formatCurrency(remaining),
-                days: daysLeft
-            });
-        }).join('\n');
-
-        return {
-            reply: t('ai_daily_reply', {
-                daysLeft,
-                month: selectedMonth,
-                dailyTotal: formatCurrency(dailyTotal),
-                lines: breakdownLines
-            }),
-            actionBadge: `${formatCurrency(dailyTotal)} / day`,
-            suggestions: [t('ai_sug_audit'), t('ai_sug_biggest_exp')]
-        };
     }
 
     // =========================================================================
