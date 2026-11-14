@@ -136,10 +136,28 @@ const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/i;
 const LOG_VERB_PREFIX_REGEX = /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل|سجل|أضف)(?=$|\s|[^\p{L}\p{N}])\s*/iu;
 
 // Daily safe-spend / burn-rate question detector
-const DAILY_PACE_REGEX = /(?<![\p{L}\p{N}])(per\s+day|daily\s+allowance|safe\s+to\s+spend|burn\s+rate|pace|spend\s+per\s+day|spend\s+a\s+day|spend\s+daily|par\s+jour|por\s+día|في\s+اليوم)(?![\p{L}\p{N}])/iu;
+const DAILY_PACE_REGEX = /(?<![\p{L}\p{N}])(per\s+day|daily|a\s+day|safe\s+to\s+spend|burn\s+rate|pace|par\s+jour|por\s+día|في\s+اليوم)(?![\p{L}\p{N}])/iu;
 
-// Multilingual purchase affordability detector (excludes daily-spend pace questions)
-const AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|can\s+i\s+spend(?!\s+(?:per|a|each)\s+day)|do\s+i\s+have\s+enough(?:\s+for)?|enough\s+for|what\s+if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|puis-je\s+me\s+permettre|me\s+permettre|puis-je\s+dépenser(?!\s+par\s+jour)|ai-je\s+assez(?:\s+pour)?|puedo\s+permitirme|permitirme|puedo\s+gastar(?!\s+por\s+día)|tengo\s+suficiente(?:\s+para)?|هل\s+يمكنني\s+تحمل|هل\s+أستطيع\s+تحمل|هل\s+يمكنني\s+إنفاق(?!\s+في\s+اليوم)|هل\s+لدي\s+ما\s+يكفي)(?![\p{L}\p{N}])/iu;
+// Explicit purchase affordability phrases (always route to affordability check, even if "per day" is mentioned)
+const EXPLICIT_AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|do\s+i\s+have\s+enough(?:\s+for)?|enough\s+for|what\s+if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|puis-je\s+me\s+permettre|me\s+permettre|ai-je\s+assez(?:\s+pour)?|puedo\s+permitirme|permitirme|tengo\s+suficiente(?:\s+para)?|هل\s+يمكنني\s+تحمل|هل\s+أستطيع\s+تحمل|هل\s+لدي\s+ما\s+يكفي)(?![\p{L}\p{N}])/iu;
+
+// Secondary "can I spend <amount>" affordability phrases
+const CAN_SPEND_AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+spend|puis-je\s+dépenser|puedo\s+gastar|هل\s+يمكنني\s+إنفاق)(?![\p{L}\p{N}])/iu;
+
+/**
+ * Determines whether an input is a purchase affordability question rather than a general daily-allowance question.
+ * @param {string} lower - Normalized lowercase input.
+ * @returns {boolean} True if the input should be handled by the affordability checker.
+ */
+function isAffordabilityQuestion(lower) {
+    if (EXPLICIT_AFFORDABILITY_REGEX.test(lower)) return true;
+    if (!CAN_SPEND_AFFORDABILITY_REGEX.test(lower)) return false;
+    // "How much can I spend per day?" has no numeric amount and asks "how much" -> route to daily pace
+    const asksHowMuch = /(?<![\p{L}\p{N}])(how\s+much|combien|cuánto|كم)(?![\p{L}\p{N}])/iu.test(lower);
+    if (asksHowMuch && !/\d/.test(lower)) return false;
+    // "Can I spend 200 per day in Wants?" has a numeric amount -> route to affordability check
+    return /\d/.test(lower) || !DAILY_PACE_REGEX.test(lower);
+}
 
 /**
  * Processes a conversational or action turn for the Sterling AI Financial Assistant.
@@ -220,6 +238,14 @@ export async function processAIAgentTurn(rawInput, ctx) {
         return today;
     };
 
+    const getDaysLeftInSelectedMonth = () => {
+        const now = new Date();
+        const [selYear, selMonth] = (selectedMonth || getToday().slice(0, 7)).split('-').map(Number);
+        const daysInMonth = new Date(selYear, selMonth, 0).getDate();
+        const isCurrentMonth = now.getFullYear() === selYear && (now.getMonth() + 1) === selMonth;
+        return isCurrentMonth ? Math.max(1, daysInMonth - now.getDate() + 1) : daysInMonth;
+    };
+
     const findCategoryInText = (inputStr) => {
         if (!Array.isArray(categories) || categories.length === 0) return null;
         const cleanedLookup = String(inputStr || '').replace(LOG_VERB_PREFIX_REGEX, '');
@@ -267,6 +293,19 @@ export async function processAIAgentTurn(rawInput, ctx) {
             .reduce((s, e) => s + parseFloat(e.cost || 0), 0);
         const remaining = Math.max(0, allocated - spent);
         return { allocated, spent, remaining };
+    };
+
+    /**
+     * Returns the spendable available pool for a category after subtracting open Special Occasion bundle reservations.
+     */
+    const getCategorySpendablePool = (cat) => {
+        const { remaining: rawRemaining } = getCategoryStats(cat);
+        const reservedInOpenBundles = (Array.isArray(bundles) ? bundles : [])
+            .filter(b => b.month === selectedMonth && b.status === 'open')
+            .reduce((sum, b) => sum + (parseFloat(b.target_budget?.[cat.id]) || 0), 0);
+        return typeof getCategoryAvailablePool === 'function'
+            ? Math.max(0, Number(getCategoryAvailablePool(cat.id)) || 0)
+            : Math.max(0, rawRemaining - reservedInOpenBundles);
     };
 
     // =========================================================================
@@ -628,7 +667,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     const mentionsBoostWord = /\b(gift|bonus|boost|extra\s+income|extra\s+money)\b/i.test(lower);
-    if (mentionsBoostWord && handleAddMonthlyBoost && !AFFORDABILITY_REGEX.test(lower)) {
+    if (mentionsBoostWord && handleAddMonthlyBoost && !isAffordabilityQuestion(lower)) {
         const isDirectBoostCommand = /^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:add|boost|apply|give|include|put|log|record|set|increase)\b/i.test(lower);
         const isQuestionAboutBoost =
             !isDirectBoostCommand &&
@@ -1040,19 +1079,73 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 13. ANALYST ENGINE: DAILY SAFE-SPEND PACE (Evaluated BEFORE Affordability & Log Expense)
+    // 13. ANALYST ENGINE: AFFORDABILITY CHECK (Evaluated BEFORE Daily Pace & Log Expense)
+    // =========================================================================
+    if (isAffordabilityQuestion(lower)) {
+        const amtMatch = text.match(MONEY_TOKEN_REGEX);
+        const rawAmount = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
+        const targetCat = findCategoryInText(lower);
+
+        if (isNaN(rawAmount) || rawAmount <= 0) {
+            return {
+                reply: `Tell me the amount and category you want to test—for example: *"Can I afford 350 in Wants?"*`
+            };
+        }
+
+        if (!targetCat) {
+            return {
+                reply: `Repeat the question with the amount and a category name (for example: *"Can I afford ${formatCurrency(rawAmount)} in Wants?"*).`,
+                suggestions: categories
+                    .filter(c => c.type !== 'asset')
+                    .slice(0, 3)
+                    .map(c => `Can I afford ${rawAmount} in ${c.name}?`)
+            };
+        }
+
+        const isDailyRateQuery = DAILY_PACE_REGEX.test(lower);
+        const daysLeft = getDaysLeftInSelectedMonth();
+        const testCost = isDailyRateQuery ? Number((rawAmount * daysLeft).toFixed(2)) : rawAmount;
+        const { allocated } = getCategoryStats(targetCat);
+        const remaining = getCategorySpendablePool(targetCat);
+
+        if (testCost <= remaining) {
+            const afterPurchase = remaining - testCost;
+            const pctOfRemaining = remaining > 0 ? Math.round((testCost / remaining) * 100) : 100;
+            const purchaseDesc = isDailyRateQuery
+                ? `${formatCurrency(rawAmount)}/day × ${daysLeft} day(s) = ${formatCurrency(testCost)}`
+                : `${formatCurrency(testCost)}`;
+            return {
+                reply: `**Yes, you can afford it!**\n\n• **${targetCat.name} Available:** ${formatCurrency(remaining)} (of ${formatCurrency(allocated)})\n• **Purchase Amount:** ${purchaseDesc} (${pctOfRemaining}% of your remaining ${targetCat.name} pool)\n• **Left After Purchase:** ${formatCurrency(afterPurchase)}`,
+                actionBadge: 'Affordability → Approved',
+                suggestions: [`Log ${rawAmount} in ${targetCat.name}`, t('ai_sug_daily_spend')]
+            };
+        } else {
+            const shortfall = testCost - remaining;
+            const allowedPerDay = remaining / daysLeft;
+            const purchaseDesc = isDailyRateQuery
+                ? `${formatCurrency(rawAmount)}/day × ${daysLeft} day(s) = ${formatCurrency(testCost)} (max safe pace in ${targetCat.name} is ${formatCurrency(allowedPerDay)}/day)`
+                : `${formatCurrency(testCost)}`;
+            return {
+                reply: `**Not inside ${targetCat.name} right now.**\n\n• **${targetCat.name} Available:** ${formatCurrency(remaining)}\n• **Purchase Amount:** ${purchaseDesc}\n• **Shortfall:** You are short by **${formatCurrency(shortfall)}** in ${targetCat.name}.`,
+                actionBadge: 'Affordability → Exceeds Pool',
+                suggestions: [t('ai_sug_audit'), t('ai_sug_open_occasions')]
+            };
+        }
+    }
+
+    // =========================================================================
+    // 14. ANALYST ENGINE: DAILY SAFE-SPEND PACE (Uses reservation-aware getCategorySpendablePool)
     // =========================================================================
     if (DAILY_PACE_REGEX.test(lower) && !LOG_VERB_PREFIX_REGEX.test(lower)) {
-        const now = new Date();
-        const [selYear, selMonth] = (selectedMonth || getToday().slice(0, 7)).split('-').map(Number);
-        const daysInMonth = new Date(selYear, selMonth, 0).getDate();
-        const isCurrentMonth = now.getFullYear() === selYear && (now.getMonth() + 1) === selMonth;
-        const daysLeft = isCurrentMonth ? Math.max(1, daysInMonth - now.getDate() + 1) : daysInMonth;
-
-        const dailyTotal = totalRemaining / daysLeft;
+        const daysLeft = getDaysLeftInSelectedMonth();
         const expCats = categories.filter(c => c.type !== 'asset');
+        const spendableTotal = expCats.length > 0
+            ? expCats.reduce((sum, c) => sum + getCategorySpendablePool(c), 0)
+            : totalRemaining;
+        const dailyTotal = spendableTotal / daysLeft;
+
         const breakdownLines = expCats.map(c => {
-            const { remaining } = getCategoryStats(c);
+            const remaining = getCategorySpendablePool(c);
             return t('ai_daily_line', {
                 name: c.name,
                 perDay: formatCurrency(remaining / daysLeft),
@@ -1074,56 +1167,6 @@ export async function processAIAgentTurn(rawInput, ctx) {
     }
 
     // =========================================================================
-    // 14. ANALYST ENGINE: AFFORDABILITY CHECK (Uses getCategoryAvailablePool so reserved bundles are subtracted)
-    // =========================================================================
-    if (AFFORDABILITY_REGEX.test(lower) && !DAILY_PACE_REGEX.test(lower)) {
-        const amtMatch = text.match(MONEY_TOKEN_REGEX);
-        const testCost = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
-        const targetCat = findCategoryInText(lower);
-
-        if (isNaN(testCost) || testCost <= 0) {
-            return {
-                reply: `Tell me the amount and category you want to test—for example: *"Can I afford 350 in Wants?"*`
-            };
-        }
-
-        if (!targetCat) {
-            return {
-                reply: `Repeat the question with the amount and a category name (for example: *"Can I afford ${formatCurrency(testCost)} in Wants?"*).`,
-                suggestions: categories
-                    .filter(c => c.type !== 'asset')
-                    .slice(0, 3)
-                    .map(c => `Can I afford ${testCost} in ${c.name}?`)
-            };
-        }
-
-        const { remaining: rawRemaining, allocated } = getCategoryStats(targetCat);
-        const reservedInOpenBundles = (Array.isArray(bundles) ? bundles : [])
-            .filter(b => b.month === selectedMonth && b.status === 'open')
-            .reduce((sum, b) => sum + (parseFloat(b.target_budget?.[targetCat.id]) || 0), 0);
-        const remaining = typeof getCategoryAvailablePool === 'function'
-            ? Math.max(0, Number(getCategoryAvailablePool(targetCat.id)) || 0)
-            : Math.max(0, rawRemaining - reservedInOpenBundles);
-
-        if (testCost <= remaining) {
-            const afterPurchase = remaining - testCost;
-            const pctOfRemaining = remaining > 0 ? Math.round((testCost / remaining) * 100) : 100;
-            return {
-                reply: `**Yes, you can afford it!**\n\n• **${targetCat.name} Available:** ${formatCurrency(remaining)} (of ${formatCurrency(allocated)})\n• **Purchase Amount:** ${formatCurrency(testCost)} (${pctOfRemaining}% of your remaining ${targetCat.name} pool)\n• **Left After Purchase:** ${formatCurrency(afterPurchase)}`,
-                actionBadge: 'Affordability → Approved',
-                suggestions: [`Log ${testCost} in ${targetCat.name}`, t('ai_sug_daily_spend')]
-            };
-        } else {
-            const shortfall = testCost - remaining;
-            return {
-                reply: `**Not inside ${targetCat.name} right now.**\n\n• **${targetCat.name} Available:** ${formatCurrency(remaining)}\n• **Purchase Amount:** ${formatCurrency(testCost)}\n• **Shortfall:** You are short by **${formatCurrency(shortfall)}** in ${targetCat.name}.`,
-                actionBadge: 'Affordability → Exceeds Pool',
-                suggestions: [t('ai_sug_audit'), t('ai_sug_open_occasions')]
-            };
-        }
-    }
-
-    // =========================================================================
     // 15. LOG OR PRE-FILL AN EXPENSE (Supports EN, FR, ES, AR + Daily/Monthly/Yearly recurrence)
     // =========================================================================
     const isLogIntent = LOG_VERB_PREFIX_REGEX.test(lower);
@@ -1133,7 +1176,7 @@ export async function processAIAgentTurn(rawInput, ctx) {
         isLogIntent &&
         hasNumber &&
         !isQuestionForm &&
-        !AFFORDABILITY_REGEX.test(lower) &&
+        !isAffordabilityQuestion(lower) &&
         !/(?<![\p{L}\p{N}])(tax|if\s+i|how\s+many|how\s+much|salary|currency|occasion|sandbox|objective|impôts?|impuestos?|ضرائب|ضريبة)(?![\p{L}\p{N}])/iu.test(lower)
     ) {
         if (isReadOnly) {

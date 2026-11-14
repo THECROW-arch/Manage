@@ -61,6 +61,8 @@ export default function CashFlowTab({
     setExpenseDate,
     isRecurring,
     setIsRecurring,
+    recurrenceType: propRecurrenceType,
+    setRecurrenceType: propSetRecurrenceType,
     isBatched,
     setIsBatched,
     searchQuery,
@@ -82,7 +84,9 @@ export default function CashFlowTab({
     groupedExpenses
 }) {
     const { t, i18n } = useTranslation();
-    const [recurrenceType, setRecurrenceType] = useState('monthly');
+    const [localRecurrenceType, setLocalRecurrenceType] = useState('monthly');
+    const recurrenceType = propRecurrenceType ?? localRecurrenceType;
+    const setRecurrenceType = propSetRecurrenceType ?? setLocalRecurrenceType;
     const [showBoostInput, setShowBoostInput] = useState(false);
     const [boostAmountInput, setBoostAmountInput] = useState('');
     const metaStorageKey = userId ? `managed_expense_meta_${userId}` : null;

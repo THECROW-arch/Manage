@@ -576,13 +576,15 @@ export default function App() {
   ]);
 
 const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
+  const [prefillRecurrenceType, setPrefillRecurrenceType] = useState('monthly');
+  const sessionModifiedMetaRef = useRef({});
 
   const expenseMetaMap = useMemo(() => {
     if (!activeUserId) return {};
     return metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
   }, [activeUserId, metaOverridesByUser]);
 
-  // Hydrate recurring expense metadata after expense-row loading completes so profile skips/confirmations are never overwritten
+  // Hydrate recurring expense metadata after expense-row loading completes while preserving any live user decisions
   useEffect(() => {
     if (!activeUserId || loadingData) return;
     let isCancelled = false;
@@ -595,23 +597,41 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
       .then(({ data, error }) => {
         if (isCancelled) return;
         if (!error && data?.expense_meta && typeof data.expense_meta === 'object') {
+          let needsProfileResync = false;
+          let syncedMap = null;
+
           setMetaOverridesByUser((prev) => {
             const baseMap = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
             const mergedMap = { ...baseMap };
+            const userSessionEdits = sessionModifiedMetaRef.current[activeUserId] || {};
+
             Object.entries(data.expense_meta).forEach(([expId, val]) => {
+              // If the user clicked Confirm/Skip for this expense after the session started, preserve their live decision
+              if (userSessionEdits[expId]) {
+                mergedMap[expId] = userSessionEdits[expId];
+                needsProfileResync = true;
+                return;
+              }
+
               const existing = mergedMap[expId] || {};
               const profileConfirmed = Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [];
               const profileSkipped = Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [];
               const existingConfirmed = Array.isArray(existing.confirmedPeriods) ? existing.confirmedPeriods.map(String) : [];
               const existingSkipped = Array.isArray(existing.skippedPeriods) ? existing.skippedPeriods.map(String) : [];
 
-              const mergedSkipped = Array.from(
-                new Set([...existingSkipped, ...profileSkipped])
-              ).filter((p) => !profileConfirmed.includes(p));
-
               const mergedConfirmed = Array.from(
-                new Set([...existingConfirmed, ...profileConfirmed])
-              ).filter((p) => !mergedSkipped.includes(p));
+                new Set([
+                  ...existingConfirmed,
+                  ...profileConfirmed.filter((p) => !existingSkipped.includes(p))
+                ])
+              );
+
+              const mergedSkipped = Array.from(
+                new Set([
+                  ...existingSkipped.filter((p) => !mergedConfirmed.includes(p)),
+                  ...profileSkipped.filter((p) => !mergedConfirmed.includes(p))
+                ])
+              );
 
               mergedMap[expId] = {
                 recurrenceType: ['daily', 'monthly', 'yearly'].includes(val?.recurrenceType)
@@ -621,6 +641,8 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
                 confirmedPeriods: mergedConfirmed
               };
             });
+
+            syncedMap = mergedMap;
             try {
               localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(mergedMap));
             } catch {
@@ -628,6 +650,16 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
             }
             return { ...prev, [activeUserId]: mergedMap };
           });
+
+          if (needsProfileResync && syncedMap) {
+            supabase
+              .from('profiles')
+              .update({ expense_meta: syncedMap })
+              .eq('user_id', activeUserId)
+              .then(({ error: syncErr }) => {
+                if (syncErr) console.warn('Could not resync expense_meta to profile:', syncErr.message);
+              });
+          }
         }
         setMetaHydratedUserId(activeUserId);
       })
@@ -661,6 +693,12 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
           ? Array.from(new Set(merged.confirmedPeriods.map(String)))
           : []
       };
+
+      if (!sessionModifiedMetaRef.current[activeUserId]) {
+        sessionModifiedMetaRef.current[activeUserId] = {};
+      }
+      sessionModifiedMetaRef.current[activeUserId][expenseId] = normalized;
+
       const nextMap = { ...baseMap, [expenseId]: normalized };
       try {
         localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(nextMap));
@@ -2354,6 +2392,8 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
                 setExpenseDate={setExpenseDate}
                 isRecurring={isRecurring}
                 setIsRecurring={setIsRecurring}
+                recurrenceType={prefillRecurrenceType}
+                setRecurrenceType={setPrefillRecurrenceType}
                 isBatched={isBatched}
                 setIsBatched={setIsBatched}
                 searchQuery={searchQuery}
@@ -2659,19 +2699,16 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
             return { ok: true, sheet: newSheet };
           }}
           onPrefillExpense={({ name, cost, categoryId, isRecurring: rec, recurrenceType = 'monthly', isBatched: bat }) => {
+            const validRecType = rec && ['daily', 'monthly', 'yearly'].includes(recurrenceType)
+              ? recurrenceType
+              : 'monthly';
             setActiveTab('cashflow');
             setExpenseName(name);
             setExpenseCost(cost);
             if (categoryId) setExpenseCategoryId(categoryId);
             setIsRecurring(Boolean(rec));
+            setPrefillRecurrenceType(validRecType);
             setIsBatched(Boolean(bat));
-            if (rec && ['daily', 'monthly', 'yearly'].includes(recurrenceType)) {
-              try {
-                sessionStorage.setItem('managed_prefill_recurrence_type', recurrenceType);
-              } catch {
-                // Ignore storage errors
-              }
-            }
           }}
           onDirectLogExpense={async ({ name, cost, categoryId, expenseDate: expDate, isRecurring: rec, recurrenceType = 'monthly', isBatched: bat }) => {
             if (isReadOnly) {
@@ -2710,7 +2747,14 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
               .insert([rec ? { ...basePayload, recurrence_type: validRecType } : basePayload])
               .select();
 
-            if (error && rec) {
+            // Only retry without recurrence_type if PostgREST/Postgres rejected recurrence_type as an unknown column
+            const isMissingRecurrenceColumn =
+              Boolean(error) &&
+              (error.code === 'PGRST204' ||
+                error.code === '42703' ||
+                /recurrence_type/i.test(`${error.message || ''} ${error.details || ''} ${error.hint || ''}`));
+
+            if (isMissingRecurrenceColumn && rec) {
               const fallbackRes = await supabase.from('expenses').insert([basePayload]).select();
               data = fallbackRes.data;
               error = fallbackRes.error;
