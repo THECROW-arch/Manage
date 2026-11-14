@@ -135,10 +135,13 @@ const MONEY_TOKEN_REGEX = /[$€£]?\s*(\d+(?:[.,]\d+)*(?:\s*[km]\b)?)(?!\d)/i;
 // Leading logging verbs in EN, FR, ES, AR with Unicode-aware trailing boundary
 const LOG_VERB_PREFIX_REGEX = /^(?:please\s+|can\s+you\s+)?(?:add|log|record|save|spent|paid|bought|fill|prefill|ajouter|enregistrer|registrar|añadir|إضافة|تسجيل|سجل|أضف)(?=$|\s|[^\p{L}\p{N}])\s*/iu;
 
-// Daily safe-spend / burn-rate question detector
+// Daily safe-spend / burn-rate question detector (used to route general daily-allowance inquiries)
 const DAILY_PACE_REGEX = /(?<![\p{L}\p{N}])(per\s+day|daily|a\s+day|safe\s+to\s+spend|burn\s+rate|pace|par\s+jour|por\s+día|في\s+اليوم)(?![\p{L}\p{N}])/iu;
 
-// Explicit purchase affordability phrases (always route to affordability check, even if "per day" is mentioned)
+// Explicit daily-rate frequency wording (used ONLY when multiplying a per-day purchase amount by remaining days)
+const DAILY_RATE_MULTIPLIER_REGEX = /(?<![\p{L}\p{N}])(per\s+day|a\s+day|each\s+day|every\s+day|daily|par\s+jour|chaque\s+jour|tous\s+les\s+jours|quotidien(?:ne)?|por\s+día|cada\s+día|diario|diariamente|في\s+اليوم|كل\s+يوم|يوميا|يومياً)(?![\p{L}\p{N}])/iu;
+
+// Explicit purchase affordability phrases
 const EXPLICIT_AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|do\s+i\s+have\s+enough(?:\s+for)?|enough\s+for|what\s+if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|if\s+i\s+(?:spend|spent|buy|bought|pay|paid)|puis-je\s+me\s+permettre|me\s+permettre|ai-je\s+assez(?:\s+pour)?|puedo\s+permitirme|permitirme|tengo\s+suficiente(?:\s+para)?|هل\s+يمكنني\s+تحمل|هل\s+أستطيع\s+تحمل|هل\s+لدي\s+ما\s+يكفي)(?![\p{L}\p{N}])/iu;
 
 // Secondary "can I spend <amount>" affordability phrases
@@ -146,17 +149,20 @@ const CAN_SPEND_AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+spend|puis-je
 
 /**
  * Determines whether an input is a purchase affordability question rather than a general daily-allowance question.
+ * Keeps all "how much can I spend..." questions on the allowance path even when a year (e.g. 2026) is present.
  * @param {string} lower - Normalized lowercase input.
  * @returns {boolean} True if the input should be handled by the affordability checker.
  */
 function isAffordabilityQuestion(lower) {
     if (EXPLICIT_AFFORDABILITY_REGEX.test(lower)) return true;
     if (!CAN_SPEND_AFFORDABILITY_REGEX.test(lower)) return false;
-    // "How much can I spend per day?" has no numeric amount and asks "how much" -> route to daily pace
+
     const asksHowMuch = /(?<![\p{L}\p{N}])(how\s+much|combien|cuánto|كم)(?![\p{L}\p{N}])/iu.test(lower);
-    if (asksHowMuch && !/\d/.test(lower)) return false;
-    // "Can I spend 200 per day in Wants?" has a numeric amount -> route to affordability check
-    return /\d/.test(lower) || !DAILY_PACE_REGEX.test(lower);
+    if (asksHowMuch) return false;
+
+    // Strip 4-digit calendar years (e.g. 2026) before checking if a purchase amount was provided
+    const withoutYears = lower.replace(/\b20\d{2}(?:-\d{2})?\b/g, ' ');
+    return /\d/.test(withoutYears) || !DAILY_PACE_REGEX.test(lower);
 }
 
 /**
@@ -1082,7 +1088,8 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // 13. ANALYST ENGINE: AFFORDABILITY CHECK (Evaluated BEFORE Daily Pace & Log Expense)
     // =========================================================================
     if (isAffordabilityQuestion(lower)) {
-        const amtMatch = text.match(MONEY_TOKEN_REGEX);
+        const textWithoutYears = text.replace(/\b20\d{2}(?:-\d{2})?\b/g, ' ');
+        const amtMatch = textWithoutYears.match(MONEY_TOKEN_REGEX) || text.match(MONEY_TOKEN_REGEX);
         const rawAmount = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
         const targetCat = findCategoryInText(lower);
 
@@ -1102,7 +1109,8 @@ export async function processAIAgentTurn(rawInput, ctx) {
             };
         }
 
-        const isDailyRateQuery = DAILY_PACE_REGEX.test(lower);
+        const isExplicitOneTime = /\b(one-time|one\s+time|single|once)\b/i.test(lower);
+        const isDailyRateQuery = !isExplicitOneTime && DAILY_RATE_MULTIPLIER_REGEX.test(lower);
         const daysLeft = getDaysLeftInSelectedMonth();
         const testCost = isDailyRateQuery ? Number((rawAmount * daysLeft).toFixed(2)) : rawAmount;
         const { allocated } = getCategoryStats(targetCat);

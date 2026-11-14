@@ -578,93 +578,128 @@ export default function App() {
 const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
   const [prefillRecurrenceType, setPrefillRecurrenceType] = useState('monthly');
   const sessionModifiedMetaRef = useRef({});
+  const lastSyncedProfileMetaJsonRef = useRef({});
+  const latestPendingMetaByUserRef = useRef({});
+  const metaWriteInFlightRef = useRef({});
+  const activeUserIdRef = useRef(activeUserId);
+
+  useEffect(() => {
+    activeUserIdRef.current = activeUserId;
+    if (!activeUserId) {
+      sessionModifiedMetaRef.current = {};
+      latestPendingMetaByUserRef.current = {};
+    }
+  }, [activeUserId]);
 
   const expenseMetaMap = useMemo(() => {
     if (!activeUserId) return {};
     return metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
   }, [activeUserId, metaOverridesByUser]);
 
-  // Hydrate recurring expense metadata after expense-row loading completes while preserving any live user decisions
+  // Enqueues a serialized profile.expense_meta write so older maps never overwrite newer ones
+  const enqueueProfileMetaWrite = useCallback((targetUserId, mapToPersist) => {
+    if (!targetUserId || !mapToPersist) return;
+    latestPendingMetaByUserRef.current[targetUserId] = mapToPersist;
+    if (metaWriteInFlightRef.current[targetUserId]) return;
+
+    metaWriteInFlightRef.current[targetUserId] = true;
+    (async () => {
+      try {
+        while (latestPendingMetaByUserRef.current[targetUserId]) {
+          const nextMap = latestPendingMetaByUserRef.current[targetUserId];
+          const nextJson = JSON.stringify(nextMap);
+          delete latestPendingMetaByUserRef.current[targetUserId];
+
+          if (lastSyncedProfileMetaJsonRef.current[targetUserId] === nextJson) {
+            continue;
+          }
+
+          const { error } = await supabase
+            .from('profiles')
+            .update({ expense_meta: nextMap })
+            .eq('user_id', targetUserId);
+
+          if (error) {
+            console.warn('Could not sync expense_meta to profile:', error.message);
+            break;
+          }
+          lastSyncedProfileMetaJsonRef.current[targetUserId] = nextJson;
+        }
+      } finally {
+        metaWriteInFlightRef.current[targetUserId] = false;
+      }
+    })();
+  }, []);
+
+  // Hydrate recurring expense metadata after expense-row loading completes while preserving live session decisions
   useEffect(() => {
     if (!activeUserId || loadingData) return;
     let isCancelled = false;
+    const targetUserId = activeUserId;
 
     supabase
       .from('profiles')
       .select('expense_meta')
-      .eq('user_id', activeUserId)
+      .eq('user_id', targetUserId)
       .maybeSingle()
       .then(({ data, error }) => {
-        if (isCancelled) return;
-        if (!error && data?.expense_meta && typeof data.expense_meta === 'object') {
-          let needsProfileResync = false;
-          let syncedMap = null;
+        if (isCancelled || activeUserIdRef.current !== targetUserId) return;
+        const remoteMeta =
+          !error && data?.expense_meta && typeof data.expense_meta === 'object'
+            ? data.expense_meta
+            : {};
 
-          setMetaOverridesByUser((prev) => {
-            const baseMap = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
-            const mergedMap = { ...baseMap };
-            const userSessionEdits = sessionModifiedMetaRef.current[activeUserId] || {};
+        lastSyncedProfileMetaJsonRef.current[targetUserId] = JSON.stringify(remoteMeta);
 
-            Object.entries(data.expense_meta).forEach(([expId, val]) => {
-              // If the user clicked Confirm/Skip for this expense after the session started, preserve their live decision
-              if (userSessionEdits[expId]) {
-                mergedMap[expId] = userSessionEdits[expId];
-                needsProfileResync = true;
-                return;
-              }
+        setMetaOverridesByUser((prev) => {
+          const baseMap = prev[targetUserId] ?? readUserStorage('managed_expense_meta', targetUserId, {});
+          const mergedMap = { ...baseMap };
+          const userSessionEdits = sessionModifiedMetaRef.current[targetUserId] || {};
 
-              const existing = mergedMap[expId] || {};
-              const profileConfirmed = Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [];
-              const profileSkipped = Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [];
-              const existingConfirmed = Array.isArray(existing.confirmedPeriods) ? existing.confirmedPeriods.map(String) : [];
-              const existingSkipped = Array.isArray(existing.skippedPeriods) ? existing.skippedPeriods.map(String) : [];
-
-              const mergedConfirmed = Array.from(
-                new Set([
-                  ...existingConfirmed,
-                  ...profileConfirmed.filter((p) => !existingSkipped.includes(p))
-                ])
-              );
-
-              const mergedSkipped = Array.from(
-                new Set([
-                  ...existingSkipped.filter((p) => !mergedConfirmed.includes(p)),
-                  ...profileSkipped.filter((p) => !mergedConfirmed.includes(p))
-                ])
-              );
-
-              mergedMap[expId] = {
-                recurrenceType: ['daily', 'monthly', 'yearly'].includes(val?.recurrenceType)
-                  ? val.recurrenceType
-                  : existing.recurrenceType || 'monthly',
-                skippedPeriods: mergedSkipped,
-                confirmedPeriods: mergedConfirmed
-              };
-            });
-
-            syncedMap = mergedMap;
-            try {
-              localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(mergedMap));
-            } catch {
-              // Ignore storage quota errors
+          Object.entries(remoteMeta).forEach(([expId, val]) => {
+            if (userSessionEdits[expId]) {
+              mergedMap[expId] = userSessionEdits[expId];
+              return;
             }
-            return { ...prev, [activeUserId]: mergedMap };
+
+            const existing = mergedMap[expId] || {};
+            const profileConfirmed = Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [];
+            const profileSkipped = Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [];
+            const existingConfirmed = Array.isArray(existing.confirmedPeriods) ? existing.confirmedPeriods.map(String) : [];
+            const existingSkipped = Array.isArray(existing.skippedPeriods) ? existing.skippedPeriods.map(String) : [];
+
+            const mergedConfirmed = Array.from(
+              new Set([
+                ...existingConfirmed,
+                ...profileConfirmed.filter((p) => !existingSkipped.includes(p))
+              ])
+            );
+
+            const mergedSkipped = Array.from(
+              new Set([
+                ...existingSkipped.filter((p) => !mergedConfirmed.includes(p)),
+                ...profileSkipped.filter((p) => !mergedConfirmed.includes(p))
+              ])
+            );
+
+            mergedMap[expId] = {
+              recurrenceType: ['daily', 'monthly', 'yearly'].includes(val?.recurrenceType)
+                ? val.recurrenceType
+                : existing.recurrenceType || 'monthly',
+              skippedPeriods: mergedSkipped,
+              confirmedPeriods: mergedConfirmed
+            };
           });
 
-          if (needsProfileResync && syncedMap) {
-            supabase
-              .from('profiles')
-              .update({ expense_meta: syncedMap })
-              .eq('user_id', activeUserId)
-              .then(({ error: syncErr }) => {
-                if (syncErr) console.warn('Could not resync expense_meta to profile:', syncErr.message);
-              });
-          }
-        }
-        setMetaHydratedUserId(activeUserId);
+          return { ...prev, [targetUserId]: mergedMap };
+        });
+
+        setMetaHydratedUserId(targetUserId);
       })
       .catch(() => {
-        if (!isCancelled) setMetaHydratedUserId(activeUserId);
+        if (!isCancelled && activeUserIdRef.current === targetUserId) {
+          setMetaHydratedUserId(targetUserId);
+        }
       });
 
     return () => {
@@ -672,10 +707,29 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
     };
   }, [activeUserId, loadingData]);
 
+  // Persist committed expense_meta state to localStorage and serialized Supabase profile updates
+  useEffect(() => {
+    if (!activeUserId) return;
+    const committedMap = metaOverridesByUser[activeUserId];
+    if (!committedMap) return;
+
+    try {
+      localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(committedMap));
+    } catch {
+      // Ignore storage quota errors
+    }
+
+    if (metaHydratedUserId === activeUserId) {
+      enqueueProfileMetaWrite(activeUserId, committedMap);
+    }
+  }, [activeUserId, metaOverridesByUser, metaHydratedUserId, enqueueProfileMetaWrite]);
+
   const updateExpenseMeta = useCallback((expenseId, patch) => {
     if (!activeUserId || !expenseId) return;
+    const targetUserId = activeUserId;
+
     setMetaOverridesByUser((prev) => {
-      const baseMap = prev[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
+      const baseMap = prev[targetUserId] ?? readUserStorage('managed_expense_meta', targetUserId, {});
       const current = baseMap[expenseId] || {
         recurrenceType: 'monthly',
         skippedPeriods: [],
@@ -694,25 +748,13 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
           : []
       };
 
-      if (!sessionModifiedMetaRef.current[activeUserId]) {
-        sessionModifiedMetaRef.current[activeUserId] = {};
+      if (!sessionModifiedMetaRef.current[targetUserId]) {
+        sessionModifiedMetaRef.current[targetUserId] = {};
       }
-      sessionModifiedMetaRef.current[activeUserId][expenseId] = normalized;
+      sessionModifiedMetaRef.current[targetUserId][expenseId] = normalized;
 
       const nextMap = { ...baseMap, [expenseId]: normalized };
-      try {
-        localStorage.setItem(`managed_expense_meta_${activeUserId}`, JSON.stringify(nextMap));
-      } catch {
-        // Ignore storage quota errors
-      }
-      supabase
-        .from('profiles')
-        .update({ expense_meta: nextMap })
-        .eq('user_id', activeUserId)
-        .then(({ error }) => {
-          if (error) console.warn('Could not sync expense_meta to profile:', error.message);
-        });
-      return { ...prev, [activeUserId]: nextMap };
+      return { ...prev, [targetUserId]: nextMap };
     });
   }, [activeUserId]);
 
@@ -837,6 +879,7 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
    * @param {boolean} isManualTrigger - Whether triggered manually by user button click.
    */
  // Automatically trigger recurring expense reminder emails per cycle (Daily, Monthly, Yearly)
+  // Automatically trigger recurring expense reminder emails per cycle (Daily, Monthly, Yearly)
   const autoReminderAttemptedRef = useRef({});
   const autoReminderRetryCountRef = useRef({});
   const autoReminderNextRetryAtRef = useRef({});
@@ -852,16 +895,18 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
   }, []);
 
   useEffect(() => {
-    if (!session?.user?.email || loadingData || isReadOnly || metaHydratedUserId !== session.user.id) return;
+    if (!session?.user?.id || !session?.user?.email || loadingData || isReadOnly || metaHydratedUserId !== session.user.id) return;
     if (!emailRemindersEnabled) return;
 
+    const effectUserId = session.user.id;
+    const effectUserEmail = session.user.email;
     const currentMonthStr = getCurrentMonth();
     const todayStr = getToday();
     const activeYearStr = selectedMonth.slice(0, 4);
 
     const storedMap = parseReminderPeriodMap(lastReminderPeriod);
     try {
-      const localRaw = localStorage.getItem(`managed_last_reminder_${session.user.id}`);
+      const localRaw = localStorage.getItem(`managed_last_reminder_${effectUserId}`);
       Object.assign(storedMap, parseReminderPeriodMap(localRaw));
     } catch {
       // Ignore storage access errors
@@ -878,6 +923,7 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
     let isCancelled = false;
 
     const scheduleBoundedRetry = (attemptKey) => {
+      if (isCancelled || activeUserIdRef.current !== effectUserId) return;
       const retriesSoFar = autoReminderRetryCountRef.current[attemptKey] || 0;
       if (retriesSoFar >= 2) {
         autoReminderAttemptedRef.current[attemptKey] = 'exhausted';
@@ -895,14 +941,16 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
           if (autoReminderAttemptedRef.current[attemptKey] === 'cooldown') {
             delete autoReminderAttemptedRef.current[attemptKey];
           }
-          setReminderRetryTick((prev) => prev + 1);
+          if (activeUserIdRef.current === effectUserId) {
+            setReminderRetryTick((prev) => prev + 1);
+          }
         }, delayMs);
       }
     };
 
     (async () => {
       for (const { cycle, periodKey } of cycleConfigs) {
-        if (isCancelled) break;
+        if (isCancelled || activeUserIdRef.current !== effectUserId) break;
 
         // Only remind for recurring items matching this cycle that are neither skipped nor already confirmed
         const cyclePendingExpenses = activeMonthlyExpenses
@@ -924,14 +972,14 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
 
         let cachedCyclePeriod;
         try {
-          cachedCyclePeriod = localStorage.getItem(`managed_last_reminder_${session.user.id}_${cycle}`);
+          cachedCyclePeriod = localStorage.getItem(`managed_last_reminder_${effectUserId}_${cycle}`);
         } catch {
           cachedCyclePeriod = null;
         }
 
         if (storedMap[cycle] === periodKey || cachedCyclePeriod === periodKey) continue;
 
-        const attemptKey = `${session.user.id}_${cycle}_${periodKey}`;
+        const attemptKey = `${effectUserId}_${cycle}_${periodKey}`;
         const currentStatus = autoReminderAttemptedRef.current[attemptKey];
         const retriesUsed = autoReminderRetryCountRef.current[attemptKey] || 0;
         const nextAllowedAt = autoReminderNextRetryAtRef.current[attemptKey] || 0;
@@ -950,15 +998,20 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
 
         try {
           const res = await sendRecurringExpenseReminderEmail({
-            userId: session.user.id,
-            recipientEmail: session.user.email,
-            username: username || session.user.email.split('@')[0],
+            userId: effectUserId,
+            recipientEmail: effectUserEmail,
+            username: username || effectUserEmail.split('@')[0],
             periodKey,
             recurrenceCycle: cycle,
             pendingExpenses: cyclePendingExpenses,
             formatCurrency,
             onlyIfNotSent: true
           });
+
+          if (isCancelled || activeUserIdRef.current !== effectUserId) {
+            delete autoReminderAttemptedRef.current[attemptKey];
+            break;
+          }
 
           if (res?.ok && res.serializedMap) {
             autoReminderAttemptedRef.current[attemptKey] = 'done';
@@ -974,6 +1027,10 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
             scheduleBoundedRetry(attemptKey);
           }
         } catch (err) {
+          if (isCancelled || activeUserIdRef.current !== effectUserId) {
+            delete autoReminderAttemptedRef.current[attemptKey];
+            break;
+          }
           scheduleBoundedRetry(attemptKey);
           console.warn(`Automatic ${cycle} recurring reminder check failed:`, err);
         }
