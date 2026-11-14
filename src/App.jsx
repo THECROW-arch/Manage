@@ -575,8 +575,9 @@ export default function App() {
     t
   ]);
 
-const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
+const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
   const [prefillRecurrenceType, setPrefillRecurrenceType] = useState('monthly');
+  const isMetaHydratedRef = useRef(false);
   const sessionModifiedMetaRef = useRef({});
   const lastSyncedProfileMetaJsonRef = useRef({});
   const latestPendingMetaByUserRef = useRef({});
@@ -586,8 +587,10 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
   useEffect(() => {
     activeUserIdRef.current = activeUserId;
     if (!activeUserId) {
+      isMetaHydratedRef.current = false;
       sessionModifiedMetaRef.current = {};
       latestPendingMetaByUserRef.current = {};
+      lastSyncedProfileMetaJsonRef.current = {};
     }
   }, [activeUserId]);
 
@@ -621,7 +624,8 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
 
           if (error) {
             console.warn('Could not sync expense_meta to profile:', error.message);
-            break;
+            if (!latestPendingMetaByUserRef.current[targetUserId]) break;
+            continue;
           }
           lastSyncedProfileMetaJsonRef.current[targetUserId] = nextJson;
         }
@@ -631,8 +635,9 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
     })();
   }, []);
 
-  // Hydrate recurring expense metadata after expense-row loading completes while preserving live session decisions
+  // Hydrate recurring expense metadata after expense-row loading completes; remote profile wins over stale local cache
   useEffect(() => {
+    isMetaHydratedRef.current = false;
     if (!activeUserId || loadingData) return;
     let isCancelled = false;
     const targetUserId = activeUserId;
@@ -665,45 +670,38 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
             const existing = mergedMap[expId] || {};
             const profileConfirmed = Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [];
             const profileSkipped = Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [];
-            const existingConfirmed = Array.isArray(existing.confirmedPeriods) ? existing.confirmedPeriods.map(String) : [];
-            const existingSkipped = Array.isArray(existing.skippedPeriods) ? existing.skippedPeriods.map(String) : [];
 
-            const mergedConfirmed = Array.from(
-              new Set([
-                ...existingConfirmed,
-                ...profileConfirmed.filter((p) => !existingSkipped.includes(p))
-              ])
-            );
-
-            const mergedSkipped = Array.from(
-              new Set([
-                ...existingSkipped.filter((p) => !mergedConfirmed.includes(p)),
-                ...profileSkipped.filter((p) => !mergedConfirmed.includes(p))
-              ])
+            // Remote profile decisions are authoritative over cached localStorage for any expense present in remoteMeta
+            const authoritativeSkipped = Array.from(new Set(profileSkipped));
+            const authoritativeConfirmed = Array.from(new Set(profileConfirmed)).filter(
+              (p) => !authoritativeSkipped.includes(p)
             );
 
             mergedMap[expId] = {
               recurrenceType: ['daily', 'monthly', 'yearly'].includes(val?.recurrenceType)
                 ? val.recurrenceType
                 : existing.recurrenceType || 'monthly',
-              skippedPeriods: mergedSkipped,
-              confirmedPeriods: mergedConfirmed
+              skippedPeriods: authoritativeSkipped,
+              confirmedPeriods: authoritativeConfirmed
             };
           });
 
           return { ...prev, [targetUserId]: mergedMap };
         });
 
-        setMetaHydratedUserId(targetUserId);
+        isMetaHydratedRef.current = true;
+        setMetaHydrationVersion((v) => v + 1);
       })
       .catch(() => {
         if (!isCancelled && activeUserIdRef.current === targetUserId) {
-          setMetaHydratedUserId(targetUserId);
+          isMetaHydratedRef.current = true;
+          setMetaHydrationVersion((v) => v + 1);
         }
       });
 
     return () => {
       isCancelled = true;
+      isMetaHydratedRef.current = false;
     };
   }, [activeUserId, loadingData]);
 
@@ -719,10 +717,10 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
       // Ignore storage quota errors
     }
 
-    if (metaHydratedUserId === activeUserId) {
+    if (isMetaHydratedRef.current) {
       enqueueProfileMetaWrite(activeUserId, committedMap);
     }
-  }, [activeUserId, metaOverridesByUser, metaHydratedUserId, enqueueProfileMetaWrite]);
+  }, [activeUserId, metaOverridesByUser, metaHydrationVersion, enqueueProfileMetaWrite]);
 
   const updateExpenseMeta = useCallback((expenseId, patch) => {
     if (!activeUserId || !expenseId) return;
@@ -874,11 +872,6 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
     return { ok: true, objective: newObjective };
   };
 
-  /**
-   * Sends a confirmation reminder email for recurring expenses in the active period.
-   * @param {boolean} isManualTrigger - Whether triggered manually by user button click.
-   */
- // Automatically trigger recurring expense reminder emails per cycle (Daily, Monthly, Yearly)
   // Automatically trigger recurring expense reminder emails per cycle (Daily, Monthly, Yearly)
   const autoReminderAttemptedRef = useRef({});
   const autoReminderRetryCountRef = useRef({});
@@ -895,7 +888,7 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
   }, []);
 
   useEffect(() => {
-    if (!session?.user?.id || !session?.user?.email || loadingData || isReadOnly || metaHydratedUserId !== session.user.id) return;
+    if (!session?.user?.id || !session?.user?.email || loadingData || isReadOnly || !isMetaHydratedRef.current) return;
     if (!emailRemindersEnabled) return;
 
     const effectUserId = session.user.id;
@@ -923,7 +916,7 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
     let isCancelled = false;
 
     const scheduleBoundedRetry = (attemptKey) => {
-      if (isCancelled || activeUserIdRef.current !== effectUserId) return;
+      if (activeUserIdRef.current !== effectUserId) return;
       const retriesSoFar = autoReminderRetryCountRef.current[attemptKey] || 0;
       if (retriesSoFar >= 2) {
         autoReminderAttemptedRef.current[attemptKey] = 'exhausted';
@@ -1008,12 +1001,13 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
             onlyIfNotSent: true
           });
 
-          if (isCancelled || activeUserIdRef.current !== effectUserId) {
+          // Only discard completion if the authenticated user session changed
+          if (activeUserIdRef.current !== effectUserId) {
             delete autoReminderAttemptedRef.current[attemptKey];
             break;
           }
 
-          if (res?.ok && res.serializedMap) {
+          if (res?.ok) {
             autoReminderAttemptedRef.current[attemptKey] = 'done';
             delete autoReminderRetryCountRef.current[attemptKey];
             delete autoReminderNextRetryAtRef.current[attemptKey];
@@ -1021,18 +1015,30 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
               clearTimeout(autoReminderRetryTimersRef.current[attemptKey]);
               delete autoReminderRetryTimersRef.current[attemptKey];
             }
-            Object.assign(storedMap, parseReminderPeriodMap(res.serializedMap));
-            setLastReminderPeriod(res.serializedMap);
+            if (res.serializedMap) {
+              Object.assign(storedMap, parseReminderPeriodMap(res.serializedMap));
+              setLastReminderPeriod(res.serializedMap);
+            }
           } else {
             scheduleBoundedRetry(attemptKey);
           }
+
+          // If a re-render occurred while awaiting this cycle, trigger a fresh pass for any remaining cycles
+          if (isCancelled && activeUserIdRef.current === effectUserId) {
+            setReminderRetryTick((prev) => prev + 1);
+            break;
+          }
         } catch (err) {
-          if (isCancelled || activeUserIdRef.current !== effectUserId) {
+          if (activeUserIdRef.current !== effectUserId) {
             delete autoReminderAttemptedRef.current[attemptKey];
             break;
           }
           scheduleBoundedRetry(attemptKey);
           console.warn(`Automatic ${cycle} recurring reminder check failed:`, err);
+          if (isCancelled) {
+            setReminderRetryTick((prev) => prev + 1);
+            break;
+          }
         }
       }
     })();
@@ -1045,7 +1051,7 @@ const [metaHydratedUserId, setMetaHydratedUserId] = useState(null);
     username,
     loadingData,
     isReadOnly,
-    metaHydratedUserId,
+    metaHydrationVersion,
     emailRemindersEnabled,
     lastReminderPeriod,
     selectedMonth,

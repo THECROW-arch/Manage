@@ -147,9 +147,22 @@ const EXPLICIT_AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|
 // Secondary "can I spend <amount>" affordability phrases
 const CAN_SPEND_AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+spend|puis-je\s+dépenser|puedo\s+gastar|هل\s+يمكنني\s+إنفاق)(?![\p{L}\p{N}])/iu;
 
+// Matches calendar year references (e.g. "2026-11", "November 2026", "in 2026") but NEVER money tokens like "$2026.50" or "2026 MAD"
+const CALENDAR_DATE_YEAR_REGEX = /(?:(?<![$€£.,\d])\b20\d{2}-\d{2}\b(?![.,]\d)|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+20\d{2}\b(?![.,]\d))/giu;
+
+/**
+ * Removes explicit calendar date references ("2026-11", "November 2026") without touching
+ * monetary amounts such as "$2026.50", "2,026", or standalone purchase amounts.
+ * @param {string} str - Input text.
+ * @returns {string} Text with calendar date tokens removed.
+ */
+function stripCalendarDateTokens(str) {
+    return String(str || '').replace(CALENDAR_DATE_YEAR_REGEX, ' ');
+}
+
 /**
  * Determines whether an input is a purchase affordability question rather than a general daily-allowance question.
- * Keeps all "how much can I spend..." questions on the allowance path even when a year (e.g. 2026) is present.
+ * Keeps all "how much can I spend..." questions on the allowance path even when a date (e.g. November 2026) is present.
  * @param {string} lower - Normalized lowercase input.
  * @returns {boolean} True if the input should be handled by the affordability checker.
  */
@@ -160,9 +173,8 @@ function isAffordabilityQuestion(lower) {
     const asksHowMuch = /(?<![\p{L}\p{N}])(how\s+much|combien|cuánto|كم)(?![\p{L}\p{N}])/iu.test(lower);
     if (asksHowMuch) return false;
 
-    // Strip 4-digit calendar years (e.g. 2026) before checking if a purchase amount was provided
-    const withoutYears = lower.replace(/\b20\d{2}(?:-\d{2})?\b/g, ' ');
-    return /\d/.test(withoutYears) || !DAILY_PACE_REGEX.test(lower);
+    const withoutDates = stripCalendarDateTokens(lower);
+    return /\d/.test(withoutDates) || !DAILY_PACE_REGEX.test(lower);
 }
 
 /**
@@ -1087,9 +1099,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
     // =========================================================================
     // 13. ANALYST ENGINE: AFFORDABILITY CHECK (Evaluated BEFORE Daily Pace & Log Expense)
     // =========================================================================
-    if (isAffordabilityQuestion(lower)) {
-        const textWithoutYears = text.replace(/\b20\d{2}(?:-\d{2})?\b/g, ' ');
-        const amtMatch = textWithoutYears.match(MONEY_TOKEN_REGEX) || text.match(MONEY_TOKEN_REGEX);
+   if (isAffordabilityQuestion(lower)) {
+        const textWithoutDates = stripCalendarDateTokens(text);
+        const amtMatch = textWithoutDates.match(MONEY_TOKEN_REGEX) || text.match(MONEY_TOKEN_REGEX);
         const rawAmount = amtMatch ? parseMoneyAmount(amtMatch[1]) : NaN;
         const targetCat = findCategoryInText(lower);
 
