@@ -812,11 +812,29 @@ export default function App() {
 
     setMetaOverridesByUser((prev) => {
       const baseMap = prev[targetUserId] ?? readUserStorage('managed_expense_meta', targetUserId, {});
-      const current = baseMap[expenseId] || {
-        recurrenceType: 'monthly',
-        skippedPeriods: [],
-        confirmedPeriods: []
+      const existingUnsynced = readUserStorage('managed_unsynced_expense_meta', targetUserId, {});
+      const pendingEntry =
+        sessionModifiedMetaRef.current[targetUserId]?.[expenseId] ||
+        (existingUnsynced && typeof existingUnsynced === 'object' ? existingUnsynced[expenseId] : null);
+      const fallbackEntry = baseMap[expenseId] || {};
+
+      const current = {
+        recurrenceType:
+          pendingEntry?.recurrenceType ||
+          fallbackEntry.recurrenceType ||
+          'monthly',
+        skippedPeriods: Array.isArray(pendingEntry?.skippedPeriods)
+          ? pendingEntry.skippedPeriods
+          : Array.isArray(fallbackEntry.skippedPeriods)
+            ? fallbackEntry.skippedPeriods
+            : [],
+        confirmedPeriods: Array.isArray(pendingEntry?.confirmedPeriods)
+          ? pendingEntry.confirmedPeriods
+          : Array.isArray(fallbackEntry.confirmedPeriods)
+            ? fallbackEntry.confirmedPeriods
+            : []
       };
+
       const merged = typeof patch === 'function' ? patch(current) : { ...current, ...patch };
       const normalized = {
         recurrenceType: ['daily', 'monthly', 'yearly'].includes(merged?.recurrenceType)
@@ -837,7 +855,6 @@ export default function App() {
 
       try {
         const unsyncedKey = `managed_unsynced_expense_meta_${targetUserId}`;
-        const existingUnsynced = readUserStorage('managed_unsynced_expense_meta', targetUserId, {});
         const nextUnsynced = {
           ...(existingUnsynced && typeof existingUnsynced === 'object' ? existingUnsynced : {}),
           [expenseId]: normalized

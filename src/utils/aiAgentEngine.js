@@ -147,12 +147,12 @@ const EXPLICIT_AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+afford|afford|
 // Secondary "can I spend <amount>" affordability phrases
 const CAN_SPEND_AFFORDABILITY_REGEX = /(?<![\p{L}\p{N}])(can\s+i\s+spend|puis-je\s+dépenser|puedo\s+gastar|هل\s+يمكنني\s+إنفاق)(?![\p{L}\p{N}])/iu;
 
-// Matches full ISO dates ("2026-11-14"), year-month ("2026-11"), month-name dates ("November 14, 2026,"),
-// and year prepositions ("in 2026"), while allowing trailing sentence punctuation and preserving currency-labeled prices ("for 2026 dollars")
-const CALENDAR_DATE_YEAR_REGEX = /(?:(?<![$€£\d-])(?<!\d[.,])\b20\d{2}-\d{2}(?:-\d{2})?\b(?!(?:[.,]\d|[\d-]))|(?:\b\d{1,2}(?:st|nd|rd|th)?\s+)?\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)(?:\s+\d{1,2}(?:st|nd|rd|th)?,?)?\s+20\d{2}\b(?!(?:[.,]\d|\d))|\b(?:in|for|during|en|pour|para|في|سنة|عام)\s+20\d{2}\b(?!(?:[.,]\d|\d|\s*(?:[$€£]|dollars?|usd|mad|dhs?|dirhams?|euros?|eur|pounds?|gbp|bucks|درهم|دولار|يورو)(?![\p{L}\p{N}]))))/giu;
+// Matches full ISO dates ("2026-11-14"), year-month ("2026-11"), month-name dates ("November 14, 2026,", "el 14 de noviembre de 2026"),
+// and Unicode-aware year prepositions ("in 2026", "في 2026"), while preserving currency-labeled prices ("for 2026 dollars")
+const CALENDAR_DATE_YEAR_REGEX = /(?:(?<![$€£\d-])(?<!\d[.,])\b20\d{2}-\d{2}(?:-\d{2})?\b(?!(?:[.,]\d|[\d-]))|(?:\b(?:on|el|le)\s+)?(?:\b\d{1,2}(?:st|nd|rd|th|er)?\s+(?:de\s+|d'\s*)?)?\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)(?:\s+\d{1,2}(?:st|nd|rd|th)?,?)?(?:\s+de)?\s+20\d{2}\b(?!(?:[.,]\d|\d))|(?<![\p{L}\p{N}])(?:in|for|during|en|pour|para|في|سنة|عام)\s+20\d{2}(?![\p{L}\p{N}])(?!(?:[.,]\d|\d|\s*(?:[$€£]|dollars?|usd|mad|dhs?|dirhams?|euros?|eur|pounds?|gbp|bucks|درهم|دولار|يورو)(?![\p{L}\p{N}]))))/giu;
 
 /**
- * Removes explicit calendar date references ("2026-11-14", "2026-11", "November 14, 2026,")
+ * Removes explicit calendar date references ("2026-11-14", "14 de noviembre de 2026", "في 2026")
  * without touching monetary amounts such as "$2026.50", "for 2026 dollars", or standalone purchase amounts.
  * @param {string} str - Input text.
  * @returns {string} Text with calendar date tokens removed.
