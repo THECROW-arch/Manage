@@ -4,12 +4,13 @@ import './i18n';
 import { useTranslation } from 'react-i18next';
 import { supabase } from './supabaseClient';
 import Auth from './Auth';
-import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth } from './utils/constants';
+import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth, sanitizeUsername } from './utils/constants';
 import { sendRecurringExpenseReminderEmail, parseReminderPeriodMap } from './utils/emailReminderService';
 import Sidebar, { MobileHeader } from './components/Sidebar';
 import CashFlowTab from './components/CashFlowTab';
 import AIAssistantDrawer from './components/AIAssistantDrawer';
 import NotificationBell from './components/NotificationBell';
+import LegalModal from './components/LegalModal';
 
 const HistoryTab = lazy(() => import('./components/HistoryTab'));
 const TaxCenterTab = lazy(() => import('./components/TaxCenterTab'));
@@ -580,6 +581,7 @@ export default function App() {
   const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
   const [metaHydrationRetryTick, setMetaHydrationRetryTick] = useState(0);
   const [prefillRecurrenceType, setPrefillRecurrenceType] = useState('monthly');
+  const [legalModalSection, setLegalModalSection] = useState(null);
   const isMetaHydratedRef = useRef(false);
   const metaHydrationRetryCountRef = useRef({});
   const sessionModifiedMetaRef = useRef({});
@@ -1100,7 +1102,7 @@ export default function App() {
           const res = await sendRecurringExpenseReminderEmail({
             userId: effectUserId,
             recipientEmail: effectUserEmail,
-            username: username || effectUserEmail.split('@')[0],
+            username: sanitizeUsername(username || effectUserEmail.split('@')[0]),
             periodKey,
             recurrenceCycle: cycle,
             pendingExpenses: cyclePendingExpenses,
@@ -3001,6 +3003,25 @@ export default function App() {
           }}
         />
       </main >
+      <footer className="py-6 text-center text-xs text-gray-400 dark:text-zinc-500 flex items-center justify-center gap-4">
+        <button type="button" onClick={() => setLegalModalSection('terms')} className="hover:underline">
+          Terms of Service (18+)
+        </button>
+        <span>•</span>
+        <button type="button" onClick={() => setLegalModalSection('privacy')} className="hover:underline">
+          Privacy Policy
+        </button>
+        <span>•</span>
+        <button type="button" onClick={() => setLegalModalSection('cookies')} className="hover:underline">
+          Storage Notice
+        </button>
+      </footer>
+
+      <LegalModal
+        isOpen={Boolean(legalModalSection)}
+        initialSection={legalModalSection || 'terms'}
+        onClose={() => setLegalModalSection(null)}
+      />
     </div >
   );
 }

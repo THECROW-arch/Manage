@@ -12,6 +12,25 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS"
 };
 
+/**
+ * Strips executable script/iframe/object tags, inline event handlers, and javascript: URLs
+ * from HTML email bodies while preserving safe formatting markup.
+ */
+function sanitizeEmailHtml(rawHtml: string): string {
+  return rawHtml
+    .replace(/<(script|iframe|object|embed|form|meta|link)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<(script|iframe|object|embed|form|meta|link)\b[^>]*\/?>/gi, "")
+    .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/javascript\s*:/gi, "");
+}
+
+/**
+ * Sanitizes Resend tag values to ASCII alphanumeric, underscore, and hyphen characters.
+ */
+function sanitizeTagValue(rawTag: string): string {
+  return rawTag.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -134,6 +153,11 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const safeSubject = String(subject).replace(/[\r\n]+/g, " ").trim().slice(0, 200);
+    const safeHtml = html ? sanitizeEmailHtml(String(html)) : undefined;
+    const safeText = text ? String(text).slice(0, 10000) : undefined;
+    const safePeriodTag = periodKey ? sanitizeTagValue(String(periodKey)) : "";
+
     const resendResponse = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -143,10 +167,10 @@ Deno.serve(async (req: Request) => {
       body: JSON.stringify({
         from: fromAddress,
         to: [authUser.email],
-        subject: String(subject),
-        html: html ? String(html) : undefined,
-        text: text ? String(text) : undefined,
-        tags: periodKey ? [{ name: "period", value: String(periodKey) }] : undefined
+        subject: safeSubject,
+        html: safeHtml,
+        text: safeText,
+        tags: safePeriodTag ? [{ name: "period", value: safePeriodTag }] : undefined
       })
     });
 

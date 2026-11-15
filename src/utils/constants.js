@@ -90,3 +90,16 @@ export const getCurrentMonth = () => {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
 };
+/**
+ * Normalizes a username using NFKC Unicode normalization, strips invisible/directional
+ * control characters, and enforces a strict 32-character maximum length.
+ * @param {string} raw - Raw username input.
+ * @returns {string} Sanitized username string.
+ */
+export function sanitizeUsername(raw) {
+    return String(raw || '')
+        .normalize('NFKC')
+        .replace(/[\u200B-\u200D\uFEFF\u202A-\u202E]/g, '')
+        .trim()
+        .slice(0, 32);
+}

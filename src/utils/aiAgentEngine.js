@@ -188,7 +188,7 @@ function isAffordabilityQuestion(lower) {
 export async function processAIAgentTurn(rawInput, ctx) {
     const t = (key, options) => i18n.t(key, options);
 
-    const text = (rawInput || '').trim();
+    const text = String(rawInput || '').trim().slice(0, 500);
     if (!text) {
         return {
             reply: t('ai_empty_prompt'),
