@@ -1,6 +1,6 @@
 import { supabase } from '../supabaseClient';
 
-// Prevents concurrent duplicate dispatches for the same user and period
+// Prevents concurrent duplicate dispatches for the same user, cycle, and period
 const inFlightDispatches = new Map();
 
 /**
@@ -18,42 +18,85 @@ function escapeHtml(raw) {
 }
 
 /**
- * Builds the subject, plain-text body, and HTML body for a recurring expense confirmation email.
+ * Parses the stored `last_reminder_period` value from `public.profiles` into a
+ * `{ daily, monthly, yearly }` map while remaining backwards-compatible with plain period strings.
+ * @param {string|object|null} raw - Raw column or state value.
+ * @returns {{daily?: string, monthly?: string, yearly?: string}} Cycle-to-period map.
+ */
+export function parseReminderPeriodMap(raw) {
+    if (!raw) return {};
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+        return { ...raw };
+    }
+    const str = String(raw).trim();
+    if (!str) return {};
+    if (str.startsWith('{')) {
+        try {
+            const parsed = JSON.parse(str);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed;
+            }
+        } catch {
+            // Fall through to legacy string handling
+        }
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return { daily: str };
+    if (/^\d{4}-\d{2}$/.test(str)) return { monthly: str };
+    if (/^\d{4}$/.test(str)) return { yearly: str };
+    return { monthly: str };
+}
+
+/**
+ * Builds the subject, plain-text body, and HTML body for a cycle-specific recurring expense reminder email.
  * @param {object} params - Template parameters.
  * @param {string} params.username - Recipient's display name.
- * @param {string} params.periodKey - Active period identifier (e.g. "2026-11").
- * @param {Array<object>} params.pendingExpenses - Unconfirmed recurring expenses for the period.
+ * @param {string} params.periodKey - Active period identifier ("2026-11-12", "2026-11", or "2026").
+ * @param {'daily'|'monthly'|'yearly'} [params.recurrenceCycle='monthly'] - Recurrence cycle for this email batch.
+ * @param {Array<object>} params.pendingExpenses - Active recurring expenses for this cycle.
  * @param {Function} params.formatCurrency - Currency formatting function.
  * @returns {{subject: string, textBody: string, htmlBody: string}} Formatted email payload.
  */
-export function buildRecurringReminderEmail({ username, periodKey, pendingExpenses, formatCurrency }) {
+export function buildRecurringReminderEmail({
+    username,
+    periodKey,
+    recurrenceCycle = 'monthly',
+    pendingExpenses,
+    formatCurrency
+}) {
     const safeUser = escapeHtml(username || 'Member');
     const safePeriod = escapeHtml(periodKey);
+    const cycleTitle =
+        recurrenceCycle === 'daily'
+            ? 'Daily'
+            : recurrenceCycle === 'yearly'
+                ? 'Yearly'
+                : 'Monthly';
+
     const totalDue = pendingExpenses.reduce((sum, exp) => sum + (parseFloat(exp.cost) || 0), 0);
     const formattedTotal = formatCurrency ? formatCurrency(totalDue) : `${totalDue.toFixed(2)}`;
 
-    const subject = `MANAGED Reminder: ${pendingExpenses.length} Recurring Expense${pendingExpenses.length === 1 ? '' : 's'} to Confirm for ${periodKey}`;
+    const subject = `MANAGED ${cycleTitle} Reminder: ${pendingExpenses.length} ${cycleTitle} Recurring Expense${pendingExpenses.length === 1 ? '' : 's'} for ${periodKey}`;
 
     const textLines = pendingExpenses.map(
         (exp, idx) =>
-            `${idx + 1}. ${exp.name} — ${formatCurrency ? formatCurrency(exp.cost) : exp.cost} (${exp.category || 'Category'} • ${exp.recurrenceType || 'monthly'})`
+            `${idx + 1}. ${exp.name} — ${formatCurrency ? formatCurrency(exp.cost) : exp.cost} (${exp.category || 'Category'} • ${cycleTitle})`
     );
 
     const textBody = [
         `Hi @${username || 'Member'},`,
         '',
-        `You have ${pendingExpenses.length} recurring expense${pendingExpenses.length === 1 ? '' : 's'} totaling ${formattedTotal} awaiting confirmation or skip review in your ${periodKey} MANAGED ledger:`,
+        `Here is your automatic ${cycleTitle.toLowerCase()} recurring expense reminder for ${periodKey} (${pendingExpenses.length} item${pendingExpenses.length === 1 ? '' : 's'} totaling ${formattedTotal}):`,
         '',
         ...textLines,
         '',
-        'Open your MANAGED Cash Flow dashboard to confirm or skip these items for the current period.'
+        'Open your MANAGED Cash Flow dashboard to review, confirm, or skip any item for this period.'
     ].join('\n');
 
     const rowsHtml = pendingExpenses
         .map((exp) => {
             const name = escapeHtml(exp.name);
             const cat = escapeHtml(exp.category || 'Category');
-            const freq = escapeHtml((exp.recurrenceType || 'monthly').toUpperCase());
+            const freq = escapeHtml((exp.recurrenceType || recurrenceCycle).toUpperCase());
             const cost = escapeHtml(formatCurrency ? formatCurrency(exp.cost) : String(exp.cost));
             return `
               <tr>
@@ -69,12 +112,12 @@ export function buildRecurringReminderEmail({ username, periodKey, pendingExpens
       <div style="font-family:system-ui,-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;">
         <div style="margin-bottom:16px;">
           <span style="display:inline-block;padding:4px 10px;border-radius:9999px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;">
-            MANAGED • Recurring Expense Reminder
+            MANAGED • ${escapeHtml(cycleTitle)} Recurring Reminder
           </span>
         </div>
         <h2 style="margin:0 0 8px;font-size:20px;color:#111827;">Hi @${safeUser},</h2>
         <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:#4b5563;">
-          You have <strong>${pendingExpenses.length}</strong> recurring expense${pendingExpenses.length === 1 ? '' : 's'} totaling <strong>${escapeHtml(formattedTotal)}</strong> ready to confirm or skip for <strong>${safePeriod}</strong>:
+          You have <strong>${pendingExpenses.length}</strong> ${escapeHtml(cycleTitle.toLowerCase())} recurring expense${pendingExpenses.length === 1 ? '' : 's'} totaling <strong>${escapeHtml(formattedTotal)}</strong> scheduled for <strong>${safePeriod}</strong>:
         </p>
         <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:20px;">
           <thead>
@@ -88,7 +131,7 @@ export function buildRecurringReminderEmail({ username, periodKey, pendingExpens
           <tbody>${rowsHtml}</tbody>
         </table>
         <p style="margin:0;font-size:12px;color:#6b7280;">
-          Open your MANAGED Cash Flow tab to mark each recurring item as <strong>Confirmed</strong> or <strong>Skipped</strong> for this period.
+          Open your MANAGED Cash Flow tab to review or skip any recurring item for this ${escapeHtml(cycleTitle.toLowerCase())} period.
         </p>
       </div>
     `;
@@ -97,14 +140,15 @@ export function buildRecurringReminderEmail({ username, periodKey, pendingExpens
 }
 
 /**
- * Checks Supabase across devices to see if a reminder for the given period was already sent.
+ * Checks Supabase across devices to see if a reminder for the given cycle and period was already sent.
  * Distinguishes 'sent', 'not_sent', and 'unverified' so a failed lookup is never treated
  * as permission to send. Preserves a positive result when either source confirms delivery.
  * @param {string} userId - Authenticated user UUID.
- * @param {string} periodKey - Active period identifier (e.g. "2026-11").
- * @returns {Promise<{state: 'sent' | 'not_sent' | 'unverified', error?: string}>} Verification result.
+ * @param {'daily'|'monthly'|'yearly'} recurrenceCycle - Recurrence cycle.
+ * @param {string} periodKey - Active period identifier ("2026-11-12", "2026-11", or "2026").
+ * @returns {Promise<{state: 'sent' | 'not_sent' | 'unverified', currentMap?: object, error?: string}>} Verification result.
  */
-async function checkReminderDeliveryStatus(userId, periodKey) {
+async function checkReminderDeliveryStatus(userId, recurrenceCycle, periodKey) {
     try {
         const [profileRes, queueRes] = await Promise.all([
             supabase
@@ -121,49 +165,52 @@ async function checkReminderDeliveryStatus(userId, periodKey) {
                 .limit(1)
         ]);
 
+        const currentMap = !profileRes.error
+            ? parseReminderPeriodMap(profileRes.data?.last_reminder_period)
+            : {};
+
         const profileConfirmed =
-            !profileRes.error && profileRes.data?.last_reminder_period === periodKey;
+            !profileRes.error && currentMap[recurrenceCycle] === periodKey;
         const queueConfirmed =
             !queueRes.error && Array.isArray(queueRes.data) && queueRes.data.length > 0;
 
-        // Preserve a positive result whenever either source confirms delivery
         if (profileConfirmed || queueConfirmed) {
-            return { state: 'sent' };
+            return { state: 'sent', currentMap };
         }
 
-        // If neither source confirmed delivery and either query failed, do not assume 'not_sent'
         if (profileRes.error || queueRes.error) {
             const errMsg =
                 profileRes.error?.message ||
                 queueRes.error?.message ||
                 'Unable to verify reminder delivery status.';
             console.warn('Could not verify cross-device reminder status:', errMsg);
-            return { state: 'unverified', error: errMsg };
+            return { state: 'unverified', currentMap, error: errMsg };
         }
 
-        return { state: 'not_sent' };
+        return { state: 'not_sent', currentMap };
     } catch (err) {
         const errMsg = err?.message || 'Network error while verifying reminder status.';
         console.warn('Could not verify cross-device reminder status:', err);
-        return { state: 'unverified', error: errMsg };
+        return { state: 'unverified', currentMap: {}, error: errMsg };
     }
 }
 
 /**
- * Dispatches a recurring expense confirmation reminder email to the authenticated user.
+ * Automatically dispatches a cycle-specific recurring expense reminder email (daily, monthly, or yearly).
  * Deduplicates concurrent in-flight requests, logs attempts in public.email_reminder_queue,
- * and persists last_reminder_period in public.profiles across devices.
+ * and persists the updated cycle map in public.profiles.last_reminder_period across devices.
  * @param {object} params - Dispatch parameters.
- * @returns {Promise<{ok: boolean, status?: string, alreadySent?: boolean, retryable?: boolean, error?: string}>} Dispatch result.
+ * @returns {Promise<{ok: boolean, status?: string, serializedMap?: string, alreadySent?: boolean, retryable?: boolean, error?: string}>} Dispatch result.
  */
 export async function sendRecurringExpenseReminderEmail({
     userId,
     recipientEmail,
     username,
     periodKey,
+    recurrenceCycle = 'monthly',
     pendingExpenses,
     formatCurrency,
-    onlyIfNotSent = false
+    onlyIfNotSent = true
 }) {
     if (!userId || !recipientEmail) {
         return { ok: false, error: 'Missing authenticated user email.' };
@@ -172,21 +219,28 @@ export async function sendRecurringExpenseReminderEmail({
         return { ok: false, error: 'No recurring expenses require confirmation for this period.' };
     }
 
-    const dispatchKey = `${userId}_${periodKey}`;
+    const dispatchKey = `${userId}_${recurrenceCycle}_${periodKey}`;
     if (inFlightDispatches.has(dispatchKey)) {
         return inFlightDispatches.get(dispatchKey);
     }
 
     const dispatchPromise = (async () => {
+        let existingMap = {};
+
         if (onlyIfNotSent) {
-            const verification = await checkReminderDeliveryStatus(userId, periodKey);
+            const verification = await checkReminderDeliveryStatus(userId, recurrenceCycle, periodKey);
+            existingMap = verification.currentMap || {};
+
             if (verification.state === 'sent') {
+                const updatedMap = { ...existingMap, [recurrenceCycle]: periodKey };
+                const serializedMap = JSON.stringify(updatedMap);
                 try {
-                    localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
+                    localStorage.setItem(`managed_last_reminder_${userId}_${recurrenceCycle}`, periodKey);
+                    localStorage.setItem(`managed_last_reminder_${userId}`, serializedMap);
                 } catch {
                     // Ignore localStorage quota errors
                 }
-                return { ok: true, status: 'already_sent', alreadySent: true };
+                return { ok: true, status: 'already_sent', alreadySent: true, serializedMap };
             }
             if (verification.state === 'unverified') {
                 return {
@@ -201,6 +255,7 @@ export async function sendRecurringExpenseReminderEmail({
         const { subject, textBody, htmlBody } = buildRecurringReminderEmail({
             username,
             periodKey,
+            recurrenceCycle,
             pendingExpenses,
             formatCurrency
         });
@@ -250,7 +305,6 @@ export async function sendRecurringExpenseReminderEmail({
             deliveryError = err.message || 'Network error while dispatching reminder email.';
         }
 
-        // Always insert the audit row into email_reminder_queue so both sent and failed attempts are recorded
         let queueInserted = false;
         try {
             const { error: dbError } = await supabase.from('email_reminder_queue').insert([
@@ -283,12 +337,14 @@ export async function sendRecurringExpenseReminderEmail({
             };
         }
 
-        // Persist the sent period in Supabase profiles across devices
+        const updatedMap = { ...existingMap, [recurrenceCycle]: periodKey };
+        const serializedMap = JSON.stringify(updatedMap);
+
         let profileUpdated = false;
         try {
             const { data: updatedRows, error: profileUpdateError } = await supabase
                 .from('profiles')
-                .update({ last_reminder_period: periodKey })
+                .update({ last_reminder_period: serializedMap })
                 .eq('user_id', userId)
                 .select('user_id');
 
@@ -298,7 +354,7 @@ export async function sendRecurringExpenseReminderEmail({
                 const { error: upsertError } = await supabase
                     .from('profiles')
                     .upsert(
-                        { user_id: userId, last_reminder_period: periodKey },
+                        { user_id: userId, last_reminder_period: serializedMap },
                         { onConflict: 'user_id' }
                     );
                 if (upsertError) {
@@ -320,12 +376,13 @@ export async function sendRecurringExpenseReminderEmail({
         }
 
         try {
-            localStorage.setItem(`managed_last_reminder_${userId}`, periodKey);
+            localStorage.setItem(`managed_last_reminder_${userId}_${recurrenceCycle}`, periodKey);
+            localStorage.setItem(`managed_last_reminder_${userId}`, serializedMap);
         } catch {
             // Ignore storage quota errors
         }
 
-        return { ok: true, status: 'sent' };
+        return { ok: true, status: 'sent', serializedMap };
     })();
 
     inFlightDispatches.set(dispatchKey, dispatchPromise);
