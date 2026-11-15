@@ -599,6 +599,29 @@ export default function App() {
     }
   }, [activeUserId]);
 
+  // Restart profile metadata hydration automatically when network connectivity returns or tab regains focus
+  useEffect(() => {
+    if (!activeUserId) return;
+    const handleReconnectOrFocus = () => {
+      if (
+        document.visibilityState === 'hidden' ||
+        !activeUserIdRef.current ||
+        isMetaHydratedRef.current
+      ) {
+        return;
+      }
+      metaHydrationRetryCountRef.current[activeUserIdRef.current] = 0;
+      setMetaHydrationRetryTick((t) => t + 1);
+    };
+
+    window.addEventListener('online', handleReconnectOrFocus);
+    document.addEventListener('visibilitychange', handleReconnectOrFocus);
+    return () => {
+      window.removeEventListener('online', handleReconnectOrFocus);
+      document.removeEventListener('visibilitychange', handleReconnectOrFocus);
+    };
+  }, [activeUserId]);
+
   const expenseMetaMap = useMemo(() => {
     if (!activeUserId) return {};
     return metaOverridesByUser[activeUserId] ?? readUserStorage('managed_expense_meta', activeUserId, {});
@@ -632,7 +655,31 @@ export default function App() {
             if (!latestPendingMetaByUserRef.current[targetUserId]) break;
             continue;
           }
+
           lastSyncedProfileMetaJsonRef.current[targetUserId] = nextJson;
+
+          // Clear any persisted unsynced edits that are now safely stored in Supabase
+          try {
+            const unsyncedKey = `managed_unsynced_expense_meta_${targetUserId}`;
+            const rawUnsynced = localStorage.getItem(unsyncedKey);
+            if (rawUnsynced) {
+              const parsedUnsynced = JSON.parse(rawUnsynced);
+              if (parsedUnsynced && typeof parsedUnsynced === 'object') {
+                Object.keys(parsedUnsynced).forEach((expId) => {
+                  if (JSON.stringify(nextMap[expId]) === JSON.stringify(parsedUnsynced[expId])) {
+                    delete parsedUnsynced[expId];
+                  }
+                });
+                if (Object.keys(parsedUnsynced).length === 0) {
+                  localStorage.removeItem(unsyncedKey);
+                } else {
+                  localStorage.setItem(unsyncedKey, JSON.stringify(parsedUnsynced));
+                }
+              }
+            }
+          } catch {
+            // Ignore storage access errors
+          }
         }
       } finally {
         metaWriteInFlightRef.current[targetUserId] = false;
@@ -640,7 +687,7 @@ export default function App() {
     })();
   }, []);
 
-  // Hydrate recurring expense metadata after expense-row loading completes; never mark hydrated if the profile read fails
+  // Hydrate recurring expense metadata after expense-row loading completes; recover automatically after transient or extended failures
   useEffect(() => {
     isMetaHydratedRef.current = false;
     if (!activeUserId || loadingData) return;
@@ -650,13 +697,14 @@ export default function App() {
 
     const scheduleHydrationRetry = () => {
       const retries = metaHydrationRetryCountRef.current[targetUserId] || 0;
-      if (retries >= 3) return;
       metaHydrationRetryCountRef.current[targetUserId] = retries + 1;
+      // Fast retries (4s) for the first 3 attempts, then periodic 30s recovery so hydration can self-heal without reload
+      const delayMs = retries < 3 ? 4000 : 30000;
       retryTimerId = setTimeout(() => {
         if (!isCancelled && activeUserIdRef.current === targetUserId) {
           setMetaHydrationRetryTick((t) => t + 1);
         }
-      }, 4000);
+      }, delayMs);
     };
 
     supabase
@@ -684,7 +732,11 @@ export default function App() {
         setMetaOverridesByUser((prev) => {
           const baseMap = prev[targetUserId] ?? readUserStorage('managed_expense_meta', targetUserId, {});
           const mergedMap = { ...baseMap };
-          const userSessionEdits = sessionModifiedMetaRef.current[targetUserId] || {};
+          const persistedUnsynced = readUserStorage('managed_unsynced_expense_meta', targetUserId, {});
+          const userSessionEdits = {
+            ...(persistedUnsynced && typeof persistedUnsynced === 'object' ? persistedUnsynced : {}),
+            ...(sessionModifiedMetaRef.current[targetUserId] || {})
+          };
 
           Object.entries(remoteMeta).forEach(([expId, val]) => {
             if (userSessionEdits[expId]) {
@@ -708,6 +760,13 @@ export default function App() {
               skippedPeriods: authoritativeSkipped,
               confirmedPeriods: authoritativeConfirmed
             };
+          });
+
+          // Ensure any offline/unsynced edits for expenses not yet in remoteMeta are also retained
+          Object.entries(userSessionEdits).forEach(([expId, editVal]) => {
+            if (editVal && typeof editVal === 'object') {
+              mergedMap[expId] = editVal;
+            }
           });
 
           return { ...prev, [targetUserId]: mergedMap };
@@ -776,9 +835,27 @@ export default function App() {
       }
       sessionModifiedMetaRef.current[targetUserId][expenseId] = normalized;
 
+      try {
+        const unsyncedKey = `managed_unsynced_expense_meta_${targetUserId}`;
+        const existingUnsynced = readUserStorage('managed_unsynced_expense_meta', targetUserId, {});
+        const nextUnsynced = {
+          ...(existingUnsynced && typeof existingUnsynced === 'object' ? existingUnsynced : {}),
+          [expenseId]: normalized
+        };
+        localStorage.setItem(unsyncedKey, JSON.stringify(nextUnsynced));
+      } catch {
+        // Ignore storage quota errors
+      }
+
       const nextMap = { ...baseMap, [expenseId]: normalized };
       return { ...prev, [targetUserId]: nextMap };
     });
+
+    // If profile hydration had previously failed, trigger an immediate hydration retry so this edit can sync
+    if (!isMetaHydratedRef.current) {
+      metaHydrationRetryCountRef.current[targetUserId] = 0;
+      setMetaHydrationRetryTick((t) => t + 1);
+    }
   }, [activeUserId]);
 
   const isExpenseSkippedForCurrentPeriod = (exp, targetMonth = selectedMonth, targetDay = getToday()) => {
