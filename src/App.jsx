@@ -575,9 +575,13 @@ export default function App() {
     t
   ]);
 
-const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
+
+
+  const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
+  const [metaHydrationRetryTick, setMetaHydrationRetryTick] = useState(0);
   const [prefillRecurrenceType, setPrefillRecurrenceType] = useState('monthly');
   const isMetaHydratedRef = useRef(false);
+  const metaHydrationRetryCountRef = useRef({});
   const sessionModifiedMetaRef = useRef({});
   const lastSyncedProfileMetaJsonRef = useRef({});
   const latestPendingMetaByUserRef = useRef({});
@@ -588,6 +592,7 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
     activeUserIdRef.current = activeUserId;
     if (!activeUserId) {
       isMetaHydratedRef.current = false;
+      metaHydrationRetryCountRef.current = {};
       sessionModifiedMetaRef.current = {};
       latestPendingMetaByUserRef.current = {};
       lastSyncedProfileMetaJsonRef.current = {};
@@ -635,12 +640,24 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
     })();
   }, []);
 
-  // Hydrate recurring expense metadata after expense-row loading completes; remote profile wins over stale local cache
+  // Hydrate recurring expense metadata after expense-row loading completes; never mark hydrated if the profile read fails
   useEffect(() => {
     isMetaHydratedRef.current = false;
     if (!activeUserId || loadingData) return;
     let isCancelled = false;
+    let retryTimerId = null;
     const targetUserId = activeUserId;
+
+    const scheduleHydrationRetry = () => {
+      const retries = metaHydrationRetryCountRef.current[targetUserId] || 0;
+      if (retries >= 3) return;
+      metaHydrationRetryCountRef.current[targetUserId] = retries + 1;
+      retryTimerId = setTimeout(() => {
+        if (!isCancelled && activeUserIdRef.current === targetUserId) {
+          setMetaHydrationRetryTick((t) => t + 1);
+        }
+      }, 4000);
+    };
 
     supabase
       .from('profiles')
@@ -649,8 +666,16 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
       .maybeSingle()
       .then(({ data, error }) => {
         if (isCancelled || activeUserIdRef.current !== targetUserId) return;
+
+        if (error) {
+          console.warn('Failed to hydrate expense_meta from profile, retrying:', error.message);
+          scheduleHydrationRetry();
+          return;
+        }
+
+        delete metaHydrationRetryCountRef.current[targetUserId];
         const remoteMeta =
-          !error && data?.expense_meta && typeof data.expense_meta === 'object'
+          data?.expense_meta && typeof data.expense_meta === 'object'
             ? data.expense_meta
             : {};
 
@@ -671,7 +696,6 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
             const profileConfirmed = Array.isArray(val?.confirmedPeriods) ? val.confirmedPeriods.map(String) : [];
             const profileSkipped = Array.isArray(val?.skippedPeriods) ? val.skippedPeriods.map(String) : [];
 
-            // Remote profile decisions are authoritative over cached localStorage for any expense present in remoteMeta
             const authoritativeSkipped = Array.from(new Set(profileSkipped));
             const authoritativeConfirmed = Array.from(new Set(profileConfirmed)).filter(
               (p) => !authoritativeSkipped.includes(p)
@@ -692,18 +716,19 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
         isMetaHydratedRef.current = true;
         setMetaHydrationVersion((v) => v + 1);
       })
-      .catch(() => {
+      .catch((err) => {
         if (!isCancelled && activeUserIdRef.current === targetUserId) {
-          isMetaHydratedRef.current = true;
-          setMetaHydrationVersion((v) => v + 1);
+          console.warn('Network error hydrating expense_meta from profile, retrying:', err);
+          scheduleHydrationRetry();
         }
       });
 
     return () => {
       isCancelled = true;
       isMetaHydratedRef.current = false;
+      if (retryTimerId) clearTimeout(retryTimerId);
     };
-  }, [activeUserId, loadingData]);
+  }, [activeUserId, loadingData, metaHydrationRetryTick]);
 
   // Persist committed expense_meta state to localStorage and serialized Supabase profile updates
   useEffect(() => {
@@ -755,19 +780,6 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
       return { ...prev, [targetUserId]: nextMap };
     });
   }, [activeUserId]);
-
-  useEffect(() => {
-    if (!activeUserId) return;
-    if (!Object.prototype.hasOwnProperty.call(metaOverridesByUser, activeUserId)) return;
-    try {
-      localStorage.setItem(
-        `managed_expense_meta_${activeUserId}`,
-        JSON.stringify(metaOverridesByUser[activeUserId])
-      );
-    } catch (e) {
-      console.warn('Failed to save expense metadata:', e);
-    }
-  }, [metaOverridesByUser, activeUserId]);
 
   const isExpenseSkippedForCurrentPeriod = (exp, targetMonth = selectedMonth, targetDay = getToday()) => {
     if (!exp?.is_recurring) return false;
@@ -979,6 +991,7 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
 
         if (
           currentStatus === 'inflight' ||
+          currentStatus === 'cooldown' ||
           currentStatus === 'done' ||
           currentStatus === 'exhausted' ||
           retriesUsed > 2 ||
@@ -1001,7 +1014,6 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
             onlyIfNotSent: true
           });
 
-          // Only discard completion if the authenticated user session changed
           if (activeUserIdRef.current !== effectUserId) {
             delete autoReminderAttemptedRef.current[attemptKey];
             break;
@@ -1022,12 +1034,6 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
           } else {
             scheduleBoundedRetry(attemptKey);
           }
-
-          // If a re-render occurred while awaiting this cycle, trigger a fresh pass for any remaining cycles
-          if (isCancelled && activeUserIdRef.current === effectUserId) {
-            setReminderRetryTick((prev) => prev + 1);
-            break;
-          }
         } catch (err) {
           if (activeUserIdRef.current !== effectUserId) {
             delete autoReminderAttemptedRef.current[attemptKey];
@@ -1035,10 +1041,6 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
           }
           scheduleBoundedRetry(attemptKey);
           console.warn(`Automatic ${cycle} recurring reminder check failed:`, err);
-          if (isCancelled) {
-            setReminderRetryTick((prev) => prev + 1);
-            break;
-          }
         }
       }
     })();
@@ -2365,35 +2367,35 @@ const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
           )}
 
           <MobileHeader
-         activeTab={activeTab}
-         setActiveTab={setActiveTab}
-         setAlertMsg={setAlertMsg}
-         currentStreak={currentStreak}
-         longestStreak={longestStreak}
-         userRole={userRole}
-         username={username}
-         handleLogout={handleLogoutRequest}
-         subscriptionTier={subscriptionTier}
-         hasProAccess={hasProAccess}
-       />
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            setAlertMsg={setAlertMsg}
+            currentStreak={currentStreak}
+            longestStreak={longestStreak}
+            userRole={userRole}
+            username={username}
+            handleLogout={handleLogoutRequest}
+            subscriptionTier={subscriptionTier}
+            hasProAccess={hasProAccess}
+          />
 
-       <NotificationBell
-         userId={activeUserId}
-         selectedMonth={selectedMonth}
-         isPastMonth={isPastMonth}
-         closedMonths={closedMonths}
-         isReadOnly={isReadOnly}
-         parsedSalary={parsedSalary}
-         categories={categories}
-         monthlyExpenses={activeMonthlyExpenses}
-         expenseMetaMap={expenseMetaMap}
-         updateExpenseMeta={updateExpenseMeta}
-         isExpenseSkippedForCurrentPeriod={isExpenseSkippedForCurrentPeriod}
-         formatCurrency={formatCurrency}
-         setActiveTab={setActiveTab}
-       />
+          <NotificationBell
+            userId={activeUserId}
+            selectedMonth={selectedMonth}
+            isPastMonth={isPastMonth}
+            closedMonths={closedMonths}
+            isReadOnly={isReadOnly}
+            parsedSalary={parsedSalary}
+            categories={categories}
+            monthlyExpenses={activeMonthlyExpenses}
+            expenseMetaMap={expenseMetaMap}
+            updateExpenseMeta={updateExpenseMeta}
+            isExpenseSkippedForCurrentPeriod={isExpenseSkippedForCurrentPeriod}
+            formatCurrency={formatCurrency}
+            setActiveTab={setActiveTab}
+          />
 
-       <Suspense fallback={<div className="py-12 text-center text-xs font-semibold text-gray-500 dark:text-zinc-400 animate-pulse">{t('loading_data')}</div>}>
+          <Suspense fallback={<div className="py-12 text-center text-xs font-semibold text-gray-500 dark:text-zinc-400 animate-pulse">{t('loading_data')}</div>}>
 
             {activeTab === 'cashflow' && (
               <CashFlowTab
