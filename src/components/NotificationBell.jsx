@@ -72,27 +72,29 @@ export default function NotificationBell({
      */
     const handleRecurringDecision = (exp, decision) => {
         if (!updateExpenseMeta || isReadOnly) return;
-        const meta = expenseMetaMap[exp.id] || {};
-        const freq = meta.recurrenceType || 'monthly';
-        const periodKey = getPeriodKeyForFreq(freq);
+        updateExpenseMeta(exp.id, (currentMeta = {}) => {
+            const freq = currentMeta.recurrenceType || expenseMetaMap[exp.id]?.recurrenceType || 'monthly';
+            const periodKey = getPeriodKeyForFreq(freq);
 
-        const currentSkipped = Array.isArray(meta.skippedPeriods) ? meta.skippedPeriods : [];
-        const currentConfirmed = Array.isArray(meta.confirmedPeriods) ? meta.confirmedPeriods : [];
+            const currentSkipped = Array.isArray(currentMeta.skippedPeriods) ? currentMeta.skippedPeriods : [];
+            const currentConfirmed = Array.isArray(currentMeta.confirmedPeriods) ? currentMeta.confirmedPeriods : [];
 
-        const nextSkipped =
-            decision === 'skip'
-                ? Array.from(new Set([...currentSkipped, periodKey]))
-                : currentSkipped.filter((k) => k !== periodKey);
+            const nextSkipped =
+                decision === 'skip'
+                    ? Array.from(new Set([...currentSkipped, periodKey]))
+                    : currentSkipped.filter((k) => k !== periodKey);
 
-        const nextConfirmed =
-            decision === 'confirm'
-                ? Array.from(new Set([...currentConfirmed, periodKey]))
-                : currentConfirmed.filter((k) => k !== periodKey);
+            const nextConfirmed =
+                decision === 'confirm'
+                    ? Array.from(new Set([...currentConfirmed, periodKey]))
+                    : currentConfirmed.filter((k) => k !== periodKey);
 
-        updateExpenseMeta(exp.id, {
-            recurrenceType: freq,
-            skippedPeriods: nextSkipped,
-            confirmedPeriods: nextConfirmed
+            return {
+                ...currentMeta,
+                recurrenceType: freq,
+                skippedPeriods: nextSkipped,
+                confirmedPeriods: nextConfirmed
+            };
         });
     };
 
