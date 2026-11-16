@@ -13,6 +13,16 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS"
 };
 
+const SUPPORTED_SUBSCRIPTION_EVENTS = new Set([
+  "subscription_created",
+  "subscription_updated",
+  "subscription_cancelled",
+  "subscription_resumed",
+  "subscription_expired",
+  "subscription_paused",
+  "subscription_unpaused"
+]);
+
 function timingSafeHexEqual(aHex: string, bHex: string): boolean {
   const a = aHex.trim().toLowerCase();
   const b = bHex.trim().toLowerCase();
@@ -37,6 +47,54 @@ async function computeHmacSha256Hex(secret: string, message: string): Promise<st
   return Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/**
+ * Performs a verified PATCH against public.profiles and confirms that the target profile row
+ * was actually updated. Optionally enforces an atomic subscription_updated_at ordering filter.
+ */
+async function updateProfileBillingRow(params: {
+  supabaseUrl: string;
+  serviceRoleKey: string;
+  userId: string;
+  patchBody: Record<string, unknown>;
+  minUpdatedAtIso?: string;
+}): Promise<{ ok: boolean; updatedCount: number; status: number; error?: string }> {
+  const { supabaseUrl, serviceRoleKey, userId, patchBody, minUpdatedAtIso } = params;
+  let query = `user_id=eq.${encodeURIComponent(userId)}`;
+  if (minUpdatedAtIso) {
+    query += `&or=(subscription_updated_at.is.null,subscription_updated_at.lte.${encodeURIComponent(minUpdatedAtIso)})`;
+  }
+
+  const patchRes = await fetch(`${supabaseUrl}/rest/v1/profiles?${query}`, {
+    method: "PATCH",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation"
+    },
+    body: JSON.stringify(patchBody)
+  });
+
+  if (!patchRes.ok) {
+    const errText = await patchRes.text().catch(() => "Database write error");
+    return {
+      ok: false,
+      updatedCount: 0,
+      status: patchRes.status,
+      error: errText || "Failed to persist profile billing update."
+    };
+  }
+
+  const rows = await patchRes.json().catch(() => null);
+  const updatedCount = Array.isArray(rows) ? rows.length : 0;
+  return {
+    ok: updatedCount > 0,
+    updatedCount,
+    status: patchRes.status,
+    error: updatedCount === 0 ? "Target profile row was not updated." : undefined
+  };
 }
 
 Deno.serve(async (req: Request) => {
@@ -64,7 +122,7 @@ Deno.serve(async (req: Request) => {
 
   const rawBody = await req.text();
 
-  // 1. WEBHOOK PATH: Verify HMAC-SHA256 signature and process idempotently
+  // 1. WEBHOOK PATH: Verify HMAC-SHA256 signature and process subscription events atomically
   const lemonSig = req.headers.get("x-signature");
   const webhookSecret = Deno.env.get("PAYMENT_WEBHOOK_SECRET") || "";
 
@@ -107,22 +165,35 @@ Deno.serve(async (req: Request) => {
     const attrs = (dataObj.attributes as Record<string, unknown>) || {};
 
     const eventName = String(meta.event_name || "unknown");
+    const resourceType = String(dataObj.type || "");
+
+    // Accept only subscription lifecycle events carrying a subscriptions resource object
+    if (!SUPPORTED_SUBSCRIPTION_EVENTS.has(eventName) || (resourceType && resourceType !== "subscriptions")) {
+      return new Response(JSON.stringify({ ok: true, ignoredEvent: eventName }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
     const customUserId = String(customData.user_id || "");
     const subId = String(dataObj.id || "");
     const rawUpdatedAt = attrs.updated_at ? String(attrs.updated_at) : "";
-    const eventUpdatedAt = rawUpdatedAt ? new Date(rawUpdatedAt).toISOString() : new Date().toISOString();
+    const parsedTime = rawUpdatedAt ? Date.parse(rawUpdatedAt) : NaN;
+    const eventUpdatedAt = Number.isFinite(parsedTime)
+      ? new Date(parsedTime).toISOString()
+      : new Date().toISOString();
     const eventId = `${eventName}_${subId}_${eventUpdatedAt}`;
 
-    if (!customUserId) {
-      return new Response(JSON.stringify({ error: "Missing custom_data.user_id in webhook." }), {
+    if (!customUserId || !subId) {
+      return new Response(JSON.stringify({ error: "Missing custom_data.user_id or subscription id in webhook." }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
-    // Out-of-order protection: check current profile subscription_updated_at before applying
-    const existingProfRes = await fetch(
-      `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(customUserId)}&select=subscription_updated_at`,
+    // Check if this exact event was already completed
+    const existingDedupRes = await fetch(
+      `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}&select=event_id`,
       {
         headers: {
           apikey: serviceRoleKey,
@@ -130,36 +201,16 @@ Deno.serve(async (req: Request) => {
         }
       }
     );
-    const existingRows = await existingProfRes.json().catch(() => []);
-    const existingProf = Array.isArray(existingRows) ? existingRows[0] : null;
-    if (
-      existingProf?.subscription_updated_at &&
-      new Date(existingProf.subscription_updated_at).getTime() > new Date(eventUpdatedAt).getTime()
-    ) {
-      return new Response(JSON.stringify({ ok: true, ignoredStaleEvent: true }), {
-        status: 200,
+
+    if (!existingDedupRes.ok) {
+      return new Response(JSON.stringify({ error: "Failed to check webhook deduplication state." }), {
+        status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
-    // Idempotency check
-    const dedupRes = await fetch(`${supabaseUrl}/rest/v1/billing_webhook_events`, {
-      method: "POST",
-      headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
-        "Content-Type": "application/json",
-        Prefer: "return=Minimal"
-      },
-      body: JSON.stringify({
-        event_id: eventId,
-        provider: "lemonsqueezy",
-        event_type: eventName,
-        user_id: customUserId
-      })
-    });
-
-    if (dedupRes.status === 409) {
+    const existingDedupRows = await existingDedupRes.json().catch(() => []);
+    if (Array.isArray(existingDedupRows) && existingDedupRows.length > 0) {
       return new Response(JSON.stringify({ ok: true, duplicate: true }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -180,15 +231,78 @@ Deno.serve(async (req: Request) => {
       subscription_updated_at: eventUpdatedAt
     };
 
-    await fetch(`${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(customUserId)}`, {
-      method: "PATCH",
+    // Enforce timestamp ordering atomically in the database UPDATE filter
+    const writeResult = await updateProfileBillingRow({
+      supabaseUrl,
+      serviceRoleKey,
+      userId: customUserId,
+      patchBody: updateBody,
+      minUpdatedAtIso: eventUpdatedAt
+    });
+
+    if (!writeResult.ok) {
+      if (writeResult.status >= 400) {
+        return new Response(JSON.stringify({ error: writeResult.error || "Failed to update profile." }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      // 0 rows matched: distinguish between a stale out-of-order event and a missing profile row
+      const checkProfRes = await fetch(
+        `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(customUserId)}&select=user_id,subscription_updated_at`,
+        {
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
+        }
+      );
+
+      if (!checkProfRes.ok) {
+        return new Response(JSON.stringify({ error: "Failed to verify profile after conditional update." }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      const checkRows = await checkProfRes.json().catch(() => []);
+      const existingProf = Array.isArray(checkRows) ? checkRows[0] : null;
+
+      if (!existingProf) {
+        return new Response(JSON.stringify({ error: "Target user profile not found for webhook." }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      // Profile exists with a newer subscription_updated_at timestamp; ignore stale out-of-order event
+      return new Response(JSON.stringify({ ok: true, ignoredStaleEvent: true }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
+    // Record webhook completion only after the profile update has succeeded
+    const dedupInsertRes = await fetch(`${supabaseUrl}/rest/v1/billing_webhook_events`, {
+      method: "POST",
       headers: {
         apikey: serviceRoleKey,
         Authorization: `Bearer ${serviceRoleKey}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        Prefer: "return=minimal"
       },
-      body: JSON.stringify(updateBody)
+      body: JSON.stringify({
+        event_id: eventId,
+        provider: "lemonsqueezy",
+        event_type: eventName,
+        user_id: customUserId
+      })
     });
+
+    if (!dedupInsertRes.ok && dedupInsertRes.status !== 409) {
+      console.warn("Could not record completed webhook event_id:", eventId);
+    }
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -269,14 +383,11 @@ Deno.serve(async (req: Request) => {
       const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
       const nowIso = new Date().toISOString();
 
-      await fetch(`${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}`, {
-        method: "PATCH",
-        headers: {
-          apikey: serviceRoleKey,
-          Authorization: `Bearer ${serviceRoleKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
+      const simWrite = await updateProfileBillingRow({
+        supabaseUrl,
+        serviceRoleKey,
+        userId,
+        patchBody: {
           subscription_tier: "pro",
           subscription_status: "active",
           subscription_provider: "sandbox",
@@ -284,8 +395,18 @@ Deno.serve(async (req: Request) => {
           subscription_period_end: periodEnd,
           cancel_at_period_end: false,
           subscription_updated_at: nowIso
-        })
+        }
       });
+
+      if (!simWrite.ok) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "Could not persist simulated Pro activation to your profile. Please try again."
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
 
       return new Response(
         JSON.stringify({
@@ -321,6 +442,13 @@ Deno.serve(async (req: Request) => {
       }
     );
 
+    if (!profRes.ok) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "Could not load your current subscription details." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const rows = await profRes.json().catch(() => []);
     const profile = Array.isArray(rows) ? rows[0] : null;
 
@@ -344,10 +472,24 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const provider = String(profile.subscription_provider || "");
+    const subId = String(profile.subscription_id || "");
     const lemonApiKey = Deno.env.get("LEMONSQUEEZY_API_KEY") || "";
-    if (profile.subscription_provider === "lemonsqueezy" && profile.subscription_id && lemonApiKey) {
+
+    // Require provider credentials unless this is an explicit sandbox subscription
+    if (provider !== "sandbox") {
+      if (provider !== "lemonsqueezy" || !subId || !lemonApiKey) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "Cannot cancel subscription: billing provider credentials or subscription ID are not configured."
+          }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const cancelResp = await fetch(
-        `https://api.lemonsqueezy.com/v1/subscriptions/${encodeURIComponent(String(profile.subscription_id))}`,
+        `https://api.lemonsqueezy.com/v1/subscriptions/${encodeURIComponent(subId)}`,
         {
           method: "DELETE",
           headers: {
@@ -370,20 +512,27 @@ Deno.serve(async (req: Request) => {
       profile.subscription_period_end || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const nowIso = new Date().toISOString();
 
-    await fetch(`${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}`, {
-      method: "PATCH",
-      headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
+    const cancelWrite = await updateProfileBillingRow({
+      supabaseUrl,
+      serviceRoleKey,
+      userId,
+      patchBody: {
         subscription_status: "canceled_pending_expiry",
         cancel_at_period_end: true,
         subscription_period_end: fallbackPeriodEnd,
         subscription_updated_at: nowIso
-      })
+      }
     });
+
+    if (!cancelWrite.ok) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error: "Failed to save cancellation status to your profile. Please refresh and try again."
+        }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     return new Response(
       JSON.stringify({

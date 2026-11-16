@@ -78,6 +78,8 @@ export default function CashFlowTab({
     setEditingExpense,
     handleUpdateExpense,
     userId,
+    hasProAccess = false,
+    onRequireProUpgrade,
     expenseMetaMap: externalMetaMap,
     updateExpenseMeta: externalUpdateMeta,
     isExpenseSkippedForCurrentPeriod: externalIsSkipped,
@@ -1080,10 +1082,21 @@ export default function CashFlowTab({
                         {!isReadOnly && (
                             <>
                                 <button
-                                    onClick={() => setIsCategoryModalOpen(true)}
+                                    onClick={() => {
+                                        if (!hasProAccess && categories.length >= 3) {
+                                            onRequireProUpgrade?.('custom_categories_limit');
+                                            return;
+                                        }
+                                        setIsCategoryModalOpen(true);
+                                    }}
                                     className="w-full py-3 mt-4 rounded-lg border-2 border-dashed border-gray-300 dark:border-zinc-700 text-gray-500 dark:text-zinc-400 hover:border-emerald-500 hover:text-emerald-600 dark:hover:border-emerald-500 dark:hover:text-emerald-400 font-semibold transition-all flex items-center justify-center gap-2"
                                 >
-                                    + {t('create_new_category')}
+                                    <span>+ {t('create_new_category')}</span>
+                                    {!hasProAccess && categories.length >= 3 && (
+                                        <span className="px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wider rounded bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300">
+                                            PRO
+                                        </span>
+                                    )}
                                 </button>
 
                                 {isCategoryModalOpen && (

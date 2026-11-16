@@ -138,7 +138,10 @@ export default function LegalModal({
                     ))}
                 </div>
 
-                <div className="p-5 overflow-y-auto space-y-4 text-xs leading-relaxed text-gray-700 dark:text-zinc-300 custom-scrollbar">
+                <div
+                    tabIndex={0}
+                    className="p-5 overflow-y-auto space-y-4 text-xs leading-relaxed text-gray-700 dark:text-zinc-300 custom-scrollbar focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500/40"
+                >
                     {activeSection === 'terms' && (
                         <>
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white">

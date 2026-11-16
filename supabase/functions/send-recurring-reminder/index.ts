@@ -22,6 +22,15 @@ const ALLOWED_TAGS = new Set([
 const VOID_TAGS = new Set(["br"]);
 const DROP_CONTENT_TAGS = new Set(["script", "style", "iframe", "object", "embed", "svg", "math"]);
 
+function isValidUnicodeScalar(code: number): boolean {
+  return (
+    Number.isInteger(code) &&
+    code >= 0 &&
+    code <= 0x10ffff &&
+    (code < 0xd800 || code > 0xdfff)
+  );
+}
+
 function escapeHtmlEntities(raw: string): string {
   return raw
     .replace(/&/g, "&amp;")
@@ -35,11 +44,11 @@ function decodeHtmlEntities(raw: string): string {
   return raw
     .replace(/&#x([0-9a-fA-F]+);?/g, (_, hex) => {
       const code = parseInt(hex, 16);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+      return isValidUnicodeScalar(code) ? String.fromCodePoint(code) : "\uFFFD";
     })
     .replace(/&#([0-9]+);?/g, (_, dec) => {
       const code = parseInt(dec, 10);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+      return isValidUnicodeScalar(code) ? String.fromCodePoint(code) : "\uFFFD";
     })
     .replace(/&(colon|tab|newline|amp|lt|gt|quot|apos|#39);?/gi, (match, name) => {
       const lower = String(name).toLowerCase();
@@ -55,8 +64,12 @@ function decodeHtmlEntities(raw: string): string {
     });
 }
 
+function normalizeAndEscapeTextNode(rawText: string): string {
+  return escapeHtmlEntities(decodeHtmlEntities(rawText));
+}
+
 function sanitizeSafeStyle(rawStyle: string): string {
-  const decoded = decodeHtmlEntities(rawStyle).replace(/[\u0000-\u001F\u007F]/g, "");
+  const decoded = decodeHtmlEntities(rawStyle).replace(/[\u0000-\u001F\u007F\uFFFD]/g, "");
   if (/(?:url\s*\(|expression\s*\(|javascript\s*:|vbscript\s*:|data\s*:|-moz-binding|@import)/i.test(decoded)) {
     return "";
   }
@@ -64,10 +77,16 @@ function sanitizeSafeStyle(rawStyle: string): string {
 }
 
 function sanitizeSafeHref(rawHref: string): string {
+  if (/&#(?:x[0-9a-fA-F]+|[0-9]+);?/i.test(rawHref)) {
+    const decodedCheck = decodeHtmlEntities(rawHref);
+    if (decodedCheck.includes("\uFFFD")) {
+      return "";
+    }
+  }
   const decoded = decodeHtmlEntities(rawHref)
     .replace(/[\u0000-\u0020\u007F]+/g, "")
     .trim();
-  if (!decoded) return "";
+  if (!decoded || decoded.includes("\uFFFD")) return "";
   try {
     const parsed = new URL(decoded);
     if (parsed.protocol === "https:" || parsed.protocol === "mailto:") {
@@ -81,7 +100,8 @@ function sanitizeSafeHref(rawHref: string): string {
 
 /**
  * Parser-based HTML sanitizer that tokenizes markup and rebuilds only allowlisted tags
- * and verified attributes, preventing nested tag reassembly and encoded scheme bypasses.
+ * and verified attributes, while decoding and re-encoding text tokens once to preserve
+ * pre-escaped template entities such as &amp;.
  */
 function sanitizeEmailHtml(inputHtml: string): string {
   const src = String(inputHtml || "");
@@ -93,19 +113,19 @@ function sanitizeEmailHtml(inputHtml: string): string {
     const ltIndex = src.indexOf("<", i);
     if (ltIndex === -1) {
       if (!skipUntilClosingTag) {
-        out.push(escapeHtmlEntities(src.slice(i)));
+        out.push(normalizeAndEscapeTextNode(src.slice(i)));
       }
       break;
     }
 
     if (ltIndex > i && !skipUntilClosingTag) {
-      out.push(escapeHtmlEntities(src.slice(i, ltIndex)));
+      out.push(normalizeAndEscapeTextNode(src.slice(i, ltIndex)));
     }
 
     const gtIndex = src.indexOf(">", ltIndex + 1);
     if (gtIndex === -1) {
       if (!skipUntilClosingTag) {
-        out.push(escapeHtmlEntities(src.slice(ltIndex)));
+        out.push(normalizeAndEscapeTextNode(src.slice(ltIndex)));
       }
       break;
     }

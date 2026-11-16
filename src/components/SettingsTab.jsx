@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getToday, getCurrentMonth } from '../utils/constants';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient';
@@ -31,6 +31,7 @@ export default function SettingsTab({
   emailRemindersEnabled = true,
   setEmailRemindersEnabled,
   userEmail = '',
+  userId = '',
   subscriptionTier = 'free',
   setSubscriptionTier,
   userRole = 'customer',
@@ -49,9 +50,38 @@ export default function SettingsTab({
   const [passwordMsg, setPasswordMsg] = useState({ text: '', type: '' });
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
 
-  // --- Subscription & Billing State ---
-  const [isBillingBusy, setIsBillingBusy] = useState(false);
-  const [billingMsg, setBillingMsg] = useState({ text: '', type: '' });
+  // --- Subscription & Billing State (Scoped per account without setState in useEffect) ---
+  const activeAccountIdentity = `${userId || ''}:${userEmail || ''}`;
+  const [billingState, setBillingState] = useState({
+    account: activeAccountIdentity,
+    busy: false,
+    msg: { text: '', type: '' }
+  });
+
+  const isBillingBusy =
+    billingState.account === activeAccountIdentity ? billingState.busy : false;
+  const billingMsg =
+    billingState.account === activeAccountIdentity
+      ? billingState.msg
+      : { text: '', type: '' };
+
+  const activeAccountRef = useRef(activeAccountIdentity);
+  const billingOpIdRef = useRef(0);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      billingOpIdRef.current += 1;
+    };
+  }, []);
+
+  // Invalidate any in-flight billing operations when account changes or logs out
+  useEffect(() => {
+    activeAccountRef.current = activeAccountIdentity;
+    billingOpIdRef.current += 1;
+  }, [activeAccountIdentity]);
 
   const isRoleGrantedPro = ['owner', 'dev', 'special'].includes(userRole);
   const isPaidPro = subscriptionTier === 'pro';
@@ -68,15 +98,35 @@ export default function SettingsTab({
    */
   const handleUpgradeClick = async () => {
     if (isBillingBusy) return;
-    setIsBillingBusy(true);
-    setBillingMsg({ text: '', type: '' });
+    const originAccount = activeAccountRef.current;
+    const originUserId = userId;
+    const opId = ++billingOpIdRef.current;
+
+    setBillingState({
+      account: originAccount,
+      busy: true,
+      msg: { text: '', type: '' }
+    });
+
+    const isStillCurrent = () =>
+      isMountedRef.current &&
+      activeAccountRef.current === originAccount &&
+      billingOpIdRef.current === opId;
 
     try {
-      const res = await startProCheckoutSession();
+      const res = await startProCheckoutSession(originUserId);
+      if (!isStillCurrent() || res?.staleAccount || (originUserId && res?.userId && res.userId !== originUserId)) {
+        return;
+      }
+
       if (!res?.ok) {
-        setBillingMsg({
-          text: res?.error || t('err_checkout_start', 'Unable to start checkout session right now.'),
-          type: 'error'
+        setBillingState({
+          account: originAccount,
+          busy: false,
+          msg: {
+            text: res?.error || t('err_checkout_start', 'Unable to start checkout session right now.'),
+            type: 'error'
+          }
         });
         return;
       }
@@ -91,19 +141,32 @@ export default function SettingsTab({
         setSubscriptionStatus?.(res.subscriptionStatus || 'active');
         setSubscriptionPeriodEnd?.(res.subscriptionPeriodEnd || null);
         setCancelAtPeriodEnd?.(false);
-        setBillingMsg({
-          text: t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'),
-          type: 'success'
+        setBillingState({
+          account: originAccount,
+          busy: false,
+          msg: {
+            text: t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'),
+            type: 'success'
+          }
         });
       }
     } catch (err) {
+      if (!isStillCurrent()) return;
       console.error('Upgrade failed:', err);
-      setBillingMsg({
-        text: t('err_checkout_unexpected', 'An unexpected error occurred while starting checkout.'),
-        type: 'error'
+      setBillingState({
+        account: originAccount,
+        busy: false,
+        msg: {
+          text: t('err_checkout_unexpected', 'An unexpected error occurred while starting checkout.'),
+          type: 'error'
+        }
       });
     } finally {
-      setIsBillingBusy(false);
+      if (isStillCurrent()) {
+        setBillingState((prev) =>
+          prev.account === originAccount ? { ...prev, busy: false } : prev
+        );
+      }
     }
   };
 
@@ -113,15 +176,35 @@ export default function SettingsTab({
    */
   const handleOneClickCancel = async () => {
     if (isBillingBusy || !isPaidPro || cancelAtPeriodEnd) return;
-    setIsBillingBusy(true);
-    setBillingMsg({ text: '', type: '' });
+    const originAccount = activeAccountRef.current;
+    const originUserId = userId;
+    const opId = ++billingOpIdRef.current;
+
+    setBillingState({
+      account: originAccount,
+      busy: true,
+      msg: { text: '', type: '' }
+    });
+
+    const isStillCurrent = () =>
+      isMountedRef.current &&
+      activeAccountRef.current === originAccount &&
+      billingOpIdRef.current === opId;
 
     try {
-      const res = await cancelProSubscription();
+      const res = await cancelProSubscription(originUserId);
+      if (!isStillCurrent() || res?.staleAccount || (originUserId && res?.userId && res.userId !== originUserId)) {
+        return;
+      }
+
       if (!res?.ok) {
-        setBillingMsg({
-          text: res?.error || t('err_cancel_sub', 'Could not cancel subscription right now. Please try again.'),
-          type: 'error'
+        setBillingState({
+          account: originAccount,
+          busy: false,
+          msg: {
+            text: res?.error || t('err_cancel_sub', 'Could not cancel subscription right now. Please try again.'),
+            type: 'error'
+          }
         });
         return;
       }
@@ -140,21 +223,34 @@ export default function SettingsTab({
           })
         : 'the end of your billing period';
 
-      setBillingMsg({
-        text: t(
-          'succ_sub_canceled',
-          `Recurring billing has been stopped immediately. You will not be charged again, and your Pro features remain active until ${endStr}.`
-        ),
-        type: 'success'
+      setBillingState({
+        account: originAccount,
+        busy: false,
+        msg: {
+          text: t(
+            'succ_sub_canceled',
+            `Recurring billing has been stopped immediately. You will not be charged again, and your Pro features remain active until ${endStr}.`
+          ),
+          type: 'success'
+        }
       });
     } catch (err) {
+      if (!isStillCurrent()) return;
       console.error('Cancel subscription failed:', err);
-      setBillingMsg({
-        text: t('err_cancel_unexpected', 'An unexpected error occurred while canceling your subscription.'),
-        type: 'error'
+      setBillingState({
+        account: originAccount,
+        busy: false,
+        msg: {
+          text: t('err_cancel_unexpected', 'An unexpected error occurred while canceling your subscription.'),
+          type: 'error'
+        }
       });
     } finally {
-      setIsBillingBusy(false);
+      if (isStillCurrent()) {
+        setBillingState((prev) =>
+          prev.account === originAccount ? { ...prev, busy: false } : prev
+        );
+      }
     }
   };
 

@@ -1,6 +1,6 @@
 import i18n from '../i18n';
 import { calculateProgressiveTax, getToday } from './constants';
-
+import { getAIQuotaStatus, recordAICommandUsage } from './aiQuotaManager';
 /**
  * Normalizes common user spelling typos and maps French, Spanish, and Arabic
  * natural-language commands into canonical intent tokens so all 23 handlers work across languages.
@@ -196,13 +196,32 @@ export async function processAIAgentTurn(rawInput, ctx) {
             })
         };
     }
-    const text = rawTrimmed;
-    if (!text) {
+    if (!rawTrimmed) {
         return {
-            reply: t('ai_empty_prompt'),
-            suggestions: [t('ai_sug_audit'), t('ai_sug_how_many_exp'), t('ai_sug_daily_spend')]
+            reply: t('ai_prompt_empty', {
+                defaultValue: 'Please enter a command or question.'
+            })
         };
     }
+
+    const hasProAccess = Boolean(ctx?.hasProAccess);
+    const quotaUserId = ctx?.userId || null;
+    if (!hasProAccess && quotaUserId) {
+        const quota = getAIQuotaStatus(quotaUserId, false);
+        if (!quota.allowed) {
+            ctx?.onRequireProUpgrade?.('sterling_ai_unlimited');
+            return {
+                reply: t('ai_err_quota_reached', {
+                    limit: quota.limit,
+                    hours: quota.resetInHours,
+                    defaultValue: `You have used all ${quota.limit} free Sterling AI commands for the last 48 hours. Next free command unlocks in ~${quota.resetInHours}h, or upgrade to MANAGED Pro for unlimited AI access.`
+                })
+            };
+        }
+        recordAICommandUsage(quotaUserId, false);
+    }
+
+    const text = rawTrimmed;
 
     const lower = normalizeTypos(text);
     const isWhereOrHowQuestion = /^(?:where|how\s+do\s+i|how\s+can\s+i|can\s+you\s+tell\s+me\s+where|can\s+you\s+tell\s+me\s+how|où|comment\s+puis-je|dónde|cómo\s+puedo|أين|كيف)(?=$|\s|[^\p{L}\p{N}])/iu.test(lower);
