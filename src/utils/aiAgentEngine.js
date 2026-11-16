@@ -188,7 +188,15 @@ function isAffordabilityQuestion(lower) {
 export async function processAIAgentTurn(rawInput, ctx) {
     const t = (key, options) => i18n.t(key, options);
 
-    const text = String(rawInput || '').trim().slice(0, 500);
+    const rawTrimmed = String(rawInput || '').trim();
+    if (rawTrimmed.length > 500) {
+        return {
+            reply: t('ai_err_input_too_long', {
+                defaultValue: 'Your command is too long (maximum 500 characters). Please shorten your message and try again.'
+            })
+        };
+    }
+    const text = rawTrimmed;
     if (!text) {
         return {
             reply: t('ai_empty_prompt'),

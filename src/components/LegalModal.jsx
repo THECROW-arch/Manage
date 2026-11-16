@@ -1,11 +1,88 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 /**
  * Renders an accessible modal displaying MANAGED's Terms of Service,
  * Privacy Policy (including all third-party sub-processors), and Browser Storage Notice.
  */
-export default function LegalModal({ isOpen, onClose, initialSection = 'terms' }) {
-    const [activeSection, setActiveSection] = useState(initialSection);
+export default function LegalModal({
+    isOpen,
+    onClose,
+    initialSection = 'terms',
+    onSelectSection
+}) {
+    const [localSection, setLocalSection] = useState(null);
+    const dialogRef = useRef(null);
+    const closeBtnRef = useRef(null);
+    const onCloseRef = useRef(onClose);
+
+    useEffect(() => {
+        onCloseRef.current = onClose;
+    }, [onClose]);
+
+    const activeSection = onSelectSection
+        ? initialSection
+        : (localSection || initialSection);
+
+    const handleTabChange = (tabId) => {
+        if (onSelectSection) {
+            onSelectSection(tabId);
+        } else {
+            setLocalSection(tabId);
+        }
+    };
+
+    const handleClose = () => {
+        setLocalSection(null);
+        if (onCloseRef.current) onCloseRef.current();
+    };
+
+    // Move focus into the modal on open, trap Tab/Shift+Tab within it, and restore focus to the trigger on close
+    useEffect(() => {
+        if (!isOpen) return;
+        const previousActiveElement = document.activeElement;
+
+        const timerId = setTimeout(() => {
+            closeBtnRef.current?.focus();
+        }, 0);
+
+        const handleKeyDown = (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                setLocalSection(null);
+                if (onCloseRef.current) onCloseRef.current();
+                return;
+            }
+
+            if (e.key !== 'Tab' || !dialogRef.current) return;
+
+            const focusable = dialogRef.current.querySelectorAll(
+                'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            );
+            if (focusable.length === 0) return;
+
+            const firstEl = focusable[0];
+            const lastEl = focusable[focusable.length - 1];
+
+            if (e.shiftKey) {
+                if (document.activeElement === firstEl || !dialogRef.current.contains(document.activeElement)) {
+                    e.preventDefault();
+                    lastEl.focus();
+                }
+            } else if (document.activeElement === lastEl || !dialogRef.current.contains(document.activeElement)) {
+                e.preventDefault();
+                firstEl.focus();
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            clearTimeout(timerId);
+            document.removeEventListener('keydown', handleKeyDown);
+            if (previousActiveElement && typeof previousActiveElement.focus === 'function') {
+                previousActiveElement.focus();
+            }
+        };
+    }, [isOpen]);
 
     if (!isOpen) return null;
 
@@ -15,9 +92,10 @@ export default function LegalModal({ isOpen, onClose, initialSection = 'terms' }
             aria-modal="true"
             aria-label="Legal & Privacy Policies"
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fade-in"
-            onClick={onClose}
+            onClick={handleClose}
         >
             <div
+                ref={dialogRef}
                 className="w-full max-w-2xl max-h-[85vh] bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
                 onClick={(e) => e.stopPropagation()}
             >
@@ -31,8 +109,9 @@ export default function LegalModal({ isOpen, onClose, initialSection = 'terms' }
                         </p>
                     </div>
                     <button
+                        ref={closeBtnRef}
                         type="button"
-                        onClick={onClose}
+                        onClick={handleClose}
                         className="px-3 py-1 rounded-lg text-xs font-bold bg-gray-200 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 hover:bg-gray-300 dark:hover:bg-zinc-700 transition-colors"
                     >
                         ✕ Close
@@ -48,10 +127,10 @@ export default function LegalModal({ isOpen, onClose, initialSection = 'terms' }
                         <button
                             key={tab.id}
                             type="button"
-                            onClick={() => setActiveSection(tab.id)}
+                            onClick={() => handleTabChange(tab.id)}
                             className={`px-3 py-2 text-xs font-bold border-b-2 transition-colors ${activeSection === tab.id
                                 ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400'
-                                : 'border-transparent text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
+                                : 'border-transparent text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:bg-zinc-200'
                                 }`}
                         >
                             {tab.label}
@@ -101,7 +180,7 @@ export default function LegalModal({ isOpen, onClose, initialSection = 'terms' }
                                 <li><strong>Supabase, Inc.:</strong> PostgreSQL database hosting (protected by Row Level Security), user authentication, and serverless Edge Functions.</li>
                                 <li><strong>Cloudflare, Inc.:</strong> Global web application hosting (Cloudflare Pages), CDN, and DDoS mitigation.</li>
                                 <li><strong>Resend, Inc.:</strong> Transactional email delivery for opt-in recurring bill reminders and authentication emails.</li>
-                                <li><strong>Payment Processor:</strong> Handles Pro subscription checkouts and billing webhooks without storing your card details on MANAGED servers.</li>
+                                <li><strong>Payment Processor (Stripe / Lemon Squeezy / Paddle):</strong> Handles Pro subscription checkouts and billing webhooks without storing your card details on MANAGED servers.</li>
                             </ul>
 
                             <h3 className="text-sm font-bold text-gray-900 dark:text-white">

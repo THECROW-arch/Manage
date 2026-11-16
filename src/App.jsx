@@ -112,6 +112,9 @@ export default function App() {
   const [username, setUsername] = useState('');
   const [userRole, setUserRole] = useState('customer');
   const [subscriptionTier, setSubscriptionTier] = useState('free');
+  const [subscriptionStatus, setSubscriptionStatus] = useState('free');
+  const [subscriptionPeriodEnd, setSubscriptionPeriodEnd] = useState(null);
+  const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
   const [upgradePromptFeature, setUpgradePromptFeature] = useState(null);
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
   const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
@@ -239,7 +242,9 @@ export default function App() {
       if (!profile) {
         const { data: authData } = await supabase.auth.getUser();
         if (isStale()) return;
-        const registeredUsername = authData?.user?.user_metadata?.username || `user_${userId.slice(0, 8)}`;
+        const registeredUsername = sanitizeUsername(
+          authData?.user?.user_metadata?.username || `user_${userId.slice(0, 8)}`
+        );
 
         const { data: newProfile } = await supabase.from('profiles').insert([{
           user_id: userId,
@@ -257,14 +262,15 @@ export default function App() {
         const loadedTier = profile.subscription_tier || 'free';
         setUserRole(loadedRole);
         setSubscriptionTier(loadedTier);
-
+        setSubscriptionStatus(profile.subscription_status || 'free');
+        setSubscriptionPeriodEnd(profile.subscription_period_end || null);
+        setCancelAtPeriodEnd(Boolean(profile.cancel_at_period_end));
         // Validate saved tab access against loaded role safely
         setActiveTab(currentTab => {
           if (currentTab === 'dev_dashboard' && loadedRole !== 'dev' && loadedRole !== 'owner') return 'cashflow';
           if (currentTab === 'owner_dashboard' && loadedRole !== 'owner') return 'cashflow';
           return currentTab;
         });
-
         // Hydrate isolated support draft for this user safely before enabling persistence
         let loadedDraft = { userId, subject: '', category: 'general', message: '' };
         try {
@@ -448,6 +454,9 @@ export default function App() {
       setSalary('');
       setUserRole('customer');
       setSubscriptionTier('free');
+      setSubscriptionStatus('free');
+      setSubscriptionPeriodEnd(null);
+      setCancelAtPeriodEnd(false);
       setDraftHydratedUserId(null);
       setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
       setBoostOverridesByUser({});
@@ -2725,9 +2734,9 @@ export default function App() {
                 setSalary={setSalary}
                 currencyMode={currencyMode}
                 setCurrencyMode={setCurrencyMode}
+                setCurrency={setCurrency}
                 customCurrency={customCurrency}
                 setCustomCurrency={setCustomCurrency}
-                setCurrency={setCurrency}
                 exportScope={exportScope}
                 setExportScope={setExportScope}
                 exportMonth={exportMonth}
@@ -2738,6 +2747,15 @@ export default function App() {
                 emailRemindersEnabled={emailRemindersEnabled}
                 setEmailRemindersEnabled={setEmailRemindersEnabled}
                 userEmail={session?.user?.email || ''}
+                subscriptionTier={subscriptionTier}
+                setSubscriptionTier={setSubscriptionTier}
+                userRole={userRole}
+                subscriptionStatus={subscriptionStatus}
+                setSubscriptionStatus={setSubscriptionStatus}
+                subscriptionPeriodEnd={subscriptionPeriodEnd}
+                setSubscriptionPeriodEnd={setSubscriptionPeriodEnd}
+                cancelAtPeriodEnd={cancelAtPeriodEnd}
+                setCancelAtPeriodEnd={setCancelAtPeriodEnd}
               />
             )}
             {activeTab === 'support' && (
@@ -3002,24 +3020,25 @@ export default function App() {
             return { ok: true, category: updatedList.find(c => c.id === createdCat.id) || createdCat };
           }}
         />
+        <footer className="py-6 text-center text-xs text-gray-400 dark:text-zinc-500 flex items-center justify-center gap-4">
+          <button type="button" onClick={() => setLegalModalSection('terms')} className="hover:underline">
+            Terms of Service (18+)
+          </button>
+          <span>•</span>
+          <button type="button" onClick={() => setLegalModalSection('privacy')} className="hover:underline">
+            Privacy Policy
+          </button>
+          <span>•</span>
+          <button type="button" onClick={() => setLegalModalSection('cookies')} className="hover:underline">
+            Storage Notice
+          </button>
+        </footer>
       </main >
-      <footer className="py-6 text-center text-xs text-gray-400 dark:text-zinc-500 flex items-center justify-center gap-4">
-        <button type="button" onClick={() => setLegalModalSection('terms')} className="hover:underline">
-          Terms of Service (18+)
-        </button>
-        <span>•</span>
-        <button type="button" onClick={() => setLegalModalSection('privacy')} className="hover:underline">
-          Privacy Policy
-        </button>
-        <span>•</span>
-        <button type="button" onClick={() => setLegalModalSection('cookies')} className="hover:underline">
-          Storage Notice
-        </button>
-      </footer>
 
       <LegalModal
         isOpen={Boolean(legalModalSection)}
         initialSection={legalModalSection || 'terms'}
+        onSelectSection={setLegalModalSection}
         onClose={() => setLegalModalSection(null)}
       />
     </div >
