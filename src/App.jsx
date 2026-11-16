@@ -455,9 +455,10 @@ export default function App() {
     let attempts = 0;
     let timerId = null;
     const targetUserId = activeUserId;
+    const hasAppliedProRef = { current: false };
 
     const pollSubscription = async () => {
-      if (isCancelled || window.__activeUserId !== targetUserId) return;
+      if (isCancelled || window.__activeUserId !== targetUserId || hasAppliedProRef.current) return;
       attempts += 1;
       const { data } = await supabase
         .from('profiles')
@@ -465,9 +466,10 @@ export default function App() {
         .eq('user_id', targetUserId)
         .maybeSingle();
 
-      if (isCancelled || window.__activeUserId !== targetUserId) return;
+      if (isCancelled || window.__activeUserId !== targetUserId || hasAppliedProRef.current) return;
 
       if (data?.subscription_tier === 'pro') {
+        hasAppliedProRef.current = true;
         setSubscriptionTier('pro');
         setSubscriptionStatus(data.subscription_status || 'active');
         setSubscriptionPeriodEnd(data.subscription_period_end || null);
@@ -476,12 +478,19 @@ export default function App() {
         return;
       }
 
-      if (attempts < 5) {
-        timerId = setTimeout(pollSubscription, 2000);
+      if (attempts < 6) {
+        timerId = setTimeout(pollSubscription, 3000);
+      } else {
+        setAlertMsg(
+          t(
+            'err_checkout_sync_delayed',
+            'Subscription activation is taking longer than expected. Click here or refresh to sync your Pro status.'
+          )
+        );
       }
     };
 
-    timerId = setTimeout(pollSubscription, 500);
+    timerId = setTimeout(pollSubscription, 1000);
     return () => {
       isCancelled = true;
       if (timerId) clearTimeout(timerId);
@@ -1009,7 +1018,6 @@ export default function App() {
       return { ok: false, code: 'read_only', error: `The ledger for **${selectedMonth}** is closed and read-only.` };
     }
     if (!hasProAccess && wealthObjectives.length >= 1) {
-      refundLastAICommandUsage(activeUserId);
       setUpgradePromptFeature('multi_goal_objectives');
       return {
         ok: false,
@@ -3016,7 +3024,6 @@ export default function App() {
           onDirectCreateCategory={async ({ name, type = 'expense', percentage = 0, targetGoal = 0 }) => {
             if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is locked and read-only.` };
             if (!hasProAccess && categories.length >= 3) {
-              refundLastAICommandUsage(activeUserId);
               setUpgradePromptFeature('custom_categories_limit');
               return {
                 ok: false,

@@ -51,7 +51,8 @@ async function computeHmacSha256Hex(secret: string, message: string): Promise<st
 
 /**
  * Performs a verified PATCH against public.profiles and confirms that the target profile row
- * was actually updated. Optionally enforces an atomic subscription_updated_at ordering filter.
+ * was actually updated. Optionally enforces an atomic subscription_updated_at ordering filter
+ * and a strict subscription_id match.
  */
 async function updateProfileBillingRow(params: {
   supabaseUrl: string;
@@ -59,9 +60,13 @@ async function updateProfileBillingRow(params: {
   userId: string;
   patchBody: Record<string, unknown>;
   minUpdatedAtIso?: string;
+  subscriptionId?: string;
 }): Promise<{ ok: boolean; updatedCount: number; status: number; error?: string }> {
-  const { supabaseUrl, serviceRoleKey, userId, patchBody, minUpdatedAtIso } = params;
+  const { supabaseUrl, serviceRoleKey, userId, patchBody, minUpdatedAtIso, subscriptionId } = params;
   let query = `user_id=eq.${encodeURIComponent(userId)}`;
+  if (subscriptionId) {
+    query += `&subscription_id=eq.${encodeURIComponent(subscriptionId)}`;
+  }
   if (minUpdatedAtIso) {
     query += `&or=(subscription_updated_at.is.null,subscription_updated_at.lte.${encodeURIComponent(minUpdatedAtIso)})`;
   }
@@ -516,6 +521,7 @@ Deno.serve(async (req: Request) => {
       supabaseUrl,
       serviceRoleKey,
       userId,
+      subscriptionId: subId,
       patchBody: {
         subscription_status: "canceled_pending_expiry",
         cancel_at_period_end: true,
