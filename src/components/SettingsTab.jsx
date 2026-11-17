@@ -126,9 +126,9 @@ export default function SettingsTab({
   const isResumingRefundCancel = subscriptionStatus === 'refund_cancel_pending';
   const isRefundPendingProvider = subscriptionStatus === 'refund_pending';
   const isRefundEligible =
-    isPaidPro &&
     !isRefundPendingProvider &&
-    (isResumingRefundCancel || (isWithinTwoHours && !proFeaturesUsed && !hasClaimedRefund));
+    (isResumingRefundCancel ||
+      (isPaidPro && isWithinTwoHours && !proFeaturesUsed && !hasClaimedRefund));
 
   /**
    * Starts a MANAGED Pro checkout session or sandbox upgrade.
@@ -616,7 +616,7 @@ export default function SettingsTab({
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             {isPaidPro ? (
               <>
-                {!cancelAtPeriodEnd && (
+                {!cancelAtPeriodEnd && !isResumingRefundCancel && (
                   <button
                     type="button"
                     onClick={handleOneClickCancel}
@@ -637,23 +637,39 @@ export default function SettingsTab({
                   >
                     {isBillingBusy
                       ? t('processing', 'Processing...')
-                      : t('request_2h_refund_btn', 'Request 2-Hour Refund')}
+                      : isResumingRefundCancel
+                        ? t('finish_refund_cancel_btn', 'Complete Refund Cancellation')
+                        : t('request_2h_refund_btn', 'Request 2-Hour Refund')}
                   </button>
                 )}
               </>
             ) : (
-              !isRoleGrantedPro && (
-                <button
-                  type="button"
-                  onClick={handleUpgradeClick}
-                  disabled={isBillingBusy}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isBillingBusy
-                    ? t('starting_checkout', 'Starting Checkout...')
-                    : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro')}
-                </button>
-              )
+              <>
+                {isResumingRefundCancel && (
+                  <button
+                    type="button"
+                    onClick={handleRequestRefund}
+                    disabled={isBillingBusy}
+                    className="px-3.5 py-2 bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 border border-amber-300 dark:border-amber-500/30 rounded-md text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isBillingBusy
+                      ? t('processing', 'Processing...')
+                      : t('finish_refund_cancel_btn', 'Complete Refund Cancellation')}
+                  </button>
+                )}
+                {!isRoleGrantedPro && !isResumingRefundCancel && !isRefundPendingProvider && (
+                  <button
+                    type="button"
+                    onClick={handleUpgradeClick}
+                    disabled={isBillingBusy}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isBillingBusy
+                      ? t('starting_checkout', 'Starting Checkout...')
+                      : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro')}
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>

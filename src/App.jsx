@@ -684,7 +684,7 @@ export default function App() {
       attempts += 1;
       const { data } = await supabase
         .from('profiles')
-        .select('subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end')
+        .select('subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end,subscription_started_at,pro_features_used,has_claimed_refund')
         .eq('user_id', targetUserId)
         .maybeSingle();
 
@@ -696,6 +696,9 @@ export default function App() {
         setSubscriptionStatus(data.subscription_status || 'active');
         setSubscriptionPeriodEnd(data.subscription_period_end || null);
         setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
+        setSubscriptionStartedAt(data.subscription_started_at || new Date().toISOString());
+        setProFeaturesUsed(Boolean(data.pro_features_used));
+        setHasClaimedRefund(Boolean(data.has_claimed_refund));
         setCheckoutSyncState({ status: 'idle', retryCount: 0 });
         setAlertMsg(tRef.current('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
         return;

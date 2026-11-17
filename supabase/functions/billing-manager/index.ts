@@ -480,11 +480,64 @@ Deno.serve(async (req: Request) => {
     if (!customUserId && existingProfile?.user_id) {
       customUserId = String(existingProfile.user_id);
     }
-    if (!subId && existingProfile?.subscription_id) {
-      subId = String(existingProfile.subscription_id);
-    }
-    if (!orderId && existingProfile?.subscription_order_id) {
-      orderId = String(existingProfile.subscription_order_id);
+
+    const currentProfSubId = String(existingProfile?.subscription_id || "").trim();
+    const currentProfOrderId = String(existingProfile?.subscription_order_id || "").trim();
+
+    if (existingProfile) {
+      if (isRefunded) {
+        if (!subId && !orderId) {
+          return new Response(
+            JSON.stringify({ error: "Missing subscription or order identifier in refund webhook." }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        // Do not attach an earlier subscription/order refund to a newer active subscription
+        if (subId && currentProfSubId && subId !== currentProfSubId) {
+          return new Response(
+            JSON.stringify({ ok: true, ignoredHistoricalRefund: true }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        if (orderId && currentProfOrderId && orderId !== currentProfOrderId) {
+          return new Response(
+            JSON.stringify({ ok: true, ignoredHistoricalRefund: true }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        if (!subId && currentProfSubId) {
+          if (orderId && currentProfOrderId && orderId === currentProfOrderId) {
+            subId = currentProfSubId;
+          } else {
+            return new Response(
+              JSON.stringify({ ok: true, ignoredUnmatchedOrderRefund: true }),
+              { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+        }
+        if (!orderId && currentProfOrderId && subId && subId === currentProfSubId) {
+          orderId = currentProfOrderId;
+        }
+      } else {
+        if (
+          !isInitialCreation &&
+          (isExpired || isCancelled) &&
+          subId &&
+          currentProfSubId &&
+          subId !== currentProfSubId
+        ) {
+          return new Response(
+            JSON.stringify({ ok: true, ignoredHistoricalSubscriptionEvent: true }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        if (!subId && currentProfSubId) {
+          subId = currentProfSubId;
+        }
+        if (!orderId && currentProfOrderId) {
+          orderId = currentProfOrderId;
+        }
+      }
     }
 
     if (!customUserId || (!subId && !orderId)) {
@@ -589,6 +642,83 @@ Deno.serve(async (req: Request) => {
       eventType: eventName,
       userId: customUserId
     });
+
+    if (isRefunded) {
+      const refundKeyId = subId || orderId || customUserId;
+      const refundTxMarkerId = `refund_tx_${providerName}_${refundKeyId}`;
+      const refundPendingMarkerId = `refund_pending_${providerName}_${refundKeyId}`;
+      const refundCancelMarkerId = `refund_cancel_done_${providerName}_${refundKeyId}`;
+
+      await recordBillingEvent({
+        supabaseUrl,
+        serviceRoleKey,
+        eventId: refundTxMarkerId,
+        provider: providerName,
+        eventType: "refund_tx_succeeded",
+        userId: customUserId
+      });
+
+      const wasAppPendingRefund = await hasRecordedBillingEvent(
+        supabaseUrl,
+        serviceRoleKey,
+        refundPendingMarkerId
+      );
+
+      if (wasAppPendingRefund && subId) {
+        let cancelOk = false;
+        const lemonApiKey = Deno.env.get("LEMONSQUEEZY_API_KEY") || "";
+
+        if (providerName === "creem" && creemApiKey) {
+          const cancelResp = await fetch(
+            `${creemBaseUrl}/v1/subscriptions/${encodeURIComponent(subId)}/cancel`,
+            {
+              method: "POST",
+              headers: {
+                "x-api-key": creemApiKey,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({ mode: "immediate" })
+            }
+          ).catch(() => null);
+          cancelOk = Boolean(cancelResp && (cancelResp.ok || cancelResp.status === 404));
+        } else if (providerName === "lemonsqueezy" && lemonApiKey) {
+          const cancelResp = await fetch(
+            `https://api.lemonsqueezy.com/v1/subscriptions/${encodeURIComponent(subId)}`,
+            {
+              method: "DELETE",
+              headers: {
+                Accept: "application/vnd.api+json",
+                "Content-Type": "application/vnd.api+json",
+                Authorization: `Bearer ${lemonApiKey}`
+              }
+            }
+          ).catch(() => null);
+          cancelOk = Boolean(cancelResp && (cancelResp.ok || cancelResp.status === 404));
+        }
+
+        if (cancelOk) {
+          await recordBillingEvent({
+            supabaseUrl,
+            serviceRoleKey,
+            eventId: refundCancelMarkerId,
+            provider: providerName,
+            eventType: "refund_cancel_succeeded",
+            userId: customUserId
+          });
+        } else {
+          await updateProfileBillingRow({
+            supabaseUrl,
+            serviceRoleKey,
+            userId: customUserId,
+            subscriptionId: subId,
+            patchBody: {
+              subscription_status: "refund_cancel_pending",
+              subscription_updated_at: new Date().toISOString()
+            }
+          });
+        }
+      }
+    }
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,

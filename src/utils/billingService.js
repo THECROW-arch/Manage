@@ -9,6 +9,36 @@ export function hasPendingLocalProUsage(userId) {
     }
 }
 
+async function extractFunctionInvokeError(error, fallbackMessage, userId) {
+    let parsedBody = null;
+    try {
+        const ctx = error?.context;
+        if (ctx && typeof ctx.json === 'function') {
+            parsedBody = await ctx.json();
+        } else if (ctx && typeof ctx.text === 'function') {
+            const rawText = await ctx.text();
+            parsedBody = rawText ? JSON.parse(rawText) : null;
+        }
+    } catch {
+        parsedBody = null;
+    }
+
+    if (parsedBody && typeof parsedBody === 'object') {
+        return {
+            ok: false,
+            ...parsedBody,
+            error: parsedBody.error || error?.message || fallbackMessage,
+            userId
+        };
+    }
+
+    return {
+        ok: false,
+        error: error?.message || fallbackMessage,
+        userId
+    };
+}
+
 /**
  * Initiates a Pro subscription checkout session or Sandbox upgrade via the billing-manager Edge Function.
  * Confirms that the originating user session is still active before returning the result.
@@ -38,7 +68,7 @@ export async function startProCheckoutSession(expectedUserId) {
     }
 
     if (error) {
-        return { ok: false, error: error.message || 'Could not start checkout session.' };
+        return extractFunctionInvokeError(error, 'Could not start checkout session.', originUserId);
     }
 
     return { ...(data || { ok: false, error: 'Empty response from billing service.' }), userId: originUserId };
@@ -72,7 +102,7 @@ export async function cancelProSubscription(expectedUserId) {
     }
 
     if (error) {
-        return { ok: false, error: error.message || 'Could not cancel subscription.' };
+        return extractFunctionInvokeError(error, 'Could not cancel subscription.', originUserId);
     }
 
     return { ...(data || { ok: false, error: 'Empty response from billing service.' }), userId: originUserId };
@@ -123,7 +153,7 @@ export async function requestProSubscriptionRefund(expectedUserId) {
     }
 
     if (error) {
-        return { ok: false, error: error.message || 'Could not process refund request.' };
+        return extractFunctionInvokeError(error, 'Could not process refund request.', originUserId);
     }
 
     return { ...(data || { ok: false, error: 'Empty response from billing service.' }), userId: originUserId };
