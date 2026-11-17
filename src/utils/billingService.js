@@ -109,10 +109,11 @@ export async function cancelProSubscription(expectedUserId) {
 }
 
 /**
- * Requests a full refund under the 2-Hour Unused Pro Refund Policy.
- * Rejects immediately if local Pro feature usage is pending server acknowledgement.
+ * Requests a full refund under the 2-Hour Unused Pro Refund Policy (or completes a pending refund recovery).
+ * Flushes any pending local Pro usage to the server first so fresh refunds see accurate usage while
+ * recovery retries (refund_cancel_pending / refund_finalize_pending) are never blocked.
  */
-export async function requestProSubscriptionRefund(expectedUserId) {
+export async function requestProSubscriptionRefund(expectedUserId, options = {}) {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData?.session?.access_token;
     const originUserId = sessionData?.session?.user?.id || '';
@@ -124,7 +125,8 @@ export async function requestProSubscriptionRefund(expectedUserId) {
         return { ok: false, staleAccount: true, error: 'Active account changed.' };
     }
 
-    // Prevent unacknowledged local Pro usage from bypassing the server's unused-refund gate
+    const isRecovery = Boolean(options?.isRecovery);
+
     if (hasPendingLocalProUsage(originUserId)) {
         const { error: rpcErr } = await supabase.rpc('mark_pro_feature_used');
         if (!rpcErr) {
@@ -133,12 +135,13 @@ export async function requestProSubscriptionRefund(expectedUserId) {
             } catch {
                 // Ignore storage errors
             }
+        } else if (!isRecovery) {
+            return {
+                ok: false,
+                userId: originUserId,
+                error: 'Refund ineligible: MANAGED Pro features have already been used during this subscription. You can still cancel recurring billing with one click.'
+            };
         }
-        return {
-            ok: false,
-            userId: originUserId,
-            error: 'Refund ineligible: MANAGED Pro features have already been used during this subscription. You can still cancel recurring billing with one click.'
-        };
     }
 
     const { data, error } = await supabase.functions.invoke('billing-manager', {

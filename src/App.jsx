@@ -186,7 +186,13 @@ export default function App() {
 
   const markProFeatureUsed = useCallback(() => {
     const uid = session?.user?.id;
-    if (subscriptionTier !== 'pro' || !uid) return;
+    if (
+      subscriptionTier !== 'pro' ||
+      !uid ||
+      (window.__activeUserId && window.__activeUserId !== uid)
+    ) {
+      return;
+    }
     setProFeaturesUsed(true);
     if (!proFeaturesAckedByUserRef.current[uid]) {
       try {
@@ -678,9 +684,16 @@ export default function App() {
     let attempts = 0;
     let timerId = null;
     const targetUserId = activeUserId;
+    const pollBillingEpoch = billingStateEpochRef.current;
 
     const pollSubscription = async () => {
-      if (isCancelled || window.__activeUserId !== targetUserId) return;
+      if (
+        isCancelled ||
+        window.__activeUserId !== targetUserId ||
+        billingStateEpochRef.current !== pollBillingEpoch
+      ) {
+        return;
+      }
       attempts += 1;
       const { data } = await supabase
         .from('profiles')
@@ -688,7 +701,13 @@ export default function App() {
         .eq('user_id', targetUserId)
         .maybeSingle();
 
-      if (isCancelled || window.__activeUserId !== targetUserId) return;
+      if (
+        isCancelled ||
+        window.__activeUserId !== targetUserId ||
+        billingStateEpochRef.current !== pollBillingEpoch
+      ) {
+        return;
+      }
 
       if (data?.subscription_tier === 'pro') {
         checkoutConfirmedProUserIdRef.current = targetUserId;

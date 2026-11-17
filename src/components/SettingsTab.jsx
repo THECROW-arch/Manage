@@ -123,7 +123,9 @@ export default function SettingsTab({
   const minutesLeftForRefund = isWithinTwoHours
     ? Math.max(1, Math.ceil((TWO_HOURS_MS - (nowTick - startedAtMs)) / 60000))
     : 0;
-  const isResumingRefundCancel = subscriptionStatus === 'refund_cancel_pending';
+  const isResumingRefundCancel =
+    subscriptionStatus === 'refund_cancel_pending' ||
+    subscriptionStatus === 'refund_finalize_pending';
   const isRefundPendingProvider = subscriptionStatus === 'refund_pending';
   const isRefundEligible =
     !isRefundPendingProvider &&
@@ -354,7 +356,9 @@ export default function SettingsTab({
       billingOpIdRef.current === opId;
 
     try {
-      const res = await requestProSubscriptionRefund(originUserId);
+      const res = await requestProSubscriptionRefund(originUserId, {
+        isRecovery: isResumingRefundCancel
+      });
       if (!isSameActiveAccount(res)) {
         return;
       }
@@ -363,7 +367,7 @@ export default function SettingsTab({
         if (res?.subscriptionStatus) {
           setSubscriptionStatus?.(res.subscriptionStatus);
         }
-        if (res?.retryableCancel) {
+        if (res?.retryableCancel || res?.retryableFinalize) {
           setHasClaimedRefund?.(true);
         }
         if (canUpdateLocalUI()) {
