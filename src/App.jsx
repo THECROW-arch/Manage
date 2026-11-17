@@ -166,10 +166,15 @@ export default function App() {
     if (!targetUserId || proFeaturesAckedByUserRef.current[targetUserId] || proFeaturesSyncInFlightRef.current[targetUserId]) {
       return;
     }
+    const requestBillingEpoch = billingStateEpochRef.current;
     proFeaturesSyncInFlightRef.current[targetUserId] = true;
     try {
       const { error } = await supabase.rpc('mark_pro_feature_used');
-      if (!error && window.__activeUserId === targetUserId) {
+      if (
+        !error &&
+        window.__activeUserId === targetUserId &&
+        billingStateEpochRef.current === requestBillingEpoch
+      ) {
         proFeaturesAckedByUserRef.current[targetUserId] = true;
         try {
           localStorage.removeItem(`managed_pending_pro_used_${targetUserId}`);
@@ -1907,32 +1912,52 @@ export default function App() {
     }
   };
 
-  const handleDeleteCategory = async (id, percentage) => {
-    if (isReadOnly) return false;
-    if (categories.length <= 1) {
-      setAlertMsg(t('err_min_one_cat', 'You must keep at least one category in your budget. You can rename it instead!'));
-      return false;
-    }
-    const previousCategories = [...categories];
-    const previousExpenses = [...expenses];
-    const remainingCategories = categories.filter(c => c.id !== id).map(c => ({ ...c }));
+  const handleDeleteCategory = async (idToDelete) => {
+    if (isReadOnly) return;
+    if (categories.length <= 1) { setAlertMsg(t('err_keep_one_cat')); return; }
 
-    remainingCategories[0].percentage = Math.min(100, Number((remainingCategories[0].percentage + percentage).toFixed(2)));
+    const prevCategories = [...categories];
+    const prevExpenses = [...expenses];
+    const categoryToRemove = categories.find(c => c.id === idToDelete);
+    const remainingCategories = categories.filter(c => c.id !== idToDelete).map(c => ({ ...c }));
+    const changedCategories = [];
+
+    if (categoryToRemove && Number(categoryToRemove.percentage) > 0 && remainingCategories.length > 0) {
+      let freed = Number(categoryToRemove.percentage) || 0;
+      for (let i = 0; i < remainingCategories.length && freed > 0; i++) {
+        const currentPct = Number(remainingCategories[i].percentage) || 0;
+        const room = Math.max(0, 100 - currentPct);
+        if (room > 0) {
+          const add = Math.min(room, freed);
+          const nextPct = Number((currentPct + add).toFixed(1));
+          remainingCategories[i].percentage = nextPct;
+          changedCategories.push({ id: remainingCategories[i].id, percentage: nextPct });
+          freed = Number((freed - add).toFixed(1));
+        }
+      }
+    }
 
     setCategories(remainingCategories);
-    setLockedCategories(lockedCategories.filter(catId => catId !== id));
-    setExpenses(expenses.filter(e => e.category_id !== id));
-    if (expenseCategoryId === id) setExpenseCategoryId(remainingCategories.find(c => c.type !== 'asset')?.id || '');
+    setExpenses(expenses.filter(e => e.category_id !== idToDelete));
+    if (expenseCategoryId === idToDelete && remainingCategories.length > 0) setExpenseCategoryId(remainingCategories[0].id);
 
     try {
-      const { error } = await supabase.from('categories').delete().eq('id', id);
+      await supabase.from('expenses').delete().eq('category_id', idToDelete).eq('user_id', session.user.id);
+      const { error } = await supabase.from('categories').delete().eq('id', idToDelete).eq('user_id', session.user.id);
       if (error) throw error;
-      return true;
+
+      for (const updated of changedCategories) {
+        const { error: pctErr } = await supabase
+          .from('categories')
+          .update({ percentage: updated.percentage })
+          .eq('id', updated.id)
+          .eq('user_id', session.user.id);
+        if (pctErr) throw pctErr;
+      }
     } catch {
-      setAlertMsg(t('err_db_delete_cat'));
-      setCategories(previousCategories);
-      setExpenses(previousExpenses);
-      return false;
+      setAlertMsg(t('err_del_cat'));
+      setCategories(prevCategories);
+      setExpenses(prevExpenses);
     }
   };
 
@@ -2310,9 +2335,9 @@ export default function App() {
 
   const handleAddSubBucket = (e) => {
     e.preventDefault();
-    if (!activeSheet) return;
+    if (isReadOnly) return;
     const limit = parseFloat(subBucketLimit);
-    if (!subBucketName.trim() || isNaN(limit) || limit <= 0) return;
+    if (!subBucketName.trim() || isNaN(limit) || limit <= 0 || !activeSheet) return;
 
     const existingBucketsTotal = activeSheet.buckets.reduce((s, b) => s + b.limit, 0);
     if (existingBucketsTotal + limit > activeSheet.totalBudget) {
@@ -2332,9 +2357,9 @@ export default function App() {
 
   const handleAddSandboxExpense = (e) => {
     e.preventDefault();
-    if (!activeSheet) return;
+    if (isReadOnly) return;
     const cost = parseFloat(sandboxExpCost);
-    if (!sandboxExpName.trim() || isNaN(cost) || cost <= 0) return;
+    if (!sandboxExpName.trim() || isNaN(cost) || cost <= 0 || !sandboxExpBucketId || !activeSheet) return;
 
     const updatedSheet = {
       ...activeSheet,
@@ -2414,10 +2439,6 @@ export default function App() {
       is_batched: isBatched,
       bundle_id: null
     };
-
-    if (isRecurring && pendingFreq) {
-      updateExpenseMeta(tempId, { recurrenceType: pendingFreq });
-    }
 
     setExpenses([newExpenseObj, ...expenses]);
     setExpenseName('');
@@ -2531,25 +2552,26 @@ export default function App() {
 
   const handleAddAdjustment = async (e) => {
     e.preventDefault();
-    const amt = parseFloat(adjAmount);
-    if (!adjCatId || isNaN(amt) || !adjDate) return;
+    if (isReadOnly) return;
+    const val = parseFloat(adjAmount);
+    if (!adjCatId || isNaN(val) || val === 0 || !adjNote.trim()) return;
 
     const tempId = crypto.randomUUID();
-    const newAdj = { id: tempId, user_id: session.user.id, category_id: adjCatId, amount: amt, adjustment_date: adjDate, note: adjNote };
+    const targetAdjDate = adjDate || `${selectedMonth}-${getToday().slice(8, 10)}`;
+    const prevAdjustments = [...assetAdjustments];
 
-    setAssetAdjustments([newAdj, ...assetAdjustments]);
-    setAdjAmount('');
-    setAdjNote('');
+    setAssetAdjustments([{ id: tempId, user_id: session.user.id, category_id: adjCatId, amount: val, note: adjNote.trim(), adjustment_date: targetAdjDate }, ...assetAdjustments]);
+    setAdjAmount(''); setAdjNote('');
 
     try {
       const { data, error } = await supabase.from('asset_adjustments').insert([{
-        user_id: session.user.id, category_id: adjCatId, amount: amt, adjustment_date: adjDate, note: adjNote
+        user_id: session.user.id, category_id: adjCatId, amount: val, note: adjNote.trim(), adjustment_date: targetAdjDate
       }]).select();
-
       if (error) throw error;
       setAssetAdjustments(current => current.map(a => a.id === tempId ? data[0] : a));
     } catch {
-      setAlertMsg(t('err_db_save_adj'));
+      setAssetAdjustments(prevAdjustments);
+      setAlertMsg(t('err_log_adj'));
     }
   };
 

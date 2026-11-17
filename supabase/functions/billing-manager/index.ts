@@ -16,6 +16,15 @@ const corsHeaders = {
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
+const ALLOWED_RETURN_ORIGINS = new Set([
+  "https://sterlingmanagedapp.com",
+  "https://www.sterlingmanagedapp.com",
+  "https://app.sterlingmanagedapp.com",
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:5173"
+]);
+
 const SUPPORTED_LEMON_EVENTS = new Set([
   "subscription_created",
   "subscription_updated",
@@ -38,6 +47,20 @@ const SUPPORTED_CREEM_EVENTS = new Set([
   "subscription.update",
   "refund.created"
 ]);
+
+function sanitizeCheckoutReturnUrl(rawUrl: unknown): string {
+  const fallback = "https://sterlingmanagedapp.com/?checkout=success";
+  if (typeof rawUrl !== "string" || !rawUrl.trim()) return fallback;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    if (!ALLOWED_RETURN_ORIGINS.has(parsed.origin)) {
+      return fallback;
+    }
+    return parsed.toString();
+  } catch {
+    return fallback;
+  }
+}
 
 function timingSafeHexEqual(aHex: string, bHex: string): boolean {
   const a = aHex.trim().toLowerCase();
@@ -104,27 +127,23 @@ async function checkBillingEventRecorded(
   serviceRoleKey: string,
   eventId: string
 ): Promise<{ ok: boolean; exists: boolean }> {
-  const res = await fetch(
-    `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}&select=event_id`,
-    {
-      headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`
+  try {
+    const res = await fetch(
+      `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}&select=event_id`,
+      {
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
       }
-    }
-  );
-  if (!res.ok) return { ok: false, exists: false };
-  const rows = await res.json().catch(() => []);
-  return { ok: true, exists: Array.isArray(rows) && rows.length > 0 };
-}
-
-async function hasRecordedBillingEvent(
-  supabaseUrl: string,
-  serviceRoleKey: string,
-  eventId: string
-): Promise<boolean> {
-  const res = await checkBillingEventRecorded(supabaseUrl, serviceRoleKey, eventId);
-  return res.exists;
+    );
+    if (!res.ok) return { ok: false, exists: false };
+    const rows = await res.json().catch(() => null);
+    if (!Array.isArray(rows)) return { ok: false, exists: false };
+    return { ok: true, exists: rows.length > 0 };
+  } catch {
+    return { ok: false, exists: false };
+  }
 }
 
 async function recordBillingEvent(params: {
@@ -136,22 +155,90 @@ async function recordBillingEvent(params: {
   userId: string;
 }): Promise<boolean> {
   const { supabaseUrl, serviceRoleKey, eventId, provider, eventType, userId } = params;
-  const res = await fetch(`${supabaseUrl}/rest/v1/billing_webhook_events`, {
-    method: "POST",
-    headers: {
-      apikey: serviceRoleKey,
-      Authorization: `Bearer ${serviceRoleKey}`,
-      "Content-Type": "application/json",
-      Prefer: "return=minimal"
-    },
-    body: JSON.stringify({
-      event_id: eventId,
-      provider,
-      event_type: eventType,
-      user_id: userId
-    })
-  });
-  return res.ok || res.status === 409;
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/billing_webhook_events`, {
+      method: "POST",
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal"
+      },
+      body: JSON.stringify({
+        event_id: eventId,
+        provider,
+        event_type: eventType,
+        user_id: userId
+      })
+    });
+    return res.ok || res.status === 409;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Atomically claims a billing event marker so concurrent requests cannot race.
+ * Returns { ok: true, claimed: true } ONLY for the single caller that inserted the row,
+ * and { ok: true, claimed: false } when another request already holds the lock (HTTP 409).
+ */
+async function claimBillingEventLock(params: {
+  supabaseUrl: string;
+  serviceRoleKey: string;
+  eventId: string;
+  provider: string;
+  eventType: string;
+  userId: string;
+}): Promise<{ ok: boolean; claimed: boolean }> {
+  const { supabaseUrl, serviceRoleKey, eventId, provider, eventType, userId } = params;
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/billing_webhook_events`, {
+      method: "POST",
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation"
+      },
+      body: JSON.stringify({
+        event_id: eventId,
+        provider,
+        event_type: eventType,
+        user_id: userId
+      })
+    });
+    if (res.status === 409) {
+      return { ok: true, claimed: false };
+    }
+    if (!res.ok) {
+      return { ok: false, claimed: false };
+    }
+    const rows = await res.json().catch(() => null);
+    return { ok: true, claimed: Array.isArray(rows) && rows.length > 0 };
+  } catch {
+    return { ok: false, claimed: false };
+  }
+}
+
+async function releaseBillingEventLock(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  eventId: string
+): Promise<void> {
+  try {
+    await fetch(
+      `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}`,
+      {
+        method: "DELETE",
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
+      }
+    );
+  } catch {
+    // Ignore cleanup errors
+  }
 }
 
 async function updateProfileBillingRow(params: {
@@ -234,49 +321,60 @@ async function resolveCreemTransactionIdFromSubscription(
 
 /**
  * Server-side verification of whether the user has consumed Pro-only database capacity
- * (>3 categories, >1 sandbox sheet, or >1 wealth objective), preventing DevTools RPC blocking.
+ * (>3 categories, >1 sandbox sheet, or >1 wealth objective).
+ * Fails closed (`ok: false`) if either REST query errors or returns non-array JSON.
  */
 async function checkServerSideProCapacityUsed(params: {
   supabaseUrl: string;
   serviceRoleKey: string;
   userId: string;
   wealthObjectives: unknown;
-}): Promise<boolean> {
+}): Promise<{ ok: boolean; used: boolean }> {
   const { supabaseUrl, serviceRoleKey, userId, wealthObjectives } = params;
   if (Array.isArray(wealthObjectives) && wealthObjectives.length > 1) {
-    return true;
+    return { ok: true, used: true };
   }
 
-  const [catsRes, sheetsRes] = await Promise.all([
-    fetch(
-      `${supabaseUrl}/rest/v1/categories?user_id=eq.${encodeURIComponent(userId)}&select=id`,
-      {
-        headers: {
-          apikey: serviceRoleKey,
-          Authorization: `Bearer ${serviceRoleKey}`
+  try {
+    const [catsRes, sheetsRes] = await Promise.all([
+      fetch(
+        `${supabaseUrl}/rest/v1/categories?user_id=eq.${encodeURIComponent(userId)}&select=id`,
+        {
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
         }
-      }
-    ),
-    fetch(
-      `${supabaseUrl}/rest/v1/sandbox_sheets?user_id=eq.${encodeURIComponent(userId)}&select=id`,
-      {
-        headers: {
-          apikey: serviceRoleKey,
-          Authorization: `Bearer ${serviceRoleKey}`
+      ),
+      fetch(
+        `${supabaseUrl}/rest/v1/sandbox_sheets?user_id=eq.${encodeURIComponent(userId)}&select=id`,
+        {
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
         }
-      }
-    )
-  ]);
+      )
+    ]);
 
-  if (catsRes.ok) {
-    const cats = await catsRes.json().catch(() => []);
-    if (Array.isArray(cats) && cats.length > 3) return true;
+    if (!catsRes.ok || !sheetsRes.ok) {
+      return { ok: false, used: false };
+    }
+
+    const [cats, sheets] = await Promise.all([
+      catsRes.json().catch(() => null),
+      sheetsRes.json().catch(() => null)
+    ]);
+
+    if (!Array.isArray(cats) || !Array.isArray(sheets)) {
+      return { ok: false, used: false };
+    }
+
+    const used = cats.length > 3 || sheets.length > 1;
+    return { ok: true, used };
+  } catch {
+    return { ok: false, used: false };
   }
-  if (sheetsRes.ok) {
-    const sheets = await sheetsRes.json().catch(() => []);
-    if (Array.isArray(sheets) && sheets.length > 1) return true;
-  }
-  return false;
 }
 
 Deno.serve(async (req: Request) => {
@@ -525,7 +623,6 @@ Deno.serve(async (req: Request) => {
     const currentProfSubId = String(existingProfile?.subscription_id || "").trim();
     let currentProfOrderId = String(existingProfile?.subscription_order_id || "").trim();
 
-    // Normalize legacy Creem ord_ identifier on the profile before comparing purchases
     if (
       providerName === "creem" &&
       currentProfOrderId.startsWith("ord_") &&
@@ -637,15 +734,36 @@ Deno.serve(async (req: Request) => {
       Boolean(subId) && existingProfile?.subscription_id === subId;
 
     const existingSubStatus = String(existingProfile?.subscription_status || "");
+    let refundTxMarkerExists = false;
+    if (
+      !isInitialCreation &&
+      isSameExistingSubscription &&
+      existingSubStatus !== "refunded" &&
+      existingSubStatus !== "refund_cancel_pending" &&
+      existingSubStatus !== "refund_finalize_pending"
+    ) {
+      const txMarkerCheck = await checkBillingEventRecorded(
+        supabaseUrl,
+        serviceRoleKey,
+        refundTxMarkerId
+      );
+      if (!txMarkerCheck.ok) {
+        return new Response(
+          JSON.stringify({ error: "Failed to verify refund transaction marker state." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      refundTxMarkerExists = txMarkerCheck.exists;
+    }
+
     const wasAlreadyRefundedForSameSub =
       !isInitialCreation &&
       isSameExistingSubscription &&
       (existingSubStatus === "refunded" ||
         existingSubStatus === "refund_cancel_pending" ||
         existingSubStatus === "refund_finalize_pending" ||
-        (await hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundTxMarkerId)));
+        refundTxMarkerExists);
 
-    // Keep refunded access revoked even when a subsequent cancellation webhook arrives
     const effectiveIsRefunded = isRefunded || wasAlreadyRefundedForSameSub;
     const effectiveIsExpired = isExpired || effectiveIsRefunded;
 
@@ -671,7 +789,6 @@ Deno.serve(async (req: Request) => {
       updateBody.subscription_order_id = orderId;
     }
 
-    // Ensure subscription_started_at is populated on new subscriptions or if missing on active Pro
     if (
       !effectiveIsExpired &&
       (!isSameExistingSubscription || !existingProfile?.subscription_started_at)
@@ -708,14 +825,45 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      return new Response(JSON.stringify({ ok: true, ignoredStaleEvent: true }), {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      if (!isRefunded) {
+        return new Response(JSON.stringify({ ok: true, ignoredStaleEvent: true }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+
+      await updateProfileBillingRow({
+        supabaseUrl,
+        serviceRoleKey,
+        userId: customUserId,
+        patchBody: { has_claimed_refund: true }
       });
+
+      if (subId) {
+        const fallbackRevoke = await updateProfileBillingRow({
+          supabaseUrl,
+          serviceRoleKey,
+          userId: customUserId,
+          subscriptionId: subId,
+          patchBody: {
+            subscription_tier: "free",
+            subscription_status: "refunded",
+            subscription_period_end: null,
+            cancel_at_period_end: false,
+            has_claimed_refund: true
+          }
+        });
+        if (fallbackRevoke.status >= 400) {
+          return new Response(
+            JSON.stringify({ error: "Failed to persist refund revocation for subscription." }),
+            { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
     }
 
     if (effectiveIsRefunded && isCancelled) {
-      await recordBillingEvent({
+      const cancelMarkerSaved = await recordBillingEvent({
         supabaseUrl,
         serviceRoleKey,
         eventId: refundCancelMarkerId,
@@ -723,6 +871,12 @@ Deno.serve(async (req: Request) => {
         eventType: "refund_cancel_succeeded",
         userId: customUserId
       });
+      if (!cancelMarkerSaved) {
+        return new Response(
+          JSON.stringify({ error: "Failed to record refund cancellation marker." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
     // Complete refund reconciliation BEFORE recording webhook event completion
@@ -743,13 +897,20 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      const [hasRefundIntent, hasRefundPending, cancelAlreadyDone] = await Promise.all([
-        hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundIntentMarkerId),
-        hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundPendingMarkerId),
-        hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundCancelMarkerId)
+      const [intentRes, pendingRes, cancelDoneRes] = await Promise.all([
+        checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundIntentMarkerId),
+        checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundPendingMarkerId),
+        checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundCancelMarkerId)
       ]);
 
-      if ((hasRefundIntent || hasRefundPending) && subId && !cancelAlreadyDone) {
+      if (!intentRes.ok || !pendingRes.ok || !cancelDoneRes.ok) {
+        return new Response(
+          JSON.stringify({ error: "Failed to query refund reconciliation markers." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if ((intentRes.exists || pendingRes.exists) && subId && !cancelDoneRes.exists) {
         let cancelOk = false;
         const lemonApiKey = Deno.env.get("LEMONSQUEEZY_API_KEY") || "";
 
@@ -782,7 +943,7 @@ Deno.serve(async (req: Request) => {
         }
 
         if (cancelOk) {
-          await recordBillingEvent({
+          const cancelSaved = await recordBillingEvent({
             supabaseUrl,
             serviceRoleKey,
             eventId: refundCancelMarkerId,
@@ -790,19 +951,25 @@ Deno.serve(async (req: Request) => {
             eventType: "refund_cancel_succeeded",
             userId: customUserId
           });
+          if (!cancelSaved) {
+            return new Response(
+              JSON.stringify({ error: "Failed to persist refund_cancel_succeeded marker." }),
+              { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
         } else {
           const pendingCancelWrite = await updateProfileBillingRow({
             supabaseUrl,
             serviceRoleKey,
             userId: customUserId,
+            subscriptionId: subId,
             patchBody: {
               subscription_tier: "free",
               subscription_status: "refund_cancel_pending",
-              has_claimed_refund: true,
-              subscription_updated_at: new Date().toISOString()
+              has_claimed_refund: true
             }
           });
-          if (!pendingCancelWrite.ok) {
+          if (pendingCancelWrite.status >= 400) {
             return new Response(
               JSON.stringify({ error: "Failed to persist refund_cancel_pending state." }),
               { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -887,7 +1054,7 @@ Deno.serve(async (req: Request) => {
 
   // ACTION A: CREATE CHECKOUT SESSION
   if (action === "create_checkout") {
-    const returnUrl = String(body.returnUrl || "https://sterlingmanagedapp.com/?checkout=success");
+    const returnUrl = sanitizeCheckoutReturnUrl(body.returnUrl);
 
     if (creemApiKey && creemProductId) {
       const creemResp = await fetch(`${creemBaseUrl}/v1/checkouts`, {
@@ -938,6 +1105,34 @@ Deno.serve(async (req: Request) => {
     }
 
     if (allowSandboxSim) {
+      // Restrict sandbox simulation strictly to owner and dev roles
+      const roleRes = await fetch(
+        `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}&select=role`,
+        {
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
+        }
+      );
+      if (!roleRes.ok) {
+        return new Response(
+          JSON.stringify({ ok: false, error: "Could not verify account role for sandbox simulation." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      const roleRows = await roleRes.json().catch(() => []);
+      const callerRole = String((Array.isArray(roleRows) && roleRows[0]?.role) || "user");
+      if (callerRole !== "owner" && callerRole !== "dev") {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "Live payment checkout is currently in maintenance. Sandbox simulation is restricted to staff accounts."
+          }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
       const nowIso = new Date().toISOString();
       const simNonce = Date.now().toString(36);
@@ -1195,6 +1390,7 @@ Deno.serve(async (req: Request) => {
           supabaseUrl,
           serviceRoleKey,
           userId,
+          subscriptionId: subId,
           patchBody: { subscription_order_id: orderId }
         });
       }
@@ -1206,18 +1402,31 @@ Deno.serve(async (req: Request) => {
     const refundCancelMarkerId = `refund_cancel_done_${provider}_${refundKeyId}`;
     const refundPendingMarkerId = `refund_pending_${provider}_${refundKeyId}`;
 
-    const [txAlreadyRefunded, cancelAlreadyCompleted, isRefundPending] = await Promise.all([
-      hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundTxMarkerId),
-      hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundCancelMarkerId),
-      hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundPendingMarkerId)
+    const [txMarkerRes, cancelMarkerRes, pendingMarkerRes] = await Promise.all([
+      checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundTxMarkerId),
+      checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundCancelMarkerId),
+      checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundPendingMarkerId)
     ]);
+
+    if (!txMarkerRes.ok || !cancelMarkerRes.ok || !pendingMarkerRes.ok) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error: "Could not verify refund state right now. Please try again in a moment."
+        }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const txAlreadyRefunded = txMarkerRes.exists;
+    const cancelAlreadyCompleted = cancelMarkerRes.exists;
+    const isRefundPending = pendingMarkerRes.exists;
 
     const isResumingPartialRefund =
       txAlreadyRefunded ||
       currentStatus === "refund_cancel_pending" ||
       currentStatus === "refund_finalize_pending";
 
-    // Only return 202 pending when the refund transaction has NOT yet completed
     if (!txAlreadyRefunded && (currentStatus === "refund_pending" || isRefundPending)) {
       return new Response(
         JSON.stringify({
@@ -1249,15 +1458,25 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      const serverDetectedProUse = await checkServerSideProCapacityUsed({
+      const capacityCheck = await checkServerSideProCapacityUsed({
         supabaseUrl,
         serviceRoleKey,
         userId,
         wealthObjectives: profile.wealth_objectives
       });
 
-      if (profile.pro_features_used || serverDetectedProUse) {
-        if (serverDetectedProUse && !profile.pro_features_used) {
+      if (!capacityCheck.ok) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "Could not verify workspace Pro feature usage right now. Please try again."
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (profile.pro_features_used || capacityCheck.used) {
+        if (capacityCheck.used && !profile.pro_features_used) {
           await updateProfileBillingRow({
             supabaseUrl,
             serviceRoleKey,
@@ -1321,9 +1540,9 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // STEP 1: Register durable refund intent BEFORE calling the provider so an early completion webhook can reconcile
+    // STEP 1: Atomically claim the refund intent lock BEFORE calling the provider so concurrent requests cannot double-refund
     if (!isResumingPartialRefund && provider !== "sandbox") {
-      await recordBillingEvent({
+      const intentLock = await claimBillingEventLock({
         supabaseUrl,
         serviceRoleKey,
         eventId: refundIntentMarkerId,
@@ -1331,6 +1550,26 @@ Deno.serve(async (req: Request) => {
         eventType: "refund_intent_registered",
         userId
       });
+
+      if (!intentLock.ok) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "Could not initialize refund lock right now. Please try again."
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (!intentLock.claimed) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "A refund request for this subscription is already in progress. Please wait a moment and refresh."
+          }),
+          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
 
       if (provider === "creem") {
         const refundResp = await fetch(`${creemBaseUrl}/v1/refunds`, {
@@ -1343,9 +1582,10 @@ Deno.serve(async (req: Request) => {
             transaction_id: orderId,
             reason: "requested_by_customer"
           })
-        });
+        }).catch(() => null);
 
-        if (!refundResp.ok) {
+        if (!refundResp || !refundResp.ok) {
+          await releaseBillingEventLock(supabaseUrl, serviceRoleKey, refundIntentMarkerId);
           return new Response(
             JSON.stringify({ ok: false, error: "Payment provider could not process the refund right now." }),
             { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -1367,6 +1607,7 @@ Deno.serve(async (req: Request) => {
           refundStatus === "requires_action" ||
           !refundStatus
         ) {
+          await releaseBillingEventLock(supabaseUrl, serviceRoleKey, refundIntentMarkerId);
           return new Response(
             JSON.stringify({
               ok: false,
@@ -1377,13 +1618,23 @@ Deno.serve(async (req: Request) => {
         }
 
         if (refundStatus === "pending" || refundStatus === "processing") {
-          const completedByFastWebhook = await hasRecordedBillingEvent(
+          const fastWebhookCheck = await checkBillingEventRecorded(
             supabaseUrl,
             serviceRoleKey,
             refundTxMarkerId
           );
 
-          if (!completedByFastWebhook) {
+          if (!fastWebhookCheck.ok) {
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                error: "Refund submitted, but status verification failed. Please refresh the page."
+              }),
+              { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+
+          if (!fastWebhookCheck.exists) {
             await recordBillingEvent({
               supabaseUrl,
               serviceRoleKey,
@@ -1393,20 +1644,20 @@ Deno.serve(async (req: Request) => {
               userId
             });
 
-            const recheckCompleted = await hasRecordedBillingEvent(
+            const recheckCompleted = await checkBillingEventRecorded(
               supabaseUrl,
               serviceRoleKey,
               refundTxMarkerId
             );
 
-            if (!recheckCompleted) {
+            if (!recheckCompleted.ok || !recheckCompleted.exists) {
               await updateProfileBillingRow({
                 supabaseUrl,
                 serviceRoleKey,
                 userId,
+                subscriptionId: subId || undefined,
                 patchBody: {
-                  subscription_status: "refund_pending",
-                  subscription_updated_at: new Date().toISOString()
+                  subscription_status: "refund_pending"
                 }
               });
               return new Response(
@@ -1439,9 +1690,10 @@ Deno.serve(async (req: Request) => {
               }
             })
           }
-        );
+        ).catch(() => null);
 
-        if (!refundResp.ok) {
+        if (!refundResp || !refundResp.ok) {
+          await releaseBillingEventLock(supabaseUrl, serviceRoleKey, refundIntentMarkerId);
           return new Response(
             JSON.stringify({ ok: false, error: "Payment provider could not process the refund right now." }),
             { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -1449,7 +1701,7 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      await recordBillingEvent({
+      const txSaved = await recordBillingEvent({
         supabaseUrl,
         serviceRoleKey,
         eventId: refundTxMarkerId,
@@ -1457,14 +1709,36 @@ Deno.serve(async (req: Request) => {
         eventType: "refund_tx_succeeded",
         userId
       });
+
+      if (!txSaved) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "Refund succeeded, but recording the refund marker failed. Please click Complete Refund Cancellation to finish."
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
     // STEP 2: Cancel the provider subscription and verify the response before revoking access
-    const cancelDoneNow =
-      cancelAlreadyCompleted ||
-      (await hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundCancelMarkerId));
+    const latestCancelCheck = cancelAlreadyCompleted
+      ? { ok: true, exists: true }
+      : await checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundCancelMarkerId);
 
-    if (!cancelDoneNow && provider !== "sandbox" && subId) {
+    if (!latestCancelCheck.ok) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          retryableCancel: true,
+          subscriptionStatus: "refund_cancel_pending",
+          error: "Could not verify subscription cancellation state. Please click Complete Refund Cancellation to retry."
+        }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (!latestCancelCheck.exists && provider !== "sandbox" && subId) {
       let cancelSucceeded = false;
 
       if (provider === "creem") {
@@ -1500,10 +1774,16 @@ Deno.serve(async (req: Request) => {
           supabaseUrl,
           serviceRoleKey,
           userId,
+          patchBody: { has_claimed_refund: true }
+        });
+        await updateProfileBillingRow({
+          supabaseUrl,
+          serviceRoleKey,
+          userId,
+          subscriptionId: subId,
           patchBody: {
             subscription_status: "refund_cancel_pending",
-            has_claimed_refund: true,
-            subscription_updated_at: new Date().toISOString()
+            has_claimed_refund: true
           }
         });
         return new Response(
@@ -1518,7 +1798,7 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      await recordBillingEvent({
+      const cancelSaved = await recordBillingEvent({
         supabaseUrl,
         serviceRoleKey,
         eventId: refundCancelMarkerId,
@@ -1526,14 +1806,49 @@ Deno.serve(async (req: Request) => {
         eventType: "refund_cancel_succeeded",
         userId
       });
+
+      if (!cancelSaved) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            retryableCancel: true,
+            subscriptionStatus: "refund_cancel_pending",
+            error: "Subscription cancelled, but saving cancellation state failed. Please click Complete Refund Cancellation to finish."
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
-    // STEP 3: Finalize profile revocation keyed by userId so changed subscription_id never drops the write
+    // STEP 3: Record account-wide refund claim unconditionally, then revoke access ONLY on the refunded subscription
+    const claimWrite = await updateProfileBillingRow({
+      supabaseUrl,
+      serviceRoleKey,
+      userId,
+      patchBody: {
+        has_claimed_refund: true
+      }
+    });
+
+    if (!claimWrite.ok) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          retryableFinalize: true,
+          subscriptionStatus: "refund_finalize_pending",
+          error:
+            "Your refund and cancellation succeeded, but updating your profile failed. Click Complete Refund Cancellation to sync your profile without issuing another refund."
+        }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const nowIso = new Date().toISOString();
     const refundWrite = await updateProfileBillingRow({
       supabaseUrl,
       serviceRoleKey,
       userId,
+      subscriptionId: subId || undefined,
       patchBody: {
         subscription_tier: "free",
         subscription_status: "refunded",
@@ -1545,15 +1860,69 @@ Deno.serve(async (req: Request) => {
     });
 
     if (!refundWrite.ok) {
+      if (refundWrite.status >= 400 || !subId) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            retryableFinalize: true,
+            subscriptionStatus: "refund_finalize_pending",
+            error:
+              "Your refund and cancellation succeeded, but updating your profile failed. Click Complete Refund Cancellation to sync your profile without issuing another refund."
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const recheckRes = await fetch(
+        `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}&select=subscription_id,subscription_tier,subscription_status`,
+        {
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
+        }
+      );
+
+      if (!recheckRes.ok) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            retryableFinalize: true,
+            subscriptionStatus: "refund_finalize_pending",
+            error:
+              "Your refund and cancellation succeeded, but verifying your profile failed. Click Complete Refund Cancellation to sync your profile."
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const recheckRows = await recheckRes.json().catch(() => []);
+      const latestProf = Array.isArray(recheckRows) ? recheckRows[0] : null;
+      const latestSubId = String(latestProf?.subscription_id || "");
+
+      if (!latestProf || latestSubId === subId) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            retryableFinalize: true,
+            subscriptionStatus: "refund_finalize_pending",
+            error:
+              "Your refund and cancellation succeeded, but updating your profile failed. Click Complete Refund Cancellation to sync your profile."
+          }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       return new Response(
         JSON.stringify({
-          ok: false,
-          retryableFinalize: true,
-          subscriptionStatus: "refund_finalize_pending",
-          error:
-            "Your refund and cancellation succeeded, but updating your profile failed. Click Complete Refund Cancellation to sync your profile without issuing another refund."
+          ok: true,
+          refunded: true,
+          supersededByNewSubscription: true,
+          subscriptionTier: String(latestProf.subscription_tier || "pro"),
+          subscriptionStatus: String(latestProf.subscription_status || "active"),
+          hasClaimedRefund: true
         }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
