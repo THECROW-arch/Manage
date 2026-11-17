@@ -206,7 +206,9 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     const hasProAccess = Boolean(ctx?.hasProAccess);
     const quotaUserId = ctx?.userId || null;
-    if (!hasProAccess && quotaUserId) {
+    if (hasProAccess) {
+        ctx?.onMarkProFeatureUsed?.();
+    } else if (quotaUserId) {
         const reservation = tryConsumeAICommandQuota(quotaUserId, false);
         if (!reservation.allowed) {
             ctx?.onRequireProUpgrade?.('sterling_ai_unlimited');

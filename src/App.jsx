@@ -115,6 +115,9 @@ export default function App() {
   const [subscriptionStatus, setSubscriptionStatus] = useState('free');
   const [subscriptionPeriodEnd, setSubscriptionPeriodEnd] = useState(null);
   const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
+  const [subscriptionStartedAt, setSubscriptionStartedAt] = useState(null);
+  const [proFeaturesUsed, setProFeaturesUsed] = useState(false);
+  const [hasClaimedRefund, setHasClaimedRefund] = useState(false);
   const [upgradePromptFeature, setUpgradePromptFeature] = useState(null);
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
   const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
@@ -141,6 +144,22 @@ export default function App() {
       checkoutConfirmedProUserIdRef.current = uid;
     }
   }, []);
+
+  const clearConfirmedProForUser = useCallback((uid) => {
+    if (!uid || checkoutConfirmedProUserIdRef.current === uid) {
+      checkoutConfirmedProUserIdRef.current = null;
+    }
+  }, []);
+
+  const markProFeatureUsed = useCallback(() => {
+    if (subscriptionTier !== 'pro') return;
+    setProFeaturesUsed((alreadyUsed) => {
+      if (!alreadyUsed) {
+        supabase.rpc('mark_pro_feature_used').then(() => {}).catch(() => {});
+      }
+      return true;
+    });
+  }, [subscriptionTier]);
 
   const hasProAccess = useMemo(() => {
     const cleanRole = String(userRole || '').trim().toLowerCase();
@@ -270,6 +289,9 @@ export default function App() {
         setSubscriptionStatus('free');
         setSubscriptionPeriodEnd(null);
         setCancelAtPeriodEnd(false);
+        setSubscriptionStartedAt(null);
+        setProFeaturesUsed(false);
+        setHasClaimedRefund(false);
       }
     }
     try {
@@ -319,6 +341,9 @@ export default function App() {
           setSubscriptionPeriodEnd(loadedPeriodEnd);
           setCancelAtPeriodEnd(loadedCancelAtEnd);
         }
+        setSubscriptionStartedAt(profile.subscription_started_at || null);
+        setProFeaturesUsed(Boolean(profile.pro_features_used));
+        setHasClaimedRefund(Boolean(profile.has_claimed_refund));
 
         // Validate saved tab access against loaded role safely
         setActiveTab(currentTab => {
@@ -486,6 +511,9 @@ export default function App() {
         setSubscriptionStatus('free');
         setSubscriptionPeriodEnd(null);
         setCancelAtPeriodEnd(false);
+        setSubscriptionStartedAt(null);
+        setProFeaturesUsed(false);
+        setHasClaimedRefund(false);
         setCheckoutSyncState({ status: 'idle', retryCount: 0 });
         setDraftHydratedUserId(null);
         setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
@@ -509,7 +537,7 @@ export default function App() {
 
     supabase
       .from('profiles')
-      .select('role,subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end')
+      .select('role,subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end,subscription_started_at,pro_features_used,has_claimed_refund')
       .eq('user_id', targetUserId)
       .maybeSingle()
       .then(({ data }) => {
@@ -531,6 +559,9 @@ export default function App() {
           setSubscriptionPeriodEnd(data.subscription_period_end || null);
           setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
         }
+        setSubscriptionStartedAt(data.subscription_started_at || null);
+        setProFeaturesUsed(Boolean(data.pro_features_used));
+        setHasClaimedRefund(Boolean(data.has_claimed_refund));
       });
 
     return () => {
@@ -619,6 +650,9 @@ export default function App() {
       setSubscriptionStatus('free');
       setSubscriptionPeriodEnd(null);
       setCancelAtPeriodEnd(false);
+      setSubscriptionStartedAt(null);
+      setProFeaturesUsed(false);
+      setHasClaimedRefund(false);
       setCheckoutSyncState({ status: 'idle', retryCount: 0 });
       setDraftHydratedUserId(null);
       setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
@@ -1128,6 +1162,9 @@ export default function App() {
         error: 'Free accounts include **1 Wealth Objective**. Upgrade to **MANAGED Pro** for unlimited multi-goal Wealth Objectives!'
       };
     }
+    if (wealthObjectives.length >= 1) {
+      markProFeatureUsed();
+    }
     const cleanName = String(name || '').trim();
     const targetNum = parseFloat(targetAmount);
     if (!cleanName || isNaN(targetNum) || targetNum <= 0) {
@@ -1330,6 +1367,7 @@ export default function App() {
       setUpgradePromptFeature('excel_audit_exports');
       return;
     }
+    markProFeatureUsed();
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
     const targetPeriod = exportScope === 'month' ? exportMonth : exportDate;
@@ -1704,6 +1742,9 @@ export default function App() {
       setIsCategoryModalOpen(false);
       setUpgradePromptFeature('custom_categories_limit');
       return;
+    }
+    if (categories.length >= 3) {
+      markProFeatureUsed();
     }
 
     const goalVal = newCategoryType === 'asset' ? (parseFloat(newCategoryGoal) || 0) : 0;
@@ -2123,6 +2164,9 @@ export default function App() {
     if (!hasProAccess && sandboxSheets.length >= 1) {
       setUpgradePromptFeature('unlimited_sandbox_sheets');
       return;
+    }
+    if (sandboxSheets.length >= 1) {
+      markProFeatureUsed();
     }
     const budget = parseFloat(newSheetBudget);
     if (!newSheetTitle.trim() || isNaN(budget) || budget <= 0) return;
@@ -2966,7 +3010,14 @@ export default function App() {
                 setSubscriptionPeriodEnd={setSubscriptionPeriodEnd}
                 cancelAtPeriodEnd={cancelAtPeriodEnd}
                 setCancelAtPeriodEnd={setCancelAtPeriodEnd}
+                subscriptionStartedAt={subscriptionStartedAt}
+                setSubscriptionStartedAt={setSubscriptionStartedAt}
+                proFeaturesUsed={proFeaturesUsed}
+                setProFeaturesUsed={setProFeaturesUsed}
+                hasClaimedRefund={hasClaimedRefund}
+                setHasClaimedRefund={setHasClaimedRefund}
                 onConfirmProForUser={confirmProForUser}
+                onClearConfirmedProForUser={clearConfirmedProForUser}
               />
             )}
             {activeTab === 'support' && (
@@ -2995,6 +3046,7 @@ export default function App() {
           userId={activeUserId}
           hasProAccess={hasProAccess}
           onRequireProUpgrade={setUpgradePromptFeature}
+          onMarkProFeatureUsed={markProFeatureUsed}
           lastAddedExpenseId={lastAddedExpenseId}
           parsedSalary={parsedSalary}
           salary={salary}
@@ -3074,6 +3126,9 @@ export default function App() {
             if (!hasProAccess && sandboxSheets.length >= 1) {
               setUpgradePromptFeature('unlimited_sandbox_sheets');
               return { ok: false, error: 'Free accounts include **1 Sandbox Sheet**. Upgrade to **MANAGED Pro** for unlimited Sandbox sheets!' };
+            }
+            if (sandboxSheets.length >= 1) {
+              markProFeatureUsed();
             }
             const tempId = crypto.randomUUID();
             const newSheet = { id: tempId, title: title.trim(), totalBudget, buckets: [], expenses: [] };
@@ -3176,6 +3231,9 @@ export default function App() {
                 code: 'pro_limit',
                 error: t('ai_err_category_limit_pro', 'Free Tier workspaces include up to 3 budget categories. Upgrade to MANAGED Pro to create unlimited custom categories.')
               };
+            }
+            if (categories.length >= 3) {
+              markProFeatureUsed();
             }
             const cleanName = (name || '').trim();
             if (!cleanName) return { ok: false, error: 'Please provide a valid category name.' };

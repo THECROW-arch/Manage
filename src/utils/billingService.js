@@ -68,3 +68,37 @@ export async function cancelProSubscription(expectedUserId) {
 
     return { ...(data || { ok: false, error: 'Empty response from billing service.' }), userId: originUserId };
 }
+
+/**
+ * Requests a full refund under the 2-Hour Unused Pro Refund Policy.
+ * Requires <= 2 hours since subscription activation, zero Pro feature usage, and no prior refund on the account.
+ */
+export async function requestProSubscriptionRefund(expectedUserId) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+    const originUserId = sessionData?.session?.user?.id || '';
+
+    if (!accessToken || !originUserId) {
+        return { ok: false, error: 'Please sign in to request a subscription refund.' };
+    }
+    if (expectedUserId && expectedUserId !== originUserId) {
+        return { ok: false, staleAccount: true, error: 'Active account changed.' };
+    }
+
+    const { data, error } = await supabase.functions.invoke('billing-manager', {
+        body: { action: 'request_refund' },
+        headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    const { data: latestSessionData } = await supabase.auth.getSession();
+    const latestUserId = latestSessionData?.session?.user?.id || '';
+    if (latestUserId !== originUserId) {
+        return { ok: false, staleAccount: true, error: 'Account changed while refund request was pending.' };
+    }
+
+    if (error) {
+        return { ok: false, error: error.message || 'Could not process refund request.' };
+    }
+
+    return { ...(data || { ok: false, error: 'Empty response from billing service.' }), userId: originUserId };
+}

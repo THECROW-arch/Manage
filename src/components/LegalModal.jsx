@@ -162,7 +162,16 @@ export default function LegalModal({
                                 3. Subscriptions &amp; Instant 1-Click Cancellation
                             </h3>
                             <p>
-                                You may cancel a paid MANAGED Pro subscription at any time with a single click inside <strong>Settings → Subscription</strong>. Recurring billing stops immediately upon cancellation, and your Pro features remain active until the end of your current paid billing period.
+                                You may cancel a paid MANAGED Pro subscription at any time with a single click inside{' '}
+                                <strong>Settings → Subscription</strong>. Recurring billing stops immediately upon cancellation, and
+                                your Pro features remain active until the end of your current paid billing period. In addition, initial
+                                MANAGED Pro subscriptions are eligible for a full refund inside{' '}
+                                <strong>Settings → Subscription</strong> if requested within <strong>2 hours (120 minutes)</strong> of
+                                activation, provided that <strong>zero MANAGED Pro features</strong> (Formal or Visual Excel exports,
+                                more than 3 budget categories, more than 1 Wealth Objective, more than 1 Sandbox sheet, or Pro Sterling
+                                AI commands) have been used during the subscription and no prior refund has been claimed on the
+                                account. Approved refunds immediately revoke MANAGED Pro access and return the workspace to the Free
+                                Tier (subject to any mandatory local consumer protection laws).
                             </p>
                         </>
                     )}
