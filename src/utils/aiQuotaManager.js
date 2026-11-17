@@ -6,16 +6,18 @@ function getStorageKey(userId) {
 }
 
 /**
- * Reads and prunes timestamps older than 48 hours for the specified user.
+ * Reads and prunes timestamps older than 48 hours for the specified user with safe storage error catching.
  * @param {string} userId
  * @param {number} [nowMs]
  * @returns {number[]} Valid timestamps within the active 48-hour window
  */
 export function getActiveAIUsageTimestamps(userId, nowMs = Date.now()) {
-  if (typeof window === 'undefined' || !window.localStorage) return [];
-  const key = getStorageKey(userId);
+  if (!userId || typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(key);
+    const storage = window.localStorage;
+    if (!storage) return [];
+    const key = getStorageKey(userId);
+    const raw = storage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -26,7 +28,7 @@ export function getActiveAIUsageTimestamps(userId, nowMs = Date.now()) {
       .sort((a, b) => a - b);
 
     if (valid.length !== parsed.length) {
-      window.localStorage.setItem(key, JSON.stringify(valid));
+      storage.setItem(key, JSON.stringify(valid));
     }
     return valid;
   } catch {
@@ -66,39 +68,24 @@ export function getAIQuotaStatus(userId, hasProAccess, nowMs = Date.now()) {
 }
 
 /**
- * Records a single AI command execution for a Free-tier user.
+ * Records a single AI command execution for a Free-tier user atomically.
  * @param {string} userId
  * @param {boolean} hasProAccess
  * @param {number} [nowMs]
  */
 export function recordAICommandUsage(userId, hasProAccess, nowMs = Date.now()) {
-  if (hasProAccess || typeof window === 'undefined' || !window.localStorage) {
+  if (hasProAccess || !userId || typeof window === 'undefined') {
     return getAIQuotaStatus(userId, hasProAccess, nowMs);
   }
-  const key = getStorageKey(userId);
-  const active = getActiveAIUsageTimestamps(userId, nowMs);
-  const updated = [...active, nowMs].slice(-FREE_AI_COMMAND_LIMIT);
   try {
-    window.localStorage.setItem(key, JSON.stringify(updated));
+    const storage = window.localStorage;
+    if (!storage) return getAIQuotaStatus(userId, false, nowMs);
+    const key = getStorageKey(userId);
+    const active = getActiveAIUsageTimestamps(userId, nowMs);
+    const updated = [...active, nowMs].slice(-FREE_AI_COMMAND_LIMIT);
+    storage.setItem(key, JSON.stringify(updated));
+    return getAIQuotaStatus(userId, false, nowMs);
   } catch {
-    // Ignore storage quota errors
-  }
-  return getAIQuotaStatus(userId, false, nowMs);
-}
-
-/**
- * Refunds the most recent command slot if a command was blocked by a Pro feature gate.
- * @param {string} userId
- */
-export function refundLastAICommandUsage(userId) {
-  if (!userId || typeof window === 'undefined' || !window.localStorage) return;
-  const key = getStorageKey(userId);
-  try {
-    const active = getActiveAIUsageTimestamps(userId);
-    if (active.length === 0) return;
-    const updated = active.slice(0, -1);
-    window.localStorage.setItem(key, JSON.stringify(updated));
-  } catch {
-    // Ignore storage errors
+    return getAIQuotaStatus(userId, false, nowMs);
   }
 }

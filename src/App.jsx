@@ -6,7 +6,6 @@ import { supabase } from './supabaseClient';
 import Auth from './Auth';
 import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth, sanitizeUsername } from './utils/constants';
 import { sendRecurringExpenseReminderEmail, parseReminderPeriodMap } from './utils/emailReminderService';
-import { refundLastAICommandUsage } from './utils/aiQuotaManager';
 import Sidebar, { MobileHeader } from './components/Sidebar';
 import CashFlowTab from './components/CashFlowTab';
 import AIAssistantDrawer from './components/AIAssistantDrawer';
@@ -266,8 +265,8 @@ export default function App() {
         const loadedRole = profile.role || 'user';
         const loadedTier = profile.subscription_tier || 'free';
         setUserRole(loadedRole);
-        setSubscriptionTier(loadedTier);
-        setSubscriptionStatus(profile.subscription_status || 'free');
+        setSubscriptionTier(currentTier => (currentTier === 'pro' ? 'pro' : loadedTier));
+        setSubscriptionStatus(currentTier => (currentTier === 'pro' ? 'active' : (profile.subscription_status || 'free')));
         setSubscriptionPeriodEnd(profile.subscription_period_end || null);
         setCancelAtPeriodEnd(Boolean(profile.cancel_at_period_end));
         // Validate saved tab access against loaded role safely
@@ -441,6 +440,11 @@ export default function App() {
   }, []);
 
   // Poll profile subscription status briefly when returning from Lemon Squeezy checkout (?checkout=success)
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+
   useEffect(() => {
     if (!activeUserId || typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -474,7 +478,7 @@ export default function App() {
         setSubscriptionStatus(data.subscription_status || 'active');
         setSubscriptionPeriodEnd(data.subscription_period_end || null);
         setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
-        setAlertMsg(t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
+        setAlertMsg(tRef.current('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
         return;
       }
 
@@ -482,7 +486,7 @@ export default function App() {
         timerId = setTimeout(pollSubscription, 3000);
       } else {
         setAlertMsg(
-          t(
+          tRef.current(
             'err_checkout_sync_delayed',
             'Subscription activation is taking longer than expected. Click here or refresh to sync your Pro status.'
           )
@@ -495,7 +499,7 @@ export default function App() {
       isCancelled = true;
       if (timerId) clearTimeout(timerId);
     };
-  }, [activeUserId, t]);
+  }, [activeUserId]);
 
   const handleLogoutRequest = () => {
     setShowLogoutConfirm(true);
@@ -2925,7 +2929,6 @@ export default function App() {
           onDirectCreateSandbox={async ({ title, totalBudget }) => {
             if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is read-only.` };
             if (!hasProAccess && sandboxSheets.length >= 1) {
-              refundLastAICommandUsage(activeUserId);
               setUpgradePromptFeature('unlimited_sandbox_sheets');
               return { ok: false, error: 'Free accounts include **1 Sandbox Sheet**. Upgrade to **MANAGED Pro** for unlimited Sandbox sheets!' };
             }
