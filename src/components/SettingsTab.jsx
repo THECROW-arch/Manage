@@ -2,10 +2,16 @@ import { useState, useEffect, useRef } from 'react';
 import { getToday, getCurrentMonth } from '../utils/constants';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient';
-import { startProCheckoutSession, cancelProSubscription } from '../utils/billingService';
+import {
+  startProCheckoutSession,
+  cancelProSubscription,
+  requestProSubscriptionRefund
+} from '../utils/billingService';
+
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
 /**
- * Renders the user account preferences, subscription & 1-click cancellation controls,
+ * Renders the user account preferences, subscription, 1-click cancellation & 2-hour refund controls,
  * theme toggle, baseline salary configuration, global currency/language selectors,
  * custom-scoped Excel data export controls, and advanced security settings.
  * @param {Object} props - Component properties
@@ -41,7 +47,14 @@ export default function SettingsTab({
   setSubscriptionPeriodEnd,
   cancelAtPeriodEnd = false,
   setCancelAtPeriodEnd,
-  onConfirmProForUser
+  subscriptionStartedAt = null,
+  setSubscriptionStartedAt,
+  proFeaturesUsed = false,
+  setProFeaturesUsed,
+  hasClaimedRefund = false,
+  setHasClaimedRefund,
+  onConfirmProForUser,
+  onClearConfirmedProForUser
 }) {
   const { t, i18n } = useTranslation();
   const [isProcessingDanger, setIsProcessingDanger] = useState(false);
@@ -93,10 +106,34 @@ export default function SettingsTab({
       })
     : null;
 
+  // Evaluate 2-Hour Unused Refund Eligibility
+  const startedAtMs = subscriptionStartedAt ? Date.parse(subscriptionStartedAt) : NaN;
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isPaidPro || !Number.isFinite(startedAtMs)) return;
+    const intervalId = setInterval(() => {
+      setNowTick(Date.now());
+    }, 15000);
+    return () => clearInterval(intervalId);
+  }, [isPaidPro, startedAtMs]);
+
+  const isWithinTwoHours =
+    Number.isFinite(startedAtMs) && nowTick - startedAtMs >= 0 && nowTick - startedAtMs <= TWO_HOURS_MS;
+  const minutesLeftForRefund = isWithinTwoHours
+    ? Math.max(1, Math.ceil((TWO_HOURS_MS - (nowTick - startedAtMs)) / 60000))
+    : 0;
+  const isResumingRefundCancel =
+    subscriptionStatus === 'refund_cancel_pending' ||
+    subscriptionStatus === 'refund_finalize_pending';
+  const isRefundPendingProvider = subscriptionStatus === 'refund_pending';
+  const isRefundEligible =
+    !isRefundPendingProvider &&
+    (isResumingRefundCancel ||
+      (isPaidPro && isWithinTwoHours && !proFeaturesUsed && !hasClaimedRefund));
+
   /**
    * Starts a MANAGED Pro checkout session or sandbox upgrade.
-   * Reconciles App-owned subscription state even if SettingsTab unmounts before completion,
-   * provided the same user account remains active.
    */
   const handleUpgradeClick = async () => {
     if (isBillingBusy) return;
@@ -147,10 +184,11 @@ export default function SettingsTab({
       }
 
       if (res.simulated) {
-        // Always update App-level billing state if the same account is active, even if SettingsTab unmounted
         onConfirmProForUser?.(originUserId);
         setSubscriptionTier?.('pro');
         setSubscriptionStatus?.(res.subscriptionStatus || 'active');
+        setSubscriptionStartedAt?.(res.subscriptionStartedAt || new Date().toISOString());
+        setProFeaturesUsed?.(false);
         setSubscriptionPeriodEnd?.(res.subscriptionPeriodEnd || null);
         setCancelAtPeriodEnd?.(false);
 
@@ -188,7 +226,6 @@ export default function SettingsTab({
   /**
    * 1-Click subscription cancellation: immediately stops future recurring billing
    * while keeping Pro features active until the end of the current paid period.
-   * Reconciles App-owned state even if SettingsTab unmounts while the request is in flight.
    */
   const handleOneClickCancel = async () => {
     if (isBillingBusy || !isPaidPro || cancelAtPeriodEnd) return;
@@ -233,7 +270,6 @@ export default function SettingsTab({
         return;
       }
 
-      // Always apply completed cancellation state to App if the same account is still active
       setSubscriptionStatus?.(res.subscriptionStatus || 'canceled_pending_expiry');
       if (res.subscriptionPeriodEnd) {
         setSubscriptionPeriodEnd?.(res.subscriptionPeriodEnd);
@@ -282,6 +318,113 @@ export default function SettingsTab({
   };
 
   /**
+   * 2-Hour Unused Refund handler: verifies eligibility on the server, issues a full refund,
+   * and immediately revokes MANAGED Pro access back to the Free Tier.
+   */
+  const handleRequestRefund = async () => {
+    if (isBillingBusy || !isRefundEligible) return;
+    if (
+      !window.confirm(
+        t(
+          'confirm_2h_refund',
+          'Request a full refund under the 2-Hour Unused Refund Policy? Your payment will be refunded and your workspace will immediately return to the Free Tier (one-time per account).'
+        )
+      )
+    ) {
+      return;
+    }
+
+    const originAccount = activeAccountRef.current;
+    const originUserId = userId;
+    const opId = ++billingOpIdRef.current;
+
+    setBillingState({
+      account: originAccount,
+      busy: true,
+      msg: { text: '', type: '' }
+    });
+
+    const isSameActiveAccount = (res) =>
+      activeAccountRef.current === originAccount &&
+      (!originUserId || window.__activeUserId === originUserId) &&
+      !res?.staleAccount &&
+      (!originUserId || !res?.userId || res.userId === originUserId);
+
+    const canUpdateLocalUI = () =>
+      isMountedRef.current &&
+      activeAccountRef.current === originAccount &&
+      billingOpIdRef.current === opId;
+
+    try {
+      const res = await requestProSubscriptionRefund(originUserId, {
+        isRecovery: isResumingRefundCancel
+      });
+      if (!isSameActiveAccount(res)) {
+        return;
+      }
+
+      if (!res?.ok) {
+        if (res?.subscriptionStatus) {
+          setSubscriptionStatus?.(res.subscriptionStatus);
+        }
+        if (res?.retryableCancel || res?.retryableFinalize) {
+          setHasClaimedRefund?.(true);
+        }
+        if (canUpdateLocalUI()) {
+          setBillingState({
+            account: originAccount,
+            busy: false,
+            msg: {
+              text: res?.error || t('err_refund_sub', 'Could not process your refund request right now.'),
+              type: res?.pending ? 'success' : 'error'
+            }
+          });
+        }
+        return;
+      }
+
+      // Immediately revoke Pro state on App
+      onClearConfirmedProForUser?.(originUserId);
+      setSubscriptionTier?.('free');
+      setSubscriptionStatus?.('refunded');
+      setSubscriptionPeriodEnd?.(null);
+      setCancelAtPeriodEnd?.(false);
+      setHasClaimedRefund?.(true);
+
+      if (canUpdateLocalUI()) {
+        setBillingState({
+          account: originAccount,
+          busy: false,
+          msg: {
+            text: t(
+              'succ_sub_refunded',
+              'Your subscription has been refunded and your workspace has returned to the Free Tier.'
+            ),
+            type: 'success'
+          }
+        });
+      }
+    } catch (err) {
+      if (!canUpdateLocalUI()) return;
+      console.error('Refund subscription failed:', err);
+      setBillingState({
+        account: originAccount,
+        busy: false,
+        msg: {
+          text: t('err_refund_unexpected', 'An unexpected error occurred while processing your refund.'),
+          type: 'error'
+        }
+      });
+    } finally {
+      if (canUpdateLocalUI()) {
+        setBillingState((prev) =>
+          prev.account === originAccount ? { ...prev, busy: false } : prev
+        );
+      }
+    }
+  };
+
+  /**
    * Handles updating the user's password via Supabase Auth.
    */
   const handleUpdatePassword = async (e) => {
@@ -313,7 +456,6 @@ export default function SettingsTab({
 
   /**
    * Triggers a hard deletion of all user financial data.
-   * Checks for partial failures to prevent false success messages.
    */
   const handleWipeData = async () => {
     if (!window.confirm(t('confirm_wipe_data', 'WARNING: This will permanently delete all your financial data, expenses, and history. This action cannot be undone. Are you absolutely sure?'))) {
@@ -352,7 +494,7 @@ export default function SettingsTab({
   };
 
   /**
-   * Triggers permanent account deletion via Supabase RPC (Requires custom RPC setup in DB).
+   * Triggers permanent account deletion via Supabase RPC.
    */
   const handleDeleteAccount = async () => {
     if (!window.confirm(t('confirm_delete_account', 'DANGER: This will permanently delete your entire account, profile, and all associated data. You will be logged out immediately. Are you sure?'))) {
@@ -378,7 +520,7 @@ export default function SettingsTab({
 
   return (
     <div className="max-w-2xl mx-auto space-y-8 pb-12">
-      {/* --- Subscription & 1-Click Cancellation (Settings -> Subscription) --- */}
+      {/* --- Subscription, 1-Click Cancellation & 2-Hour Unused Refund (Settings -> Subscription) --- */}
       <div
         id="subscription"
         className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-gray-200 dark:border-zinc-800 shadow-sm space-y-4"
@@ -389,7 +531,7 @@ export default function SettingsTab({
               {t('subscription_heading', 'Subscription')}
             </h2>
             <p className="text-xs text-gray-500 dark:text-zinc-400">
-              {t('subscription_subhead', 'Manage your MANAGED plan and billing status.')}
+              {t('subscription_subhead', 'Manage your MANAGED plan, 1-click cancellation, and refund eligibility.')}
             </p>
           </div>
           <span
@@ -422,23 +564,42 @@ export default function SettingsTab({
         )}
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
-          <div className="space-y-1 text-xs text-gray-600 dark:text-zinc-400">
+          <div className="space-y-1.5 text-xs text-gray-600 dark:text-zinc-400">
             {isPaidPro ? (
-              cancelAtPeriodEnd || subscriptionStatus === 'canceled_pending_expiry' ? (
-                <p>
-                  {t(
-                    'sub_canceled_notice',
-                    `Recurring billing is stopped. You will not be charged again, and your Pro features remain active until ${formattedPeriodEnd || 'the end of your current billing period'}.`
-                  )}
-                </p>
-              ) : (
-                <p>
-                  {t(
-                    'sub_active_notice',
-                    `Your MANAGED Pro subscription is active${formattedPeriodEnd ? ` (renews on ${formattedPeriodEnd})` : ''}. You can cancel with one click at any time.`
-                  )}
-                </p>
-              )
+              <>
+                {cancelAtPeriodEnd || subscriptionStatus === 'canceled_pending_expiry' ? (
+                  <p>
+                    {t(
+                      'sub_canceled_notice',
+                      `Recurring billing is stopped. You will not be charged again, and your Pro features remain active until ${formattedPeriodEnd || 'the end of your current billing period'}.`
+                    )}
+                  </p>
+                ) : (
+                  <p>
+                    {t(
+                      'sub_active_notice',
+                      `Your MANAGED Pro subscription is active${formattedPeriodEnd ? ` (renews on ${formattedPeriodEnd})` : ''}. You can cancel with one click at any time.`
+                    )}
+                  </p>
+                )}
+
+                {isRefundEligible ? (
+                  <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                    {t('sub_refund_eligible_notice', {
+                      minutes: minutesLeftForRefund,
+                      defaultValue: `2-Hour Unused Refund eligible (${minutesLeftForRefund} min remaining • 0 Pro features used).`
+                    })}
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-gray-400 dark:text-zinc-500">
+                    {hasClaimedRefund
+                      ? t('sub_refund_locked_claimed', '2-hour refund unavailable: one-time account refund was already claimed.')
+                      : proFeaturesUsed
+                        ? t('sub_refund_locked_used', '2-hour refund unavailable: MANAGED Pro features have been used during this billing cycle.')
+                        : t('sub_refund_locked_expired', '2-hour unused refund window has closed. Standard 1-click cancellation remains available.')}
+                  </p>
+                )}
+              </>
             ) : isRoleGrantedPro ? (
               <p>
                 {t(
@@ -450,39 +611,69 @@ export default function SettingsTab({
               <p>
                 {t(
                   'sub_free_notice',
-                  'Upgrade to MANAGED Pro for unlimited Wealth Objectives, multi-sheet Occasion Sandboxes, and Visual Excel Dashboards.'
+                  'Upgrade to MANAGED Pro for Formal & Visual Excel Audits, unlimited Custom Categories, unlimited Sterling AI commands, multi-sheet Sandboxes, and multi-goal Wealth Objectives.'
                 )}
               </p>
             )}
           </div>
 
-          <div className="shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             {isPaidPro ? (
-              !cancelAtPeriodEnd && (
-                <button
-                  type="button"
-                  onClick={handleOneClickCancel}
-                  disabled={isBillingBusy}
-                  className="px-4 py-2 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-md text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isBillingBusy
-                    ? t('canceling_sub', 'Canceling...')
-                    : t('cancel_subscription_btn', 'Cancel Subscription')}
-                </button>
-              )
+              <>
+                {!cancelAtPeriodEnd && !isResumingRefundCancel && (
+                  <button
+                    type="button"
+                    onClick={handleOneClickCancel}
+                    disabled={isBillingBusy}
+                    className="px-4 py-2 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-md text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isBillingBusy
+                      ? t('canceling_sub', 'Processing...')
+                      : t('cancel_subscription_btn', 'Cancel Subscription')}
+                  </button>
+                )}
+                {isRefundEligible && (
+                  <button
+                    type="button"
+                    onClick={handleRequestRefund}
+                    disabled={isBillingBusy}
+                    className="px-3.5 py-2 bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 border border-amber-300 dark:border-amber-500/30 rounded-md text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isBillingBusy
+                      ? t('processing', 'Processing...')
+                      : isResumingRefundCancel
+                        ? t('finish_refund_cancel_btn', 'Complete Refund Cancellation')
+                        : t('request_2h_refund_btn', 'Request 2-Hour Refund')}
+                  </button>
+                )}
+              </>
             ) : (
-              !isRoleGrantedPro && (
-                <button
-                  type="button"
-                  onClick={handleUpgradeClick}
-                  disabled={isBillingBusy}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isBillingBusy
-                    ? t('starting_checkout', 'Starting Checkout...')
-                    : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro')}
-                </button>
-              )
+              <>
+                {isResumingRefundCancel && (
+                  <button
+                    type="button"
+                    onClick={handleRequestRefund}
+                    disabled={isBillingBusy}
+                    className="px-3.5 py-2 bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 border border-amber-300 dark:border-amber-500/30 rounded-md text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isBillingBusy
+                      ? t('processing', 'Processing...')
+                      : t('finish_refund_cancel_btn', 'Complete Refund Cancellation')}
+                  </button>
+                )}
+                {!isRoleGrantedPro && !isResumingRefundCancel && !isRefundPendingProvider && (
+                  <button
+                    type="button"
+                    onClick={handleUpgradeClick}
+                    disabled={isBillingBusy}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isBillingBusy
+                      ? t('starting_checkout', 'Starting Checkout...')
+                      : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro')}
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>

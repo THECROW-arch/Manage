@@ -115,12 +115,18 @@ export default function App() {
   const [subscriptionStatus, setSubscriptionStatus] = useState('free');
   const [subscriptionPeriodEnd, setSubscriptionPeriodEnd] = useState(null);
   const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
+  const [subscriptionStartedAt, setSubscriptionStartedAt] = useState(null);
+  const [proFeaturesUsed, setProFeaturesUsed] = useState(false);
+  const [hasClaimedRefund, setHasClaimedRefund] = useState(false);
   const [upgradePromptFeature, setUpgradePromptFeature] = useState(null);
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
   const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
 
-  // Scopes checkout/sandbox Pro confirmation to the specific userId that upgraded
+  // Scopes checkout/sandbox Pro confirmation and invalidates stale profile reads when billing state changes
   const checkoutConfirmedProUserIdRef = useRef(null);
+  const billingStateEpochRef = useRef(0);
+  const proFeaturesAckedByUserRef = useRef({});
+  const proFeaturesSyncInFlightRef = useRef({});
 
   // Tracks pending checkout synchronization independently of the URL query parameter
   const [checkoutSyncState, setCheckoutSyncState] = useState(() => {
@@ -137,10 +143,71 @@ export default function App() {
   });
 
   const confirmProForUser = useCallback((uid) => {
+    billingStateEpochRef.current += 1;
     if (uid) {
       checkoutConfirmedProUserIdRef.current = uid;
+      delete proFeaturesAckedByUserRef.current[uid];
+      try {
+        localStorage.removeItem(`managed_pending_pro_used_${uid}`);
+      } catch {
+        // Ignore storage errors
+      }
     }
   }, []);
+
+  const clearConfirmedProForUser = useCallback((uid) => {
+    billingStateEpochRef.current += 1;
+    if (!uid || checkoutConfirmedProUserIdRef.current === uid) {
+      checkoutConfirmedProUserIdRef.current = null;
+    }
+  }, []);
+
+  const syncPendingProFeatureUsage = useCallback(async (targetUserId) => {
+    if (!targetUserId || proFeaturesAckedByUserRef.current[targetUserId] || proFeaturesSyncInFlightRef.current[targetUserId]) {
+      return;
+    }
+    const requestBillingEpoch = billingStateEpochRef.current;
+    proFeaturesSyncInFlightRef.current[targetUserId] = true;
+    try {
+      const { error } = await supabase.rpc('mark_pro_feature_used');
+      if (
+        !error &&
+        window.__activeUserId === targetUserId &&
+        billingStateEpochRef.current === requestBillingEpoch
+      ) {
+        proFeaturesAckedByUserRef.current[targetUserId] = true;
+        try {
+          localStorage.removeItem(`managed_pending_pro_used_${targetUserId}`);
+        } catch {
+          // Ignore storage errors
+        }
+      }
+    } catch {
+      // Retain pending localStorage flag for automatic retry
+    } finally {
+      proFeaturesSyncInFlightRef.current[targetUserId] = false;
+    }
+  }, []);
+
+  const markProFeatureUsed = useCallback(() => {
+    const uid = session?.user?.id;
+    if (
+      subscriptionTier !== 'pro' ||
+      !uid ||
+      (window.__activeUserId && window.__activeUserId !== uid)
+    ) {
+      return;
+    }
+    setProFeaturesUsed(true);
+    if (!proFeaturesAckedByUserRef.current[uid]) {
+      try {
+        localStorage.setItem(`managed_pending_pro_used_${uid}`, 'true');
+      } catch {
+        // Ignore storage errors
+      }
+      syncPendingProFeatureUsage(uid);
+    }
+  }, [subscriptionTier, session?.user?.id, syncPendingProFeatureUsage]);
 
   const hasProAccess = useMemo(() => {
     const cleanRole = String(userRole || '').trim().toLowerCase();
@@ -252,7 +319,7 @@ export default function App() {
 
   const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
 
-  const fetchUserData = async (userId, isBackgroundSync = false) => {
+  const fetchUserData = useCallback(async (userId, isBackgroundSync = false) => {
     const previousLoadedUserId = window.__loadedUserId;
     window.__activeUserId = userId;
     if (window.__fetchingUserId === userId) return;
@@ -270,9 +337,13 @@ export default function App() {
         setSubscriptionStatus('free');
         setSubscriptionPeriodEnd(null);
         setCancelAtPeriodEnd(false);
+        setSubscriptionStartedAt(null);
+        setProFeaturesUsed(false);
+        setHasClaimedRefund(false);
       }
     }
     try {
+      const billingEpochAtFetchStart = billingStateEpochRef.current;
       let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
       if (isStale()) return;
 
@@ -301,23 +372,48 @@ export default function App() {
         const loadedPeriodEnd = profile.subscription_period_end || null;
         const loadedCancelAtEnd = Boolean(profile.cancel_at_period_end);
 
-        if (loadedTier === 'pro') {
-          checkoutConfirmedProUserIdRef.current = userId;
-        }
-
-        // Preserve a checkout poll Pro result ONLY when it belongs to the exact userId being hydrated
-        const preserveCheckoutProForThisUser =
-          checkoutConfirmedProUserIdRef.current === userId && loadedTier !== 'pro';
-
         setUserRole(loadedRole);
-        if (preserveCheckoutProForThisUser) {
-          setSubscriptionTier('pro');
-          setSubscriptionStatus('active');
-        } else {
-          setSubscriptionTier(loadedTier);
-          setSubscriptionStatus(loadedStatus);
-          setSubscriptionPeriodEnd(loadedPeriodEnd);
-          setCancelAtPeriodEnd(loadedCancelAtEnd);
+
+        // Only apply profile billing fields if no newer client billing action (refund/cancel/upgrade) occurred while in flight
+        if (billingStateEpochRef.current === billingEpochAtFetchStart) {
+          if (loadedTier === 'pro') {
+            checkoutConfirmedProUserIdRef.current = userId;
+          }
+
+          const preserveCheckoutProForThisUser =
+            checkoutConfirmedProUserIdRef.current === userId && loadedTier !== 'pro';
+
+          if (preserveCheckoutProForThisUser) {
+            setSubscriptionTier('pro');
+            setSubscriptionStatus('active');
+          } else {
+            setSubscriptionTier(loadedTier);
+            setSubscriptionStatus(loadedStatus);
+            setSubscriptionPeriodEnd(loadedPeriodEnd);
+            setCancelAtPeriodEnd(loadedCancelAtEnd);
+          }
+
+          let hasPendingProUse = false;
+          try {
+            hasPendingProUse = localStorage.getItem(`managed_pending_pro_used_${userId}`) === 'true';
+          } catch {
+            hasPendingProUse = false;
+          }
+
+          if (profile.pro_features_used) {
+            proFeaturesAckedByUserRef.current[userId] = true;
+            try {
+              localStorage.removeItem(`managed_pending_pro_used_${userId}`);
+            } catch {
+              // Ignore storage errors
+            }
+          } else if (hasPendingProUse && loadedTier === 'pro') {
+            syncPendingProFeatureUsage(userId);
+          }
+
+          setSubscriptionStartedAt(profile.subscription_started_at || null);
+          setProFeaturesUsed(Boolean(profile.pro_features_used) || (loadedTier === 'pro' && hasPendingProUse));
+          setHasClaimedRefund(Boolean(profile.has_claimed_refund));
         }
 
         // Validate saved tab access against loaded role safely
@@ -456,7 +552,7 @@ export default function App() {
         window.__fetchingUserId = null;
       }
     }
-  };
+  }, [syncPendingProFeatureUsage]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -486,6 +582,9 @@ export default function App() {
         setSubscriptionStatus('free');
         setSubscriptionPeriodEnd(null);
         setCancelAtPeriodEnd(false);
+        setSubscriptionStartedAt(null);
+        setProFeaturesUsed(false);
+        setHasClaimedRefund(false);
         setCheckoutSyncState({ status: 'idle', retryCount: 0 });
         setDraftHydratedUserId(null);
         setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
@@ -499,21 +598,29 @@ export default function App() {
     return () => {
       authListener?.subscription?.unsubscribe();
     };
-  }, []);
+  }, [fetchUserData]);
 
   // Refresh subscription fields from profiles whenever Settings is opened so any background billing change is reflected
   useEffect(() => {
     if (!activeUserId || activeTab !== 'settings') return;
     let isCancelled = false;
     const targetUserId = activeUserId;
+    const billingEpochAtStart = billingStateEpochRef.current;
 
     supabase
       .from('profiles')
-      .select('role,subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end')
+      .select('role,subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end,subscription_started_at,pro_features_used,has_claimed_refund')
       .eq('user_id', targetUserId)
       .maybeSingle()
       .then(({ data }) => {
-        if (isCancelled || window.__activeUserId !== targetUserId || !data) return;
+        if (
+          isCancelled ||
+          window.__activeUserId !== targetUserId ||
+          billingStateEpochRef.current !== billingEpochAtStart ||
+          !data
+        ) {
+          return;
+        }
         const loadedTier = data.subscription_tier || 'free';
         if (loadedTier === 'pro') {
           checkoutConfirmedProUserIdRef.current = targetUserId;
@@ -531,12 +638,34 @@ export default function App() {
           setSubscriptionPeriodEnd(data.subscription_period_end || null);
           setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
         }
+
+        let hasPendingProUse = false;
+        try {
+          hasPendingProUse = localStorage.getItem(`managed_pending_pro_used_${targetUserId}`) === 'true';
+        } catch {
+          // Ignore storage errors; hasPendingProUse remains false
+        }
+
+        if (data.pro_features_used) {
+          proFeaturesAckedByUserRef.current[targetUserId] = true;
+          try {
+            localStorage.removeItem(`managed_pending_pro_used_${targetUserId}`);
+          } catch {
+            // Ignore storage errors
+          }
+        } else if (hasPendingProUse && loadedTier === 'pro') {
+          syncPendingProFeatureUsage(targetUserId);
+        }
+
+        setSubscriptionStartedAt(data.subscription_started_at || null);
+        setProFeaturesUsed(Boolean(data.pro_features_used) || (loadedTier === 'pro' && hasPendingProUse));
+        setHasClaimedRefund(Boolean(data.has_claimed_refund));
       });
 
     return () => {
       isCancelled = true;
     };
-  }, [activeUserId, activeTab]);
+  }, [activeUserId, activeTab, syncPendingProFeatureUsage]);
 
   // Poll profile subscription status when returning from checkout; survives language switches and provides manual retry recovery
   const tRef = useRef(t);
@@ -560,17 +689,30 @@ export default function App() {
     let attempts = 0;
     let timerId = null;
     const targetUserId = activeUserId;
+    const pollBillingEpoch = billingStateEpochRef.current;
 
     const pollSubscription = async () => {
-      if (isCancelled || window.__activeUserId !== targetUserId) return;
+      if (
+        isCancelled ||
+        window.__activeUserId !== targetUserId ||
+        billingStateEpochRef.current !== pollBillingEpoch
+      ) {
+        return;
+      }
       attempts += 1;
       const { data } = await supabase
         .from('profiles')
-        .select('subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end')
+        .select('subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end,subscription_started_at,pro_features_used,has_claimed_refund')
         .eq('user_id', targetUserId)
         .maybeSingle();
 
-      if (isCancelled || window.__activeUserId !== targetUserId) return;
+      if (
+        isCancelled ||
+        window.__activeUserId !== targetUserId ||
+        billingStateEpochRef.current !== pollBillingEpoch
+      ) {
+        return;
+      }
 
       if (data?.subscription_tier === 'pro') {
         checkoutConfirmedProUserIdRef.current = targetUserId;
@@ -578,6 +720,9 @@ export default function App() {
         setSubscriptionStatus(data.subscription_status || 'active');
         setSubscriptionPeriodEnd(data.subscription_period_end || null);
         setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
+        setSubscriptionStartedAt(data.subscription_started_at || new Date().toISOString());
+        setProFeaturesUsed(Boolean(data.pro_features_used));
+        setHasClaimedRefund(Boolean(data.has_claimed_refund));
         setCheckoutSyncState({ status: 'idle', retryCount: 0 });
         setAlertMsg(tRef.current('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
         return;
@@ -619,6 +764,9 @@ export default function App() {
       setSubscriptionStatus('free');
       setSubscriptionPeriodEnd(null);
       setCancelAtPeriodEnd(false);
+      setSubscriptionStartedAt(null);
+      setProFeaturesUsed(false);
+      setHasClaimedRefund(false);
       setCheckoutSyncState({ status: 'idle', retryCount: 0 });
       setDraftHydratedUserId(null);
       setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
@@ -1133,6 +1281,7 @@ export default function App() {
     if (!cleanName || isNaN(targetNum) || targetNum <= 0) {
       return { ok: false, code: 'invalid', error: 'Please provide a valid objective name and target amount.' };
     }
+    const wasMultiObjectiveExpansion = wealthObjectives.length >= 1;
     const newObjective = {
       id: crypto.randomUUID(),
       name: cleanName,
@@ -1144,6 +1293,9 @@ export default function App() {
       createdAt: getToday()
     };
     setWealthObjectives(prev => [newObjective, ...prev]);
+    if (wasMultiObjectiveExpansion) {
+      markProFeatureUsed();
+    }
     return { ok: true, objective: newObjective };
   };
 
@@ -1425,9 +1577,11 @@ export default function App() {
       const { generateFormalAudit, generateVisualDashboard } = await import('./utils/excelGenerator');
       if (exportFormat === 'formal') {
         await generateFormalAudit(reportData);
+        markProFeatureUsed();
         setAlertMsg(t('succ_export_formal', { period: targetPeriod }));
       } else {
         await generateVisualDashboard(reportData);
+        markProFeatureUsed();
         setAlertMsg(t('succ_export_visual', { period: targetPeriod }));
       }
     } catch (error) {
@@ -1706,6 +1860,7 @@ export default function App() {
       return;
     }
 
+    const wasProCategoryExpansion = categories.length >= 3;
     const goalVal = newCategoryType === 'asset' ? (parseFloat(newCategoryGoal) || 0) : 0;
     const colors = ['teal-600', 'orange-600', 'cyan-600', 'purple-600', 'rose-600', 'amber-600'];
     const tempId = crypto.randomUUID();
@@ -1725,6 +1880,9 @@ export default function App() {
       }]).select();
 
       if (error) throw error;
+      if (wasProCategoryExpansion) {
+        markProFeatureUsed();
+      }
       setCategories(current => current.map(c => c.id === tempId ? data[0] : c));
       if (newCategoryType !== 'asset' && !expenseCategoryId) setExpenseCategoryId(data[0].id);
       if (newCategoryType === 'asset' && !adjCatId) setAdjCatId(data[0].id);
@@ -1754,32 +1912,52 @@ export default function App() {
     }
   };
 
-  const handleDeleteCategory = async (id, percentage) => {
-    if (isReadOnly) return false;
-    if (categories.length <= 1) {
-      setAlertMsg(t('err_min_one_cat', 'You must keep at least one category in your budget. You can rename it instead!'));
-      return false;
-    }
-    const previousCategories = [...categories];
-    const previousExpenses = [...expenses];
-    const remainingCategories = categories.filter(c => c.id !== id).map(c => ({ ...c }));
+  const handleDeleteCategory = async (idToDelete) => {
+    if (isReadOnly) return;
+    if (categories.length <= 1) { setAlertMsg(t('err_keep_one_cat')); return; }
 
-    remainingCategories[0].percentage = Math.min(100, Number((remainingCategories[0].percentage + percentage).toFixed(2)));
+    const prevCategories = [...categories];
+    const prevExpenses = [...expenses];
+    const categoryToRemove = categories.find(c => c.id === idToDelete);
+    const remainingCategories = categories.filter(c => c.id !== idToDelete).map(c => ({ ...c }));
+    const changedCategories = [];
+
+    if (categoryToRemove && Number(categoryToRemove.percentage) > 0 && remainingCategories.length > 0) {
+      let freed = Number(categoryToRemove.percentage) || 0;
+      for (let i = 0; i < remainingCategories.length && freed > 0; i++) {
+        const currentPct = Number(remainingCategories[i].percentage) || 0;
+        const room = Math.max(0, 100 - currentPct);
+        if (room > 0) {
+          const add = Math.min(room, freed);
+          const nextPct = Number((currentPct + add).toFixed(1));
+          remainingCategories[i].percentage = nextPct;
+          changedCategories.push({ id: remainingCategories[i].id, percentage: nextPct });
+          freed = Number((freed - add).toFixed(1));
+        }
+      }
+    }
 
     setCategories(remainingCategories);
-    setLockedCategories(lockedCategories.filter(catId => catId !== id));
-    setExpenses(expenses.filter(e => e.category_id !== id));
-    if (expenseCategoryId === id) setExpenseCategoryId(remainingCategories.find(c => c.type !== 'asset')?.id || '');
+    setExpenses(expenses.filter(e => e.category_id !== idToDelete));
+    if (expenseCategoryId === idToDelete && remainingCategories.length > 0) setExpenseCategoryId(remainingCategories[0].id);
 
     try {
-      const { error } = await supabase.from('categories').delete().eq('id', id);
+      await supabase.from('expenses').delete().eq('category_id', idToDelete).eq('user_id', session.user.id);
+      const { error } = await supabase.from('categories').delete().eq('id', idToDelete).eq('user_id', session.user.id);
       if (error) throw error;
-      return true;
+
+      for (const updated of changedCategories) {
+        const { error: pctErr } = await supabase
+          .from('categories')
+          .update({ percentage: updated.percentage })
+          .eq('id', updated.id)
+          .eq('user_id', session.user.id);
+        if (pctErr) throw pctErr;
+      }
     } catch {
-      setAlertMsg(t('err_db_delete_cat'));
-      setCategories(previousCategories);
-      setExpenses(previousExpenses);
-      return false;
+      setAlertMsg(t('err_del_cat'));
+      setCategories(prevCategories);
+      setExpenses(prevExpenses);
     }
   };
 
@@ -2127,6 +2305,7 @@ export default function App() {
     const budget = parseFloat(newSheetBudget);
     if (!newSheetTitle.trim() || isNaN(budget) || budget <= 0) return;
 
+    const wasProSandboxExpansion = sandboxSheets.length >= 1;
     const tempId = crypto.randomUUID();
     const newSheet = {
       id: tempId, title: newSheetTitle.trim(), totalBudget: budget,
@@ -2144,6 +2323,9 @@ export default function App() {
         total_budget: newSheet.totalBudget, buckets: newSheet.buckets, expenses: newSheet.expenses
       }]);
       if (error) throw error;
+      if (wasProSandboxExpansion) {
+        markProFeatureUsed();
+      }
     } catch {
       setAlertMsg(t('err_save_sandbox_db'));
       setSandboxSheets(current => current.filter(s => s.id !== tempId));
@@ -2153,9 +2335,9 @@ export default function App() {
 
   const handleAddSubBucket = (e) => {
     e.preventDefault();
-    if (!activeSheet) return;
+    if (isReadOnly) return;
     const limit = parseFloat(subBucketLimit);
-    if (!subBucketName.trim() || isNaN(limit) || limit <= 0) return;
+    if (!subBucketName.trim() || isNaN(limit) || limit <= 0 || !activeSheet) return;
 
     const existingBucketsTotal = activeSheet.buckets.reduce((s, b) => s + b.limit, 0);
     if (existingBucketsTotal + limit > activeSheet.totalBudget) {
@@ -2175,9 +2357,9 @@ export default function App() {
 
   const handleAddSandboxExpense = (e) => {
     e.preventDefault();
-    if (!activeSheet) return;
+    if (isReadOnly) return;
     const cost = parseFloat(sandboxExpCost);
-    if (!sandboxExpName.trim() || isNaN(cost) || cost <= 0) return;
+    if (!sandboxExpName.trim() || isNaN(cost) || cost <= 0 || !sandboxExpBucketId || !activeSheet) return;
 
     const updatedSheet = {
       ...activeSheet,
@@ -2257,10 +2439,6 @@ export default function App() {
       is_batched: isBatched,
       bundle_id: null
     };
-
-    if (isRecurring && pendingFreq) {
-      updateExpenseMeta(tempId, { recurrenceType: pendingFreq });
-    }
 
     setExpenses([newExpenseObj, ...expenses]);
     setExpenseName('');
@@ -2374,25 +2552,26 @@ export default function App() {
 
   const handleAddAdjustment = async (e) => {
     e.preventDefault();
-    const amt = parseFloat(adjAmount);
-    if (!adjCatId || isNaN(amt) || !adjDate) return;
+    if (isReadOnly) return;
+    const val = parseFloat(adjAmount);
+    if (!adjCatId || isNaN(val) || val === 0 || !adjNote.trim()) return;
 
     const tempId = crypto.randomUUID();
-    const newAdj = { id: tempId, user_id: session.user.id, category_id: adjCatId, amount: amt, adjustment_date: adjDate, note: adjNote };
+    const targetAdjDate = adjDate || `${selectedMonth}-${getToday().slice(8, 10)}`;
+    const prevAdjustments = [...assetAdjustments];
 
-    setAssetAdjustments([newAdj, ...assetAdjustments]);
-    setAdjAmount('');
-    setAdjNote('');
+    setAssetAdjustments([{ id: tempId, user_id: session.user.id, category_id: adjCatId, amount: val, note: adjNote.trim(), adjustment_date: targetAdjDate }, ...assetAdjustments]);
+    setAdjAmount(''); setAdjNote('');
 
     try {
       const { data, error } = await supabase.from('asset_adjustments').insert([{
-        user_id: session.user.id, category_id: adjCatId, amount: amt, adjustment_date: adjDate, note: adjNote
+        user_id: session.user.id, category_id: adjCatId, amount: val, note: adjNote.trim(), adjustment_date: targetAdjDate
       }]).select();
-
       if (error) throw error;
       setAssetAdjustments(current => current.map(a => a.id === tempId ? data[0] : a));
     } catch {
-      setAlertMsg(t('err_db_save_adj'));
+      setAssetAdjustments(prevAdjustments);
+      setAlertMsg(t('err_log_adj'));
     }
   };
 
@@ -2966,7 +3145,14 @@ export default function App() {
                 setSubscriptionPeriodEnd={setSubscriptionPeriodEnd}
                 cancelAtPeriodEnd={cancelAtPeriodEnd}
                 setCancelAtPeriodEnd={setCancelAtPeriodEnd}
+                subscriptionStartedAt={subscriptionStartedAt}
+                setSubscriptionStartedAt={setSubscriptionStartedAt}
+                proFeaturesUsed={proFeaturesUsed}
+                setProFeaturesUsed={setProFeaturesUsed}
+                hasClaimedRefund={hasClaimedRefund}
+                setHasClaimedRefund={setHasClaimedRefund}
                 onConfirmProForUser={confirmProForUser}
+                onClearConfirmedProForUser={clearConfirmedProForUser}
               />
             )}
             {activeTab === 'support' && (
@@ -2995,6 +3181,7 @@ export default function App() {
           userId={activeUserId}
           hasProAccess={hasProAccess}
           onRequireProUpgrade={setUpgradePromptFeature}
+          onMarkProFeatureUsed={markProFeatureUsed}
           lastAddedExpenseId={lastAddedExpenseId}
           parsedSalary={parsedSalary}
           salary={salary}
@@ -3075,6 +3262,7 @@ export default function App() {
               setUpgradePromptFeature('unlimited_sandbox_sheets');
               return { ok: false, error: 'Free accounts include **1 Sandbox Sheet**. Upgrade to **MANAGED Pro** for unlimited Sandbox sheets!' };
             }
+            const wasProSandboxExpansion = sandboxSheets.length >= 1;
             const tempId = crypto.randomUUID();
             const newSheet = { id: tempId, title: title.trim(), totalBudget, buckets: [], expenses: [] };
             const { error } = await supabase.from('sandbox_sheets').insert([{
@@ -3086,6 +3274,9 @@ export default function App() {
               expenses: []
             }]);
             if (error) return { ok: false, error: 'Database error while creating Sandbox sheet.' };
+            if (wasProSandboxExpansion) {
+              markProFeatureUsed();
+            }
             setSandboxSheets(prev => [newSheet, ...prev]);
             setActiveSheetId(tempId);
             return { ok: true, sheet: newSheet };
@@ -3177,6 +3368,7 @@ export default function App() {
                 error: t('ai_err_category_limit_pro', 'Free Tier workspaces include up to 3 budget categories. Upgrade to MANAGED Pro to create unlimited custom categories.')
               };
             }
+            const wasProCategoryExpansion = categories.length >= 3;
             const cleanName = (name || '').trim();
             if (!cleanName) return { ok: false, error: 'Please provide a valid category name.' };
 
@@ -3199,6 +3391,10 @@ export default function App() {
 
             if (error || !data || data.length === 0) {
               return { ok: false, error: 'Database error while creating category.' };
+            }
+
+            if (wasProCategoryExpansion) {
+              markProFeatureUsed();
             }
 
             const createdCat = data[0];

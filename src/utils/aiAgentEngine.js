@@ -1,6 +1,6 @@
 import i18n from '../i18n';
 import { calculateProgressiveTax, getToday } from './constants';
-import { tryConsumeAICommandQuota } from './aiQuotaManager';
+import { tryConsumeAICommandQuota, getActiveAIUsageTimestamps, FREE_AI_COMMAND_LIMIT } from './aiQuotaManager';
 /**
  * Normalizes common user spelling typos and maps French, Spanish, and Arabic
  * natural-language commands into canonical intent tokens so all 23 handlers work across languages.
@@ -206,7 +206,18 @@ export async function processAIAgentTurn(rawInput, ctx) {
 
     const hasProAccess = Boolean(ctx?.hasProAccess);
     const quotaUserId = ctx?.userId || null;
-    if (!hasProAccess && quotaUserId) {
+    if (hasProAccess) {
+        if (quotaUserId) {
+            const usedInWindow = getActiveAIUsageTimestamps(quotaUserId).length;
+            if (usedInWindow >= FREE_AI_COMMAND_LIMIT) {
+                ctx?.onMarkProFeatureUsed?.();
+            } else {
+                tryConsumeAICommandQuota(quotaUserId, false);
+            }
+        } else {
+            ctx?.onMarkProFeatureUsed?.();
+        }
+    } else if (quotaUserId) {
         const reservation = tryConsumeAICommandQuota(quotaUserId, false);
         if (!reservation.allowed) {
             ctx?.onRequireProUpgrade?.('sterling_ai_unlimited');
