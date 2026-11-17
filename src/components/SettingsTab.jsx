@@ -123,8 +123,12 @@ export default function SettingsTab({
   const minutesLeftForRefund = isWithinTwoHours
     ? Math.max(1, Math.ceil((TWO_HOURS_MS - (nowTick - startedAtMs)) / 60000))
     : 0;
+  const isResumingRefundCancel = subscriptionStatus === 'refund_cancel_pending';
+  const isRefundPendingProvider = subscriptionStatus === 'refund_pending';
   const isRefundEligible =
-    isPaidPro && isWithinTwoHours && !proFeaturesUsed && !hasClaimedRefund;
+    isPaidPro &&
+    !isRefundPendingProvider &&
+    (isResumingRefundCancel || (isWithinTwoHours && !proFeaturesUsed && !hasClaimedRefund));
 
   /**
    * Starts a MANAGED Pro checkout session or sandbox upgrade.
@@ -356,13 +360,19 @@ export default function SettingsTab({
       }
 
       if (!res?.ok) {
+        if (res?.subscriptionStatus) {
+          setSubscriptionStatus?.(res.subscriptionStatus);
+        }
+        if (res?.retryableCancel) {
+          setHasClaimedRefund?.(true);
+        }
         if (canUpdateLocalUI()) {
           setBillingState({
             account: originAccount,
             busy: false,
             msg: {
               text: res?.error || t('err_refund_sub', 'Could not process your refund request right now.'),
-              type: 'error'
+              type: res?.pending ? 'success' : 'error'
             }
           });
         }

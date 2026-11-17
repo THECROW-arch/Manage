@@ -65,6 +65,93 @@ async function computeHmacSha256Hex(secret: string, message: string): Promise<st
     .join("");
 }
 
+/**
+ * Parses ISO date strings, numeric epoch milliseconds, or numeric epoch seconds.
+ * Returns null if the input cannot be parsed as a valid timestamp.
+ */
+function parseFlexibleTimestamp(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    return new Date(ms).toISOString();
+  }
+  const str = String(raw).trim();
+  if (!str) return null;
+  if (/^\d+$/.test(str)) {
+    const num = Number(str);
+    if (Number.isFinite(num) && num > 0) {
+      const ms = num < 1e12 ? num * 1000 : num;
+      return new Date(ms).toISOString();
+    }
+  }
+  const parsed = Date.parse(str);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+/**
+ * Extracts a valid Creem transaction ID (excluding order IDs that start with 'ord_').
+ */
+function pickValidTransactionId(...candidates: unknown[]): string {
+  for (const cand of candidates) {
+    if (!cand) continue;
+    const raw =
+      typeof cand === "object" && cand !== null
+        ? (cand as Record<string, unknown>).id
+        : cand;
+    const str = String(raw || "").trim();
+    if (str && !str.startsWith("ord_")) {
+      return str;
+    }
+  }
+  return "";
+}
+
+async function hasRecordedBillingEvent(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  eventId: string
+): Promise<boolean> {
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}&select=event_id`,
+    {
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`
+      }
+    }
+  );
+  if (!res.ok) return false;
+  const rows = await res.json().catch(() => []);
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+async function recordBillingEvent(params: {
+  supabaseUrl: string;
+  serviceRoleKey: string;
+  eventId: string;
+  provider: string;
+  eventType: string;
+  userId: string;
+}): Promise<boolean> {
+  const { supabaseUrl, serviceRoleKey, eventId, provider, eventType, userId } = params;
+  const res = await fetch(`${supabaseUrl}/rest/v1/billing_webhook_events`, {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal"
+    },
+    body: JSON.stringify({
+      event_id: eventId,
+      provider,
+      event_type: eventType,
+      user_id: userId
+    })
+  });
+  return res.ok || res.status === 409;
+}
+
 async function updateProfileBillingRow(params: {
   supabaseUrl: string;
   serviceRoleKey: string;
@@ -113,6 +200,40 @@ async function updateProfileBillingRow(params: {
   };
 }
 
+/**
+ * Queries Creem's subscription endpoint to resolve the latest refundable transaction ID
+ * when a profile has a subscription_id but no stored transaction ID.
+ */
+async function resolveCreemTransactionIdFromSubscription(
+  creemBaseUrl: string,
+  creemApiKey: string,
+  subId: string
+): Promise<string> {
+  if (!creemApiKey || !subId) return "";
+  try {
+    const resp = await fetch(
+      `${creemBaseUrl}/v1/subscriptions?subscription_id=${encodeURIComponent(subId)}`,
+      {
+        method: "GET",
+        headers: {
+          "x-api-key": creemApiKey,
+          Accept: "application/json"
+        }
+      }
+    );
+    if (!resp.ok) return "";
+    const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+    return pickValidTransactionId(
+      data.last_transaction_id,
+      data.last_transaction,
+      data.transaction_id,
+      data.transaction
+    );
+  } catch {
+    return "";
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -137,6 +258,11 @@ Deno.serve(async (req: Request) => {
   }
 
   const rawBody = await req.text();
+  const creemApiKey = Deno.env.get("CREEM_API_KEY") || "";
+  const creemProductId = Deno.env.get("CREEM_PRODUCT_ID") || "";
+  const creemBaseUrl =
+    Deno.env.get("CREEM_API_BASE_URL") ||
+    (creemApiKey.startsWith("creem_test_") ? "https://test-api.creem.io" : "https://api.creem.io");
 
   // 1. WEBHOOK PATH: Verify HMAC-SHA256 signature (Creem or Lemon Squeezy)
   const creemSig = req.headers.get("creem-signature");
@@ -180,11 +306,12 @@ Deno.serve(async (req: Request) => {
     const isCreem = Boolean(creemSig) || Boolean(eventPayload.eventType);
     const providerName = isCreem ? "creem" : "lemonsqueezy";
 
+    let providerEnvelopeId = "";
     let eventName = "";
     let customUserId = "";
     let subId = "";
     let orderId = "";
-    let eventUpdatedAt = new Date().toISOString();
+    let parsedEventTimeIso: string | null = null;
     let renewsAt: string | null = null;
     let isCancelled = false;
     let isExpired = false;
@@ -192,6 +319,7 @@ Deno.serve(async (req: Request) => {
     let isInitialCreation = false;
 
     if (isCreem) {
+      providerEnvelopeId = String(eventPayload.id || "").trim();
       eventName = String(eventPayload.eventType || eventPayload.event_type || "unknown");
       if (!SUPPORTED_CREEM_EVENTS.has(eventName)) {
         return new Response(JSON.stringify({ ok: true, ignoredEvent: eventName }), {
@@ -202,31 +330,58 @@ Deno.serve(async (req: Request) => {
 
       const obj = (eventPayload.object as Record<string, unknown>) || {};
       const metadata = (obj.metadata as Record<string, unknown>) || {};
-      const subObj = (obj.subscription as Record<string, unknown>) || {};
-      const orderObj = (obj.order as Record<string, unknown>) || {};
+      const subField = obj.subscription;
+      const subObj =
+        typeof subField === "object" && subField !== null
+          ? (subField as Record<string, unknown>)
+          : {};
+      const orderObj =
+        typeof obj.order === "object" && obj.order !== null
+          ? (obj.order as Record<string, unknown>)
+          : {};
 
-      customUserId = String(metadata.user_id || obj.request_id || "");
-      subId = String(
-        obj.Object === "subscription" || obj.object === "subscription"
-          ? obj.id || ""
-          : subObj.id || obj.subscription_id || obj.id || ""
-      );
-      orderId = String(
-        obj.last_transaction_id ||
-          orderObj.transaction ||
-          orderObj.id ||
-          obj.transaction_id ||
+      customUserId = String(
+        metadata.user_id ||
+          (subObj.metadata as Record<string, unknown>)?.user_id ||
+          obj.request_id ||
           ""
+      ).trim();
+
+      const objType = String(obj.object || obj.Object || "").toLowerCase();
+      if (objType === "subscription") {
+        subId = String(obj.id || "").trim();
+      } else if (typeof subField === "string") {
+        subId = subField.trim();
+      } else {
+        subId = String(subObj.id || obj.subscription_id || "").trim();
+      }
+
+      // Store only a valid refundable transaction ID (never an ord_ order ID)
+      orderId = pickValidTransactionId(
+        obj.last_transaction_id,
+        obj.last_transaction,
+        subObj.last_transaction_id,
+        subObj.last_transaction,
+        obj.transaction_id,
+        obj.transaction,
+        orderObj.transaction,
+        objType === "refund" ? obj.transaction : ""
       );
 
-      const rawTime = obj.updated_at || obj.created_at || eventPayload.created_at;
-      const parsedTime = rawTime ? Date.parse(String(rawTime)) : NaN;
-      eventUpdatedAt = Number.isFinite(parsedTime)
-        ? new Date(parsedTime).toISOString()
-        : new Date().toISOString();
+      if (!orderId && subId && creemApiKey) {
+        orderId = await resolveCreemTransactionIdFromSubscription(creemBaseUrl, creemApiKey, subId);
+      }
+
+      parsedEventTimeIso =
+        parseFlexibleTimestamp(obj.updated_at) ||
+        parseFlexibleTimestamp(obj.created_at) ||
+        parseFlexibleTimestamp(eventPayload.created_at);
 
       const periodEndRaw =
-        obj.current_period_end_date || subObj.current_period_end_date || obj.next_transaction_date || null;
+        obj.current_period_end_date ||
+        subObj.current_period_end_date ||
+        obj.next_transaction_date ||
+        null;
       renewsAt = periodEndRaw ? String(periodEndRaw) : null;
 
       const statusStr = String(obj.status || "").toLowerCase();
@@ -245,6 +400,7 @@ Deno.serve(async (req: Request) => {
       const dataObj = (eventPayload.data as Record<string, unknown>) || {};
       const attrs = (dataObj.attributes as Record<string, unknown>) || {};
 
+      providerEnvelopeId = String(meta.webhook_id || "").trim();
       eventName = String(meta.event_name || "unknown");
       const resourceType = String(dataObj.type || "");
 
@@ -258,15 +414,19 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      customUserId = String(customData.user_id || "");
-      subId = String(attrs.subscription_id || dataObj.id || "");
-      orderId = String(attrs.order_id || (eventName === "order_refunded" ? dataObj.id : "") || "");
+      const isOrderResource = resourceType === "orders" || eventName === "order_refunded";
+      customUserId = String(customData.user_id || "").trim();
+      // Keep subscription IDs and order IDs strictly separate
+      subId = isOrderResource
+        ? String(attrs.subscription_id || "").trim()
+        : String(dataObj.id || "").trim();
+      orderId = isOrderResource
+        ? String(dataObj.id || attrs.order_id || "").trim()
+        : String(attrs.order_id || "").trim();
 
-      const rawUpdatedAt = attrs.updated_at ? String(attrs.updated_at) : "";
-      const parsedTime = rawUpdatedAt ? Date.parse(rawUpdatedAt) : NaN;
-      eventUpdatedAt = Number.isFinite(parsedTime)
-        ? new Date(parsedTime).toISOString()
-        : new Date().toISOString();
+      parsedEventTimeIso =
+        parseFlexibleTimestamp(attrs.updated_at) ||
+        parseFlexibleTimestamp(attrs.created_at);
 
       const renewsRaw = attrs.renews_at || attrs.ends_at || null;
       renewsAt = renewsRaw ? String(renewsRaw) : null;
@@ -276,7 +436,56 @@ Deno.serve(async (req: Request) => {
       isInitialCreation = eventName === "subscription_created";
     }
 
-    const eventId = `${eventName}_${subId || orderId}_${eventUpdatedAt}`;
+    // Look up existing profile by user_id, subscription_id, or subscription_order_id
+    // so refund webhooks without custom metadata resolve their owning account and preserve associations
+    let existingProfile: Record<string, unknown> | null = null;
+    const lookupFilters: string[] = [];
+    if (customUserId) {
+      lookupFilters.push(`user_id=eq.${encodeURIComponent(customUserId)}`);
+    }
+    if (subId) {
+      lookupFilters.push(
+        `subscription_provider=eq.${encodeURIComponent(providerName)}&subscription_id=eq.${encodeURIComponent(subId)}`
+      );
+    }
+    if (orderId) {
+      lookupFilters.push(
+        `subscription_provider=eq.${encodeURIComponent(providerName)}&subscription_order_id=eq.${encodeURIComponent(orderId)}`
+      );
+    }
+
+    for (const filter of lookupFilters) {
+      const profLookupRes = await fetch(
+        `${supabaseUrl}/rest/v1/profiles?${filter}&select=user_id,subscription_id,subscription_order_id,subscription_started_at,pro_features_used,subscription_updated_at`,
+        {
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
+        }
+      );
+      if (!profLookupRes.ok) {
+        return new Response(
+          JSON.stringify({ error: "Failed to query profile association for webhook." }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      const rows = await profLookupRes.json().catch(() => []);
+      if (Array.isArray(rows) && rows[0]) {
+        existingProfile = rows[0] as Record<string, unknown>;
+        break;
+      }
+    }
+
+    if (!customUserId && existingProfile?.user_id) {
+      customUserId = String(existingProfile.user_id);
+    }
+    if (!subId && existingProfile?.subscription_id) {
+      subId = String(existingProfile.subscription_id);
+    }
+    if (!orderId && existingProfile?.subscription_order_id) {
+      orderId = String(existingProfile.subscription_order_id);
+    }
 
     if (!customUserId || (!subId && !orderId)) {
       return new Response(
@@ -285,25 +494,22 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const existingDedupRes = await fetch(
-      `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}&select=event_id`,
-      {
-        headers: {
-          apikey: serviceRoleKey,
-          Authorization: `Bearer ${serviceRoleKey}`
-        }
-      }
+    // Build a deterministic deduplication key from the provider event ID (or payload hash fallback)
+    const eventUpdatedAt = parsedEventTimeIso || new Date().toISOString();
+    const payloadHash =
+      !providerEnvelopeId && !parsedEventTimeIso
+        ? (await computeHmacSha256Hex("webhook_dedup", rawBody)).slice(0, 24)
+        : "";
+    const eventId = providerEnvelopeId
+      ? `${providerName}_${providerEnvelopeId}`
+      : `${providerName}_${eventName}_${subId || orderId}_${parsedEventTimeIso || payloadHash}`;
+
+    const alreadyProcessed = await hasRecordedBillingEvent(
+      supabaseUrl,
+      serviceRoleKey,
+      eventId
     );
-
-    if (!existingDedupRes.ok) {
-      return new Response(JSON.stringify({ error: "Failed to check webhook deduplication state." }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
-
-    const existingDedupRows = await existingDedupRes.json().catch(() => []);
-    if (Array.isArray(existingDedupRows) && existingDedupRows.length > 0) {
+    if (alreadyProcessed) {
       return new Response(JSON.stringify({ ok: true, duplicate: true }), {
         status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -331,7 +537,14 @@ Deno.serve(async (req: Request) => {
     if (orderId) {
       updateBody.subscription_order_id = orderId;
     }
-    if (isInitialCreation) {
+
+    // Only initialize subscription_started_at and reset pro_features_used when activating a brand-new subscription ID
+    const isSameExistingSubscription =
+      Boolean(subId) &&
+      existingProfile?.subscription_id === subId &&
+      Boolean(existingProfile?.subscription_started_at);
+
+    if (isInitialCreation && !isSameExistingSubscription) {
       updateBody.subscription_started_at = eventUpdatedAt;
       updateBody.pro_features_used = false;
     }
@@ -355,27 +568,7 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      const checkProfRes = await fetch(
-        `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(customUserId)}&select=user_id,subscription_updated_at`,
-        {
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`
-          }
-        }
-      );
-
-      if (!checkProfRes.ok) {
-        return new Response(JSON.stringify({ error: "Failed to verify profile after conditional update." }), {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
-
-      const checkRows = await checkProfRes.json().catch(() => []);
-      const existingProf = Array.isArray(checkRows) ? checkRows[0] : null;
-
-      if (!existingProf) {
+      if (!existingProfile) {
         return new Response(JSON.stringify({ error: "Target user profile not found for webhook." }), {
           status: 404,
           headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -388,25 +581,14 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const dedupInsertRes = await fetch(`${supabaseUrl}/rest/v1/billing_webhook_events`, {
-      method: "POST",
-      headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
-        "Content-Type": "application/json",
-        Prefer: "return=minimal"
-      },
-      body: JSON.stringify({
-        event_id: eventId,
-        provider: providerName,
-        event_type: eventName,
-        user_id: customUserId
-      })
+    await recordBillingEvent({
+      supabaseUrl,
+      serviceRoleKey,
+      eventId,
+      provider: providerName,
+      eventType: eventName,
+      userId: customUserId
     });
-
-    if (!dedupInsertRes.ok && dedupInsertRes.status !== 409) {
-      console.warn("Could not record completed webhook event_id:", eventId);
-    }
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -464,17 +646,11 @@ Deno.serve(async (req: Request) => {
 
   const action = String(body.action || "");
   const allowSandboxSim = Deno.env.get("ALLOW_SANDBOX_SIMULATION") === "true";
-  const creemApiKey = Deno.env.get("CREEM_API_KEY") || "";
-  const creemProductId = Deno.env.get("CREEM_PRODUCT_ID") || "";
-  const creemBaseUrl =
-    Deno.env.get("CREEM_API_BASE_URL") ||
-    (creemApiKey.startsWith("creem_test_") ? "https://test-api.creem.io" : "https://api.creem.io");
 
   // ACTION A: CREATE CHECKOUT SESSION
   if (action === "create_checkout") {
     const returnUrl = String(body.returnUrl || "https://sterlingmanagedapp.com/?checkout=success");
 
-    // 1. Creem API dynamic checkout session
     if (creemApiKey && creemProductId) {
       const creemResp = await fetch(`${creemBaseUrl}/v1/checkouts`, {
         method: "POST",
@@ -508,7 +684,6 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // 2. Direct Hosted Checkout URL fallback
     const checkoutBaseUrl = Deno.env.get("PAYMENT_CHECKOUT_URL") || "";
     if (checkoutBaseUrl) {
       const separator = checkoutBaseUrl.includes("?") ? "&" : "?";
@@ -524,10 +699,10 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // 3. Sandbox simulation mode
     if (allowSandboxSim) {
       const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
       const nowIso = new Date().toISOString();
+      const simNonce = Date.now().toString(36);
 
       const simWrite = await updateProfileBillingRow({
         supabaseUrl,
@@ -537,8 +712,8 @@ Deno.serve(async (req: Request) => {
           subscription_tier: "pro",
           subscription_status: "active",
           subscription_provider: "sandbox",
-          subscription_id: `sub_sandbox_${userId.slice(0, 8)}`,
-          subscription_order_id: `ord_sandbox_${userId.slice(0, 8)}`,
+          subscription_id: `sub_sandbox_${userId.slice(0, 8)}_${simNonce}`,
+          subscription_order_id: `tx_sandbox_${userId.slice(0, 8)}_${simNonce}`,
           subscription_started_at: nowIso,
           pro_features_used: false,
           subscription_period_end: periodEnd,
@@ -736,7 +911,7 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  // ACTION C: 2-HOUR UNUSED SUBSCRIPTION REFUND
+  // ACTION C: 2-HOUR UNUSED SUBSCRIPTION REFUND (With Idempotent Recovery & Cancellation Verification)
   if (action === "request_refund") {
     const profRes = await fetch(
       `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}&select=subscription_tier,subscription_status,subscription_provider,subscription_id,subscription_order_id,subscription_started_at,pro_features_used,has_claimed_refund`,
@@ -758,98 +933,121 @@ Deno.serve(async (req: Request) => {
     const rows = await profRes.json().catch(() => []);
     const profile = Array.isArray(rows) ? rows[0] : null;
 
-    if (!profile || profile.subscription_tier !== "pro") {
+    if (!profile) {
       return new Response(
-        JSON.stringify({ ok: false, error: "No active MANAGED Pro subscription found to refund." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Rule 1: One-time lifetime refund limit per account
-    if (profile.has_claimed_refund) {
-      return new Response(
-        JSON.stringify({
-          ok: false,
-          error: "Refund ineligible: this account has already claimed a one-time subscription refund previously."
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Rule 2: Zero Pro feature usage requirement
-    if (profile.pro_features_used) {
-      return new Response(
-        JSON.stringify({
-          ok: false,
-          error:
-            "Refund ineligible: MANAGED Pro features have already been used during this subscription. You can still cancel recurring billing with one click."
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Rule 3: Strict 2-hour window since subscription_started_at
-    const startedAtRaw = profile.subscription_started_at ? String(profile.subscription_started_at) : "";
-    const startedAtMs = startedAtRaw ? Date.parse(startedAtRaw) : NaN;
-    if (!Number.isFinite(startedAtMs) || Date.now() - startedAtMs > TWO_HOURS_MS) {
-      return new Response(
-        JSON.stringify({
-          ok: false,
-          error:
-            "Refund ineligible: the 2-hour unused refund window has expired. You can still cancel future recurring billing at any time."
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ ok: false, error: "User profile not found." }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const provider = String(profile.subscription_provider || "");
     const subId = String(profile.subscription_id || "");
-    const orderId = String(profile.subscription_order_id || "");
+    let orderId = String(profile.subscription_order_id || "");
+    const currentStatus = String(profile.subscription_status || "");
+
+    // Resolve Creem transaction ID from subscription if missing or if an ord_ ID was stored
+    if (provider === "creem" && (!orderId || orderId.startsWith("ord_")) && subId && creemApiKey) {
+      const resolvedTx = await resolveCreemTransactionIdFromSubscription(
+        creemBaseUrl,
+        creemApiKey,
+        subId
+      );
+      if (resolvedTx) {
+        orderId = resolvedTx;
+        await updateProfileBillingRow({
+          supabaseUrl,
+          serviceRoleKey,
+          userId,
+          patchBody: { subscription_order_id: orderId }
+        });
+      }
+    }
+
+    const refundKeyId = subId || orderId || userId;
+    const refundTxMarkerId = `refund_tx_${provider}_${refundKeyId}`;
+    const refundCancelMarkerId = `refund_cancel_done_${provider}_${refundKeyId}`;
+    const refundPendingMarkerId = `refund_pending_${provider}_${refundKeyId}`;
+
+    const [txAlreadyRefunded, cancelAlreadyCompleted, isRefundPending] = await Promise.all([
+      hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundTxMarkerId),
+      hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundCancelMarkerId),
+      hasRecordedBillingEvent(supabaseUrl, serviceRoleKey, refundPendingMarkerId)
+    ]);
+
+    const isResumingPartialRefund =
+      txAlreadyRefunded || currentStatus === "refund_cancel_pending";
+
+    if (currentStatus === "refund_pending" || (isRefundPending && !txAlreadyRefunded)) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          pending: true,
+          subscriptionStatus: "refund_pending",
+          error:
+            "Your refund is currently pending confirmation with the payment provider. Your workspace will update automatically as soon as the provider completes the refund."
+        }),
+        { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Standard eligibility checks apply only when starting a fresh refund (not when finishing a partially completed refund)
+    if (!isResumingPartialRefund) {
+      if (profile.subscription_tier !== "pro") {
+        return new Response(
+          JSON.stringify({ ok: false, error: "No active MANAGED Pro subscription found to refund." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (profile.has_claimed_refund) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "Refund ineligible: this account has already claimed a one-time subscription refund previously."
+          }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (profile.pro_features_used) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error:
+              "Refund ineligible: MANAGED Pro features have already been used during this subscription. You can still cancel recurring billing with one click."
+          }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const startedAtRaw = profile.subscription_started_at ? String(profile.subscription_started_at) : "";
+      const startedAtMs = startedAtRaw ? Date.parse(startedAtRaw) : NaN;
+      if (!Number.isFinite(startedAtMs) || Date.now() - startedAtMs > TWO_HOURS_MS) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error:
+              "Refund ineligible: the 2-hour unused refund window has expired. You can still cancel future recurring billing at any time."
+          }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
     const lemonApiKey = Deno.env.get("LEMONSQUEEZY_API_KEY") || "";
 
-    // Rule 4: Execute provider refund & immediate cancellation before revoking access
+    // Validate required provider credentials and refundable transaction/order IDs BEFORE calling provider endpoints
     if (provider !== "sandbox") {
       if (provider === "creem") {
-        if (!creemApiKey || (!orderId && !subId)) {
+        if (!creemApiKey || !orderId || orderId.startsWith("ord_")) {
           return new Response(
             JSON.stringify({
               ok: false,
-              error: "Cannot process refund: Creem transaction/subscription credentials are not configured."
+              error:
+                "Cannot process refund: no refundable Creem transaction ID is available for this subscription yet."
             }),
             { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
-        }
-
-        if (orderId) {
-          const refundResp = await fetch(`${creemBaseUrl}/v1/refunds`, {
-            method: "POST",
-            headers: {
-              "x-api-key": creemApiKey,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              transaction_id: orderId,
-              reason: "requested_by_customer"
-            })
-          });
-
-          if (!refundResp.ok) {
-            return new Response(
-              JSON.stringify({ ok: false, error: "Payment provider could not process the refund right now." }),
-              { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-            );
-          }
-        }
-
-        if (subId) {
-          await fetch(`${creemBaseUrl}/v1/subscriptions/${encodeURIComponent(subId)}/cancel`, {
-            method: "POST",
-            headers: {
-              "x-api-key": creemApiKey,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ mode: "immediate" })
-          }).catch(() => null);
         }
       } else if (provider === "lemonsqueezy") {
         if (!lemonApiKey || !orderId) {
@@ -861,7 +1059,91 @@ Deno.serve(async (req: Request) => {
             { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
+      } else {
+        return new Response(
+          JSON.stringify({ ok: false, error: "Cannot process refund: unrecognized billing provider." }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
 
+    // STEP 1: Execute provider refund if not already completed in an earlier attempt
+    if (!isResumingPartialRefund && provider !== "sandbox") {
+      if (provider === "creem") {
+        const refundResp = await fetch(`${creemBaseUrl}/v1/refunds`, {
+          method: "POST",
+          headers: {
+            "x-api-key": creemApiKey,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            transaction_id: orderId,
+            reason: "requested_by_customer"
+          })
+        });
+
+        if (!refundResp.ok) {
+          return new Response(
+            JSON.stringify({ ok: false, error: "Payment provider could not process the refund right now." }),
+            { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        const refundData = (await refundResp.json().catch(() => ({}))) as Record<string, unknown>;
+        const refundObj =
+          (refundData.refund as Record<string, unknown>) ||
+          (refundData.object as Record<string, unknown>) ||
+          refundData;
+        const refundStatus = String(refundObj.status || "").trim().toLowerCase();
+
+        if (
+          refundStatus === "failed" ||
+          refundStatus === "canceled" ||
+          refundStatus === "cancelled" ||
+          refundStatus === "requiresaction" ||
+          refundStatus === "requires_action" ||
+          !refundStatus
+        ) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              error: `Payment provider rejected the refund (status: ${refundStatus || "unknown"}).`
+            }),
+            { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        if (refundStatus === "pending" || refundStatus === "processing") {
+          await recordBillingEvent({
+            supabaseUrl,
+            serviceRoleKey,
+            eventId: refundPendingMarkerId,
+            provider,
+            eventType: "refund_pending",
+            userId
+          });
+          await updateProfileBillingRow({
+            supabaseUrl,
+            serviceRoleKey,
+            userId,
+            subscriptionId: subId || undefined,
+            patchBody: {
+              subscription_status: "refund_pending",
+              subscription_updated_at: new Date().toISOString()
+            }
+          });
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              pending: true,
+              subscriptionStatus: "refund_pending",
+              error:
+                "Your refund request was submitted and is pending confirmation from the payment provider."
+            }),
+            { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      } else if (provider === "lemonsqueezy") {
         const refundResp = await fetch(
           `https://api.lemonsqueezy.com/v1/orders/${encodeURIComponent(orderId)}/refund`,
           {
@@ -886,26 +1168,86 @@ Deno.serve(async (req: Request) => {
             { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
+      }
 
-        if (subId) {
-          await fetch(`https://api.lemonsqueezy.com/v1/subscriptions/${encodeURIComponent(subId)}`, {
+      // Durably record that the provider refund succeeded so retries never issue a duplicate refund
+      await recordBillingEvent({
+        supabaseUrl,
+        serviceRoleKey,
+        eventId: refundTxMarkerId,
+        provider,
+        eventType: "refund_tx_succeeded",
+        userId
+      });
+    }
+
+    // STEP 2: Cancel the provider subscription and verify the response before revoking access
+    if (!cancelAlreadyCompleted && provider !== "sandbox" && subId) {
+      let cancelSucceeded = false;
+
+      if (provider === "creem") {
+        const cancelResp = await fetch(
+          `${creemBaseUrl}/v1/subscriptions/${encodeURIComponent(subId)}/cancel`,
+          {
+            method: "POST",
+            headers: {
+              "x-api-key": creemApiKey,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ mode: "immediate" })
+          }
+        );
+        cancelSucceeded = cancelResp.ok || cancelResp.status === 404;
+      } else if (provider === "lemonsqueezy") {
+        const cancelResp = await fetch(
+          `https://api.lemonsqueezy.com/v1/subscriptions/${encodeURIComponent(subId)}`,
+          {
             method: "DELETE",
             headers: {
               Accept: "application/vnd.api+json",
               "Content-Type": "application/vnd.api+json",
               Authorization: `Bearer ${lemonApiKey}`
             }
-          }).catch(() => null);
-        }
-      } else {
+          }
+        );
+        cancelSucceeded = cancelResp.ok || cancelResp.status === 404;
+      }
+
+      if (!cancelSucceeded) {
+        await updateProfileBillingRow({
+          supabaseUrl,
+          serviceRoleKey,
+          userId,
+          subscriptionId: subId || undefined,
+          patchBody: {
+            subscription_status: "refund_cancel_pending",
+            has_claimed_refund: true,
+            subscription_updated_at: new Date().toISOString()
+          }
+        });
         return new Response(
-          JSON.stringify({ ok: false, error: "Cannot process refund: unrecognized billing provider." }),
+          JSON.stringify({
+            ok: false,
+            retryableCancel: true,
+            subscriptionStatus: "refund_cancel_pending",
+            error:
+              "Your payment refund succeeded, but stopping future subscription renewal did not complete. Please click Request 2-Hour Refund again to finish cancelling without issuing another refund."
+          }),
           { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
+
+      await recordBillingEvent({
+        supabaseUrl,
+        serviceRoleKey,
+        eventId: refundCancelMarkerId,
+        provider,
+        eventType: "refund_cancel_succeeded",
+        userId
+      });
     }
 
-    // Rule 5: Immediately revoke Pro access and permanently record has_claimed_refund = true
+    // STEP 3: Finalize profile revocation
     const nowIso = new Date().toISOString();
     const refundWrite = await updateProfileBillingRow({
       supabaseUrl,
@@ -926,7 +1268,8 @@ Deno.serve(async (req: Request) => {
       return new Response(
         JSON.stringify({
           ok: false,
-          error: "Refund was processed, but updating your profile failed. Please refresh the page."
+          error:
+            "Your refund and cancellation succeeded, but updating your profile failed. Please click Request 2-Hour Refund again to sync your profile without issuing another refund."
         }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

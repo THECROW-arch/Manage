@@ -122,8 +122,11 @@ export default function App() {
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
   const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
 
-  // Scopes checkout/sandbox Pro confirmation to the specific userId that upgraded
+  // Scopes checkout/sandbox Pro confirmation and invalidates stale profile reads when billing state changes
   const checkoutConfirmedProUserIdRef = useRef(null);
+  const billingStateEpochRef = useRef(0);
+  const proFeaturesAckedByUserRef = useRef({});
+  const proFeaturesSyncInFlightRef = useRef({});
 
   // Tracks pending checkout synchronization independently of the URL query parameter
   const [checkoutSyncState, setCheckoutSyncState] = useState(() => {
@@ -140,26 +143,60 @@ export default function App() {
   });
 
   const confirmProForUser = useCallback((uid) => {
+    billingStateEpochRef.current += 1;
     if (uid) {
       checkoutConfirmedProUserIdRef.current = uid;
+      delete proFeaturesAckedByUserRef.current[uid];
+      try {
+        localStorage.removeItem(`managed_pending_pro_used_${uid}`);
+      } catch {
+        // Ignore storage errors
+      }
     }
   }, []);
 
   const clearConfirmedProForUser = useCallback((uid) => {
+    billingStateEpochRef.current += 1;
     if (!uid || checkoutConfirmedProUserIdRef.current === uid) {
       checkoutConfirmedProUserIdRef.current = null;
     }
   }, []);
 
-  const markProFeatureUsed = useCallback(() => {
-    if (subscriptionTier !== 'pro') return;
-    setProFeaturesUsed((alreadyUsed) => {
-      if (!alreadyUsed) {
-        supabase.rpc('mark_pro_feature_used').then(() => {}).catch(() => {});
+  const syncPendingProFeatureUsage = useCallback(async (targetUserId) => {
+    if (!targetUserId || proFeaturesAckedByUserRef.current[targetUserId] || proFeaturesSyncInFlightRef.current[targetUserId]) {
+      return;
+    }
+    proFeaturesSyncInFlightRef.current[targetUserId] = true;
+    try {
+      const { error } = await supabase.rpc('mark_pro_feature_used');
+      if (!error && window.__activeUserId === targetUserId) {
+        proFeaturesAckedByUserRef.current[targetUserId] = true;
+        try {
+          localStorage.removeItem(`managed_pending_pro_used_${targetUserId}`);
+        } catch {
+          // Ignore storage errors
+        }
       }
-      return true;
-    });
-  }, [subscriptionTier]);
+    } catch {
+      // Retain pending localStorage flag for automatic retry
+    } finally {
+      proFeaturesSyncInFlightRef.current[targetUserId] = false;
+    }
+  }, []);
+
+  const markProFeatureUsed = useCallback(() => {
+    const uid = session?.user?.id;
+    if (subscriptionTier !== 'pro' || !uid) return;
+    setProFeaturesUsed(true);
+    if (!proFeaturesAckedByUserRef.current[uid]) {
+      try {
+        localStorage.setItem(`managed_pending_pro_used_${uid}`, 'true');
+      } catch {
+        // Ignore storage errors
+      }
+      syncPendingProFeatureUsage(uid);
+    }
+  }, [subscriptionTier, session?.user?.id, syncPendingProFeatureUsage]);
 
   const hasProAccess = useMemo(() => {
     const cleanRole = String(userRole || '').trim().toLowerCase();
@@ -271,7 +308,7 @@ export default function App() {
 
   const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
 
-  const fetchUserData = async (userId, isBackgroundSync = false) => {
+  const fetchUserData = useCallback(async (userId, isBackgroundSync = false) => {
     const previousLoadedUserId = window.__loadedUserId;
     window.__activeUserId = userId;
     if (window.__fetchingUserId === userId) return;
@@ -295,6 +332,7 @@ export default function App() {
       }
     }
     try {
+      const billingEpochAtFetchStart = billingStateEpochRef.current;
       let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
       if (isStale()) return;
 
@@ -323,27 +361,49 @@ export default function App() {
         const loadedPeriodEnd = profile.subscription_period_end || null;
         const loadedCancelAtEnd = Boolean(profile.cancel_at_period_end);
 
-        if (loadedTier === 'pro') {
-          checkoutConfirmedProUserIdRef.current = userId;
-        }
-
-        // Preserve a checkout poll Pro result ONLY when it belongs to the exact userId being hydrated
-        const preserveCheckoutProForThisUser =
-          checkoutConfirmedProUserIdRef.current === userId && loadedTier !== 'pro';
-
         setUserRole(loadedRole);
-        if (preserveCheckoutProForThisUser) {
-          setSubscriptionTier('pro');
-          setSubscriptionStatus('active');
-        } else {
-          setSubscriptionTier(loadedTier);
-          setSubscriptionStatus(loadedStatus);
-          setSubscriptionPeriodEnd(loadedPeriodEnd);
-          setCancelAtPeriodEnd(loadedCancelAtEnd);
+
+        // Only apply profile billing fields if no newer client billing action (refund/cancel/upgrade) occurred while in flight
+        if (billingStateEpochRef.current === billingEpochAtFetchStart) {
+          if (loadedTier === 'pro') {
+            checkoutConfirmedProUserIdRef.current = userId;
+          }
+
+          const preserveCheckoutProForThisUser =
+            checkoutConfirmedProUserIdRef.current === userId && loadedTier !== 'pro';
+
+          if (preserveCheckoutProForThisUser) {
+            setSubscriptionTier('pro');
+            setSubscriptionStatus('active');
+          } else {
+            setSubscriptionTier(loadedTier);
+            setSubscriptionStatus(loadedStatus);
+            setSubscriptionPeriodEnd(loadedPeriodEnd);
+            setCancelAtPeriodEnd(loadedCancelAtEnd);
+          }
+
+          let hasPendingProUse = false;
+          try {
+            hasPendingProUse = localStorage.getItem(`managed_pending_pro_used_${userId}`) === 'true';
+          } catch {
+            hasPendingProUse = false;
+          }
+
+          if (profile.pro_features_used) {
+            proFeaturesAckedByUserRef.current[userId] = true;
+            try {
+              localStorage.removeItem(`managed_pending_pro_used_${userId}`);
+            } catch {
+              // Ignore storage errors
+            }
+          } else if (hasPendingProUse && loadedTier === 'pro') {
+            syncPendingProFeatureUsage(userId);
+          }
+
+          setSubscriptionStartedAt(profile.subscription_started_at || null);
+          setProFeaturesUsed(Boolean(profile.pro_features_used) || (loadedTier === 'pro' && hasPendingProUse));
+          setHasClaimedRefund(Boolean(profile.has_claimed_refund));
         }
-        setSubscriptionStartedAt(profile.subscription_started_at || null);
-        setProFeaturesUsed(Boolean(profile.pro_features_used));
-        setHasClaimedRefund(Boolean(profile.has_claimed_refund));
 
         // Validate saved tab access against loaded role safely
         setActiveTab(currentTab => {
@@ -481,7 +541,7 @@ export default function App() {
         window.__fetchingUserId = null;
       }
     }
-  };
+  }, [syncPendingProFeatureUsage]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -527,13 +587,14 @@ export default function App() {
     return () => {
       authListener?.subscription?.unsubscribe();
     };
-  }, []);
+  }, [fetchUserData]);
 
   // Refresh subscription fields from profiles whenever Settings is opened so any background billing change is reflected
   useEffect(() => {
     if (!activeUserId || activeTab !== 'settings') return;
     let isCancelled = false;
     const targetUserId = activeUserId;
+    const billingEpochAtStart = billingStateEpochRef.current;
 
     supabase
       .from('profiles')
@@ -541,7 +602,14 @@ export default function App() {
       .eq('user_id', targetUserId)
       .maybeSingle()
       .then(({ data }) => {
-        if (isCancelled || window.__activeUserId !== targetUserId || !data) return;
+        if (
+          isCancelled ||
+          window.__activeUserId !== targetUserId ||
+          billingStateEpochRef.current !== billingEpochAtStart ||
+          !data
+        ) {
+          return;
+        }
         const loadedTier = data.subscription_tier || 'free';
         if (loadedTier === 'pro') {
           checkoutConfirmedProUserIdRef.current = targetUserId;
@@ -559,15 +627,34 @@ export default function App() {
           setSubscriptionPeriodEnd(data.subscription_period_end || null);
           setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
         }
+
+        let hasPendingProUse = false;
+        try {
+          hasPendingProUse = localStorage.getItem(`managed_pending_pro_used_${targetUserId}`) === 'true';
+        } catch {
+          // Ignore storage errors; hasPendingProUse remains false
+        }
+
+        if (data.pro_features_used) {
+          proFeaturesAckedByUserRef.current[targetUserId] = true;
+          try {
+            localStorage.removeItem(`managed_pending_pro_used_${targetUserId}`);
+          } catch {
+            // Ignore storage errors
+          }
+        } else if (hasPendingProUse && loadedTier === 'pro') {
+          syncPendingProFeatureUsage(targetUserId);
+        }
+
         setSubscriptionStartedAt(data.subscription_started_at || null);
-        setProFeaturesUsed(Boolean(data.pro_features_used));
+        setProFeaturesUsed(Boolean(data.pro_features_used) || (loadedTier === 'pro' && hasPendingProUse));
         setHasClaimedRefund(Boolean(data.has_claimed_refund));
       });
 
     return () => {
       isCancelled = true;
     };
-  }, [activeUserId, activeTab]);
+  }, [activeUserId, activeTab, syncPendingProFeatureUsage]);
 
   // Poll profile subscription status when returning from checkout; survives language switches and provides manual retry recovery
   const tRef = useRef(t);
@@ -1162,14 +1249,12 @@ export default function App() {
         error: 'Free accounts include **1 Wealth Objective**. Upgrade to **MANAGED Pro** for unlimited multi-goal Wealth Objectives!'
       };
     }
-    if (wealthObjectives.length >= 1) {
-      markProFeatureUsed();
-    }
     const cleanName = String(name || '').trim();
     const targetNum = parseFloat(targetAmount);
     if (!cleanName || isNaN(targetNum) || targetNum <= 0) {
       return { ok: false, code: 'invalid', error: 'Please provide a valid objective name and target amount.' };
     }
+    const wasMultiObjectiveExpansion = wealthObjectives.length >= 1;
     const newObjective = {
       id: crypto.randomUUID(),
       name: cleanName,
@@ -1181,6 +1266,9 @@ export default function App() {
       createdAt: getToday()
     };
     setWealthObjectives(prev => [newObjective, ...prev]);
+    if (wasMultiObjectiveExpansion) {
+      markProFeatureUsed();
+    }
     return { ok: true, objective: newObjective };
   };
 
@@ -1367,7 +1455,6 @@ export default function App() {
       setUpgradePromptFeature('excel_audit_exports');
       return;
     }
-    markProFeatureUsed();
     const todayStr = getToday();
     const currentMonthStr = getCurrentMonth();
     const targetPeriod = exportScope === 'month' ? exportMonth : exportDate;
@@ -1463,9 +1550,11 @@ export default function App() {
       const { generateFormalAudit, generateVisualDashboard } = await import('./utils/excelGenerator');
       if (exportFormat === 'formal') {
         await generateFormalAudit(reportData);
+        markProFeatureUsed();
         setAlertMsg(t('succ_export_formal', { period: targetPeriod }));
       } else {
         await generateVisualDashboard(reportData);
+        markProFeatureUsed();
         setAlertMsg(t('succ_export_visual', { period: targetPeriod }));
       }
     } catch (error) {
@@ -1743,10 +1832,8 @@ export default function App() {
       setUpgradePromptFeature('custom_categories_limit');
       return;
     }
-    if (categories.length >= 3) {
-      markProFeatureUsed();
-    }
 
+    const wasProCategoryExpansion = categories.length >= 3;
     const goalVal = newCategoryType === 'asset' ? (parseFloat(newCategoryGoal) || 0) : 0;
     const colors = ['teal-600', 'orange-600', 'cyan-600', 'purple-600', 'rose-600', 'amber-600'];
     const tempId = crypto.randomUUID();
@@ -1766,6 +1853,9 @@ export default function App() {
       }]).select();
 
       if (error) throw error;
+      if (wasProCategoryExpansion) {
+        markProFeatureUsed();
+      }
       setCategories(current => current.map(c => c.id === tempId ? data[0] : c));
       if (newCategoryType !== 'asset' && !expenseCategoryId) setExpenseCategoryId(data[0].id);
       if (newCategoryType === 'asset' && !adjCatId) setAdjCatId(data[0].id);
@@ -2165,12 +2255,10 @@ export default function App() {
       setUpgradePromptFeature('unlimited_sandbox_sheets');
       return;
     }
-    if (sandboxSheets.length >= 1) {
-      markProFeatureUsed();
-    }
     const budget = parseFloat(newSheetBudget);
     if (!newSheetTitle.trim() || isNaN(budget) || budget <= 0) return;
 
+    const wasProSandboxExpansion = sandboxSheets.length >= 1;
     const tempId = crypto.randomUUID();
     const newSheet = {
       id: tempId, title: newSheetTitle.trim(), totalBudget: budget,
@@ -2188,6 +2276,9 @@ export default function App() {
         total_budget: newSheet.totalBudget, buckets: newSheet.buckets, expenses: newSheet.expenses
       }]);
       if (error) throw error;
+      if (wasProSandboxExpansion) {
+        markProFeatureUsed();
+      }
     } catch {
       setAlertMsg(t('err_save_sandbox_db'));
       setSandboxSheets(current => current.filter(s => s.id !== tempId));
@@ -3127,9 +3218,7 @@ export default function App() {
               setUpgradePromptFeature('unlimited_sandbox_sheets');
               return { ok: false, error: 'Free accounts include **1 Sandbox Sheet**. Upgrade to **MANAGED Pro** for unlimited Sandbox sheets!' };
             }
-            if (sandboxSheets.length >= 1) {
-              markProFeatureUsed();
-            }
+            const wasProSandboxExpansion = sandboxSheets.length >= 1;
             const tempId = crypto.randomUUID();
             const newSheet = { id: tempId, title: title.trim(), totalBudget, buckets: [], expenses: [] };
             const { error } = await supabase.from('sandbox_sheets').insert([{
@@ -3141,6 +3230,9 @@ export default function App() {
               expenses: []
             }]);
             if (error) return { ok: false, error: 'Database error while creating Sandbox sheet.' };
+            if (wasProSandboxExpansion) {
+              markProFeatureUsed();
+            }
             setSandboxSheets(prev => [newSheet, ...prev]);
             setActiveSheetId(tempId);
             return { ok: true, sheet: newSheet };
@@ -3232,9 +3324,7 @@ export default function App() {
                 error: t('ai_err_category_limit_pro', 'Free Tier workspaces include up to 3 budget categories. Upgrade to MANAGED Pro to create unlimited custom categories.')
               };
             }
-            if (categories.length >= 3) {
-              markProFeatureUsed();
-            }
+            const wasProCategoryExpansion = categories.length >= 3;
             const cleanName = (name || '').trim();
             if (!cleanName) return { ok: false, error: 'Please provide a valid category name.' };
 
@@ -3257,6 +3347,10 @@ export default function App() {
 
             if (error || !data || data.length === 0) {
               return { ok: false, error: 'Database error while creating category.' };
+            }
+
+            if (wasProCategoryExpansion) {
+              markProFeatureUsed();
             }
 
             const createdCat = data[0];

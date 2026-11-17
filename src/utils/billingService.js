@@ -1,5 +1,14 @@
 import { supabase } from '../supabaseClient';
 
+export function hasPendingLocalProUsage(userId) {
+    if (!userId || typeof window === 'undefined') return false;
+    try {
+        return window.localStorage?.getItem(`managed_pending_pro_used_${userId}`) === 'true';
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Initiates a Pro subscription checkout session or Sandbox upgrade via the billing-manager Edge Function.
  * Confirms that the originating user session is still active before returning the result.
@@ -71,7 +80,7 @@ export async function cancelProSubscription(expectedUserId) {
 
 /**
  * Requests a full refund under the 2-Hour Unused Pro Refund Policy.
- * Requires <= 2 hours since subscription activation, zero Pro feature usage, and no prior refund on the account.
+ * Rejects immediately if local Pro feature usage is pending server acknowledgement.
  */
 export async function requestProSubscriptionRefund(expectedUserId) {
     const { data: sessionData } = await supabase.auth.getSession();
@@ -83,6 +92,23 @@ export async function requestProSubscriptionRefund(expectedUserId) {
     }
     if (expectedUserId && expectedUserId !== originUserId) {
         return { ok: false, staleAccount: true, error: 'Active account changed.' };
+    }
+
+    // Prevent unacknowledged local Pro usage from bypassing the server's unused-refund gate
+    if (hasPendingLocalProUsage(originUserId)) {
+        const { error: rpcErr } = await supabase.rpc('mark_pro_feature_used');
+        if (!rpcErr) {
+            try {
+                window.localStorage?.removeItem(`managed_pending_pro_used_${originUserId}`);
+            } catch {
+                // Ignore storage errors
+            }
+        }
+        return {
+            ok: false,
+            userId: originUserId,
+            error: 'Refund ineligible: MANAGED Pro features have already been used during this subscription. You can still cancel recurring billing with one click.'
+        };
     }
 
     const { data, error } = await supabase.functions.invoke('billing-manager', {
