@@ -1993,4 +1993,48 @@ const phase14Translations = {
 Object.entries(phase14Translations).forEach(([lang, bundle]) => {
   i18n.addResourceBundle(lang, 'translation', bundle, true, true);
 });
+
+const proGatesAndLimitTranslations = {
+  en: {
+    ai_err_input_too_long: 'Your command is too long (maximum 500 characters). Please shorten your message and try again.',
+    ai_err_quota_reached: 'You have used all {{limit}} free Sterling AI commands for the last 48 hours. Next free command unlocks in ~{{hours}}h, or upgrade to MANAGED Pro for unlimited AI access.',
+    ai_err_category_limit_pro: 'Free Tier workspaces include up to 3 budget categories. Upgrade to MANAGED Pro to create unlimited custom categories.',
+    pro_gate_excel_export: 'Excel Audit & Visual Dashboard Exports (Formal & Visual .xlsx reports)',
+    pro_gate_custom_categories: 'Unlimited Custom Budget Categories (Free tier includes up to 3 categories)',
+    pro_gate_sterling_ai: 'Unlimited Sterling AI Commands (Free tier includes 5 commands every 48 hours)',
+    upgrade_modal_goto_billing: 'Go to Settings → Subscription'
+  },
+  fr: {
+    ai_err_input_too_long: 'Votre commande est trop longue (maximum 500 caractères). Veuillez raccourcir votre message et réessayer.',
+    ai_err_quota_reached: 'Vous avez utilisé vos {{limit}} commandes gratuites Sterling AI des dernières 48 heures. Prochaine commande dans ~{{hours}}h, ou passez à MANAGED Pro pour un accès illimité.',
+    ai_err_category_limit_pro: 'Le forfait Gratuit inclut jusqu’à 3 catégories. Passez à MANAGED Pro pour créer des catégories personnalisées illimitées.',
+    pro_gate_excel_export: 'Exports Excel Audit Formel et Tableau de Bord Visuel (.xlsx)',
+    pro_gate_custom_categories: 'Catégories de budget personnalisées illimitées (jusqu’à 3 en version gratuite)',
+    pro_gate_sterling_ai: 'Commandes Sterling AI illimitées (5 commandes toutes les 48h en version gratuite)',
+    upgrade_modal_goto_billing: 'Aller à Paramètres → Abonnement'
+  },
+  es: {
+    ai_err_input_too_long: 'Tu comando es demasiado largo (máximo 500 caracteres). Acorta tu mensaje e inténtalo de nuevo.',
+    ai_err_quota_reached: 'Has usado tus {{limit}} comandos gratuitos de Sterling AI en las últimas 48 horas. Próximo comando en ~{{hours}}h, o actualiza a MANAGED Pro para acceso ilimitado.',
+    ai_err_category_limit_pro: 'El plan Gratuito incluye hasta 3 categorías. Actualiza a MANAGED Pro para crear categorías personalizadas ilimitadas.',
+    pro_gate_excel_export: 'Exportaciones Excel de Auditoría Formal y Panel Visual (.xlsx)',
+    pro_gate_custom_categories: 'Categorías de presupuesto personalizadas ilimitadas (hasta 3 en el plan gratuito)',
+    pro_gate_sterling_ai: 'Comandos ilimitados de Sterling AI (5 comandos cada 48h en el plan gratuito)',
+    upgrade_modal_goto_billing: 'Ir a Ajustes → Suscripción'
+  },
+  ar: {
+    ai_err_input_too_long: 'رسالتك طويلة جداً (الحد الأقصى 500 حرف). يرجى اختصار الرسالة والمحاولة مرة أخرى.',
+    ai_err_quota_reached: 'لقد استخدمت جميع أوامر Sterling AI المجانية ({{limit}}) خلال آخر 48 ساعة. يتوفر الأمر التالي خلال ~{{hours}} ساعة، أو قم بالترقية إلى MANAGED Pro لوصول غير محدود.',
+    ai_err_category_limit_pro: 'تتضمن الباقة المجانية ما يصل إلى 3 فئات للميزانية. قم بالترقية إلى MANAGED Pro لإنشاء فئات مخصصة غير محدودة.',
+    pro_gate_excel_export: 'تصدير تقارير التدقيق الرسمي ولوحة التحكم المرئية (ملفات Excel)',
+    pro_gate_custom_categories: 'فئات ميزانية مخصصة غير محدودة (تشمل الباقة المجانية حتى 3 فئات)',
+    pro_gate_sterling_ai: 'أوامر Sterling AI غير محدودة (تشمل الباقة المجانية 5 أوامر كل 48 ساعة)',
+    upgrade_modal_goto_billing: 'الانتقال إلى الإعدادات ← الاشتراك'
+  }
+};
+
+Object.entries(proGatesAndLimitTranslations).forEach(([lng, bundle]) => {
+  i18n.addResourceBundle(lng, 'translation', bundle, true, true);
+});
+
 export default i18n;

@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getToday, getCurrentMonth } from '../utils/constants';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient';
+import { startProCheckoutSession, cancelProSubscription } from '../utils/billingService';
 
 /**
- * Renders the user account preferences, theme toggle, baseline salary configuration,
- * global currency/language selectors, custom-scoped Excel data export controls,
- * and advanced security settings (Password Update, Data Wipe, Account Deletion).
+ * Renders the user account preferences, subscription & 1-click cancellation controls,
+ * theme toggle, baseline salary configuration, global currency/language selectors,
+ * custom-scoped Excel data export controls, and advanced security settings.
  * @param {Object} props - Component properties
  */
 export default function SettingsTab({
@@ -29,7 +30,18 @@ export default function SettingsTab({
   handleExportData,
   emailRemindersEnabled = true,
   setEmailRemindersEnabled,
-  userEmail = ''
+  userEmail = '',
+  userId = '',
+  subscriptionTier = 'free',
+  setSubscriptionTier,
+  userRole = 'customer',
+  subscriptionStatus = 'free',
+  setSubscriptionStatus,
+  subscriptionPeriodEnd = null,
+  setSubscriptionPeriodEnd,
+  cancelAtPeriodEnd = false,
+  setCancelAtPeriodEnd,
+  onConfirmProForUser
 }) {
   const { t, i18n } = useTranslation();
   const [isProcessingDanger, setIsProcessingDanger] = useState(false);
@@ -38,6 +50,236 @@ export default function SettingsTab({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordMsg, setPasswordMsg] = useState({ text: '', type: '' });
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+
+  // --- Subscription & Billing State (Scoped per account without setState in useEffect) ---
+  const activeAccountIdentity = `${userId || ''}:${userEmail || ''}`;
+  const [billingState, setBillingState] = useState({
+    account: activeAccountIdentity,
+    busy: false,
+    msg: { text: '', type: '' }
+  });
+
+  const isBillingBusy =
+    billingState.account === activeAccountIdentity ? billingState.busy : false;
+  const billingMsg =
+    billingState.account === activeAccountIdentity
+      ? billingState.msg
+      : { text: '', type: '' };
+
+  const activeAccountRef = useRef(activeAccountIdentity);
+  const billingOpIdRef = useRef(0);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  // Invalidate any in-flight billing operations when account changes or logs out
+  useEffect(() => {
+    activeAccountRef.current = activeAccountIdentity;
+    billingOpIdRef.current += 1;
+  }, [activeAccountIdentity]);
+
+  const isRoleGrantedPro = ['owner', 'dev', 'special'].includes(userRole);
+  const isPaidPro = subscriptionTier === 'pro';
+  const formattedPeriodEnd = subscriptionPeriodEnd
+    ? new Date(subscriptionPeriodEnd).toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      })
+    : null;
+
+  /**
+   * Starts a MANAGED Pro checkout session or sandbox upgrade.
+   * Reconciles App-owned subscription state even if SettingsTab unmounts before completion,
+   * provided the same user account remains active.
+   */
+  const handleUpgradeClick = async () => {
+    if (isBillingBusy) return;
+    const originAccount = activeAccountRef.current;
+    const originUserId = userId;
+    const opId = ++billingOpIdRef.current;
+
+    setBillingState({
+      account: originAccount,
+      busy: true,
+      msg: { text: '', type: '' }
+    });
+
+    const isSameActiveAccount = (res) =>
+      activeAccountRef.current === originAccount &&
+      (!originUserId || window.__activeUserId === originUserId) &&
+      !res?.staleAccount &&
+      (!originUserId || !res?.userId || res.userId === originUserId);
+
+    const canUpdateLocalUI = () =>
+      isMountedRef.current &&
+      activeAccountRef.current === originAccount &&
+      billingOpIdRef.current === opId;
+
+    try {
+      const res = await startProCheckoutSession(originUserId);
+      if (!isSameActiveAccount(res)) {
+        return;
+      }
+
+      if (!res?.ok) {
+        if (canUpdateLocalUI()) {
+          setBillingState({
+            account: originAccount,
+            busy: false,
+            msg: {
+              text: res?.error || t('err_checkout_start', 'Unable to start checkout session right now.'),
+              type: 'error'
+            }
+          });
+        }
+        return;
+      }
+
+      if (res.checkoutUrl) {
+        window.location.assign(res.checkoutUrl);
+        return;
+      }
+
+      if (res.simulated) {
+        // Always update App-level billing state if the same account is active, even if SettingsTab unmounted
+        onConfirmProForUser?.(originUserId);
+        setSubscriptionTier?.('pro');
+        setSubscriptionStatus?.(res.subscriptionStatus || 'active');
+        setSubscriptionPeriodEnd?.(res.subscriptionPeriodEnd || null);
+        setCancelAtPeriodEnd?.(false);
+
+        if (canUpdateLocalUI()) {
+          setBillingState({
+            account: originAccount,
+            busy: false,
+            msg: {
+              text: t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'),
+              type: 'success'
+            }
+          });
+        }
+      }
+    } catch (err) {
+      if (!canUpdateLocalUI()) return;
+      console.error('Upgrade failed:', err);
+      setBillingState({
+        account: originAccount,
+        busy: false,
+        msg: {
+          text: t('err_checkout_unexpected', 'An unexpected error occurred while starting checkout.'),
+          type: 'error'
+        }
+      });
+    } finally {
+      if (canUpdateLocalUI()) {
+        setBillingState((prev) =>
+          prev.account === originAccount ? { ...prev, busy: false } : prev
+        );
+      }
+    }
+  };
+
+  /**
+   * 1-Click subscription cancellation: immediately stops future recurring billing
+   * while keeping Pro features active until the end of the current paid period.
+   * Reconciles App-owned state even if SettingsTab unmounts while the request is in flight.
+   */
+  const handleOneClickCancel = async () => {
+    if (isBillingBusy || !isPaidPro || cancelAtPeriodEnd) return;
+    const originAccount = activeAccountRef.current;
+    const originUserId = userId;
+    const opId = ++billingOpIdRef.current;
+
+    setBillingState({
+      account: originAccount,
+      busy: true,
+      msg: { text: '', type: '' }
+    });
+
+    const isSameActiveAccount = (res) =>
+      activeAccountRef.current === originAccount &&
+      (!originUserId || window.__activeUserId === originUserId) &&
+      !res?.staleAccount &&
+      (!originUserId || !res?.userId || res.userId === originUserId);
+
+    const canUpdateLocalUI = () =>
+      isMountedRef.current &&
+      activeAccountRef.current === originAccount &&
+      billingOpIdRef.current === opId;
+
+    try {
+      const res = await cancelProSubscription(originUserId);
+      if (!isSameActiveAccount(res)) {
+        return;
+      }
+
+      if (!res?.ok) {
+        if (canUpdateLocalUI()) {
+          setBillingState({
+            account: originAccount,
+            busy: false,
+            msg: {
+              text: res?.error || t('err_cancel_sub', 'Could not cancel subscription right now. Please try again.'),
+              type: 'error'
+            }
+          });
+        }
+        return;
+      }
+
+      // Always apply completed cancellation state to App if the same account is still active
+      setSubscriptionStatus?.(res.subscriptionStatus || 'canceled_pending_expiry');
+      if (res.subscriptionPeriodEnd) {
+        setSubscriptionPeriodEnd?.(res.subscriptionPeriodEnd);
+      }
+      setCancelAtPeriodEnd?.(true);
+
+      if (canUpdateLocalUI()) {
+        const endStr = res.subscriptionPeriodEnd
+          ? new Date(res.subscriptionPeriodEnd).toLocaleDateString(undefined, {
+              year: 'numeric',
+              month: 'short',
+              day: 'numeric'
+            })
+          : 'the end of your billing period';
+
+        setBillingState({
+          account: originAccount,
+          busy: false,
+          msg: {
+            text: t(
+              'succ_sub_canceled',
+              `Recurring billing has been stopped immediately. You will not be charged again, and your Pro features remain active until ${endStr}.`
+            ),
+            type: 'success'
+          }
+        });
+      }
+    } catch (err) {
+      if (!canUpdateLocalUI()) return;
+      console.error('Cancel subscription failed:', err);
+      setBillingState({
+        account: originAccount,
+        busy: false,
+        msg: {
+          text: t('err_cancel_unexpected', 'An unexpected error occurred while canceling your subscription.'),
+          type: 'error'
+        }
+      });
+    } finally {
+      if (canUpdateLocalUI()) {
+        setBillingState((prev) =>
+          prev.account === originAccount ? { ...prev, busy: false } : prev
+        );
+      }
+    }
+  };
 
   /**
    * Handles updating the user's password via Supabase Auth.
@@ -136,6 +378,116 @@ export default function SettingsTab({
 
   return (
     <div className="max-w-2xl mx-auto space-y-8 pb-12">
+      {/* --- Subscription & 1-Click Cancellation (Settings -> Subscription) --- */}
+      <div
+        id="subscription"
+        className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-gray-200 dark:border-zinc-800 shadow-sm space-y-4"
+      >
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-zinc-800 pb-3">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900 dark:text-white">
+              {t('subscription_heading', 'Subscription')}
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-zinc-400">
+              {t('subscription_subhead', 'Manage your MANAGED plan and billing status.')}
+            </p>
+          </div>
+          <span
+            className={`px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider ${
+              isPaidPro || isRoleGrantedPro
+                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30'
+                : 'bg-gray-100 text-gray-700 dark:bg-zinc-800 dark:text-zinc-300 border border-gray-200 dark:border-zinc-700'
+            }`}
+          >
+            {isPaidPro
+              ? cancelAtPeriodEnd
+                ? t('plan_pro_canceling', 'MANAGED Pro (Cancels at Period End)')
+                : t('plan_pro', 'MANAGED Pro')
+              : isRoleGrantedPro
+                ? t('plan_pro_role', `MANAGED Pro (${userRole})`)
+                : t('plan_free', 'Free Tier')}
+          </span>
+        </div>
+
+        {billingMsg.text && (
+          <div
+            className={`p-3 rounded-md text-xs font-semibold ${
+              billingMsg.type === 'error'
+                ? 'bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800'
+                : 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+            }`}
+          >
+            {billingMsg.text}
+          </div>
+        )}
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
+          <div className="space-y-1 text-xs text-gray-600 dark:text-zinc-400">
+            {isPaidPro ? (
+              cancelAtPeriodEnd || subscriptionStatus === 'canceled_pending_expiry' ? (
+                <p>
+                  {t(
+                    'sub_canceled_notice',
+                    `Recurring billing is stopped. You will not be charged again, and your Pro features remain active until ${formattedPeriodEnd || 'the end of your current billing period'}.`
+                  )}
+                </p>
+              ) : (
+                <p>
+                  {t(
+                    'sub_active_notice',
+                    `Your MANAGED Pro subscription is active${formattedPeriodEnd ? ` (renews on ${formattedPeriodEnd})` : ''}. You can cancel with one click at any time.`
+                  )}
+                </p>
+              )
+            ) : isRoleGrantedPro ? (
+              <p>
+                {t(
+                  'sub_role_notice',
+                  'Your account role grants complimentary MANAGED Pro features with no recurring billing.'
+                )}
+              </p>
+            ) : (
+              <p>
+                {t(
+                  'sub_free_notice',
+                  'Upgrade to MANAGED Pro for unlimited Wealth Objectives, multi-sheet Occasion Sandboxes, and Visual Excel Dashboards.'
+                )}
+              </p>
+            )}
+          </div>
+
+          <div className="shrink-0">
+            {isPaidPro ? (
+              !cancelAtPeriodEnd && (
+                <button
+                  type="button"
+                  onClick={handleOneClickCancel}
+                  disabled={isBillingBusy}
+                  className="px-4 py-2 bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 rounded-md text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isBillingBusy
+                    ? t('canceling_sub', 'Canceling...')
+                    : t('cancel_subscription_btn', 'Cancel Subscription')}
+                </button>
+              )
+            ) : (
+              !isRoleGrantedPro && (
+                <button
+                  type="button"
+                  onClick={handleUpgradeClick}
+                  disabled={isBillingBusy}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isBillingBusy
+                    ? t('starting_checkout', 'Starting Checkout...')
+                    : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro')}
+                </button>
+              )
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* --- Existing Account Preferences --- */}
       <div className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-gray-200 dark:border-zinc-800 shadow-sm space-y-6">
         <h2 className="text-lg font-bold text-gray-900 dark:text-white border-b border-gray-100 dark:border-zinc-800 pb-3">

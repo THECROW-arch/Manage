@@ -4,12 +4,13 @@ import './i18n';
 import { useTranslation } from 'react-i18next';
 import { supabase } from './supabaseClient';
 import Auth from './Auth';
-import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth } from './utils/constants';
+import { hexColorMap, calculateProgressiveTax, getToday, getCurrentMonth, sanitizeUsername } from './utils/constants';
 import { sendRecurringExpenseReminderEmail, parseReminderPeriodMap } from './utils/emailReminderService';
 import Sidebar, { MobileHeader } from './components/Sidebar';
 import CashFlowTab from './components/CashFlowTab';
 import AIAssistantDrawer from './components/AIAssistantDrawer';
 import NotificationBell from './components/NotificationBell';
+import LegalModal from './components/LegalModal';
 
 const HistoryTab = lazy(() => import('./components/HistoryTab'));
 const TaxCenterTab = lazy(() => import('./components/TaxCenterTab'));
@@ -111,9 +112,35 @@ export default function App() {
   const [username, setUsername] = useState('');
   const [userRole, setUserRole] = useState('customer');
   const [subscriptionTier, setSubscriptionTier] = useState('free');
+  const [subscriptionStatus, setSubscriptionStatus] = useState('free');
+  const [subscriptionPeriodEnd, setSubscriptionPeriodEnd] = useState(null);
+  const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
   const [upgradePromptFeature, setUpgradePromptFeature] = useState(null);
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
   const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
+
+  // Scopes checkout/sandbox Pro confirmation to the specific userId that upgraded
+  const checkoutConfirmedProUserIdRef = useRef(null);
+
+  // Tracks pending checkout synchronization independently of the URL query parameter
+  const [checkoutSyncState, setCheckoutSyncState] = useState(() => {
+    if (typeof window === 'undefined') return { status: 'idle', retryCount: 0 };
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('checkout') === 'success') {
+        return { status: 'polling', retryCount: 0 };
+      }
+    } catch {
+      // Ignore URL parsing errors
+    }
+    return { status: 'idle', retryCount: 0 };
+  });
+
+  const confirmProForUser = useCallback((uid) => {
+    if (uid) {
+      checkoutConfirmedProUserIdRef.current = uid;
+    }
+  }, []);
 
   const hasProAccess = useMemo(() => {
     const cleanRole = String(userRole || '').trim().toLowerCase();
@@ -125,12 +152,16 @@ export default function App() {
   const localizedUpgradeFeatureName = useMemo(() => {
     if (!upgradePromptFeature) return '';
     const featureMap = {
+      excel_audit_exports: t('pro_gate_excel_export', 'Excel Audit & Visual Dashboard Exports (Formal & Visual .xlsx reports)'),
       visual_excel_reports: t('pro_feature_visual_excel', 'Visual Dashboard Excel Reports'),
+      custom_categories_limit: t('pro_gate_custom_categories', 'Unlimited Custom Budget Categories (Free tier includes up to 3 categories)'),
+      sterling_ai_unlimited: t('pro_gate_sterling_ai', 'Unlimited Sterling AI Commands (Free tier includes 5 commands every 48 hours)'),
       unlimited_sandbox_sheets: t('pro_feature_unlimited_sandbox', 'Unlimited Sandbox Calculation Sheets'),
       multi_goal_objectives: t('pro_feature_multi_objectives', 'Multi-Goal Wealth Objectives')
     };
     return featureMap[upgradePromptFeature] || t(upgradePromptFeature, upgradePromptFeature);
   }, [upgradePromptFeature, t]);
+
   const [categories, setCategories] = useState([]);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryType, setNewCategoryType] = useState('expense');
@@ -222,14 +253,24 @@ export default function App() {
   const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
 
   const fetchUserData = async (userId, isBackgroundSync = false) => {
+    const previousLoadedUserId = window.__loadedUserId;
     window.__activeUserId = userId;
     if (window.__fetchingUserId === userId) return;
-    if (isBackgroundSync && window.__loadedUserId === userId) return;
+    if (isBackgroundSync && previousLoadedUserId === userId) return;
     window.__fetchingUserId = userId;
     const isStale = () => window.__activeUserId !== userId;
 
-    if (window.__loadedUserId !== userId) {
+    if (previousLoadedUserId !== userId) {
       setLoadingData(true);
+      // Clear any previous account's subscription state immediately when switching accounts
+      if (checkoutConfirmedProUserIdRef.current !== userId) {
+        checkoutConfirmedProUserIdRef.current = null;
+        setUserRole('customer');
+        setSubscriptionTier('free');
+        setSubscriptionStatus('free');
+        setSubscriptionPeriodEnd(null);
+        setCancelAtPeriodEnd(false);
+      }
     }
     try {
       let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
@@ -238,7 +279,9 @@ export default function App() {
       if (!profile) {
         const { data: authData } = await supabase.auth.getUser();
         if (isStale()) return;
-        const registeredUsername = authData?.user?.user_metadata?.username || `user_${userId.slice(0, 8)}`;
+        const registeredUsername = sanitizeUsername(
+          authData?.user?.user_metadata?.username || `user_${userId.slice(0, 8)}`
+        );
 
         const { data: newProfile } = await supabase.from('profiles').insert([{
           user_id: userId,
@@ -254,8 +297,28 @@ export default function App() {
       if (profile) {
         const loadedRole = profile.role || 'user';
         const loadedTier = profile.subscription_tier || 'free';
+        const loadedStatus = profile.subscription_status || 'free';
+        const loadedPeriodEnd = profile.subscription_period_end || null;
+        const loadedCancelAtEnd = Boolean(profile.cancel_at_period_end);
+
+        if (loadedTier === 'pro') {
+          checkoutConfirmedProUserIdRef.current = userId;
+        }
+
+        // Preserve a checkout poll Pro result ONLY when it belongs to the exact userId being hydrated
+        const preserveCheckoutProForThisUser =
+          checkoutConfirmedProUserIdRef.current === userId && loadedTier !== 'pro';
+
         setUserRole(loadedRole);
-        setSubscriptionTier(loadedTier);
+        if (preserveCheckoutProForThisUser) {
+          setSubscriptionTier('pro');
+          setSubscriptionStatus('active');
+        } else {
+          setSubscriptionTier(loadedTier);
+          setSubscriptionStatus(loadedStatus);
+          setSubscriptionPeriodEnd(loadedPeriodEnd);
+          setCancelAtPeriodEnd(loadedCancelAtEnd);
+        }
 
         // Validate saved tab access against loaded role safely
         setActiveTab(currentTab => {
@@ -263,7 +326,6 @@ export default function App() {
           if (currentTab === 'owner_dashboard' && loadedRole !== 'owner') return 'cashflow';
           return currentTab;
         });
-
         // Hydrate isolated support draft for this user safely before enabling persistence
         let loadedDraft = { userId, subject: '', category: 'general', message: '' };
         try {
@@ -409,11 +471,22 @@ export default function App() {
       setSession(session);
       if (session) {
         if (event === 'TOKEN_REFRESHED') return;
+        if (checkoutConfirmedProUserIdRef.current && checkoutConfirmedProUserIdRef.current !== session.user.id) {
+          checkoutConfirmedProUserIdRef.current = null;
+          setCheckoutSyncState({ status: 'idle', retryCount: 0 });
+        }
         fetchUserData(session.user.id, true);
       } else {
         window.__activeUserId = null;
         window.__fetchingUserId = null;
         window.__loadedUserId = null;
+        checkoutConfirmedProUserIdRef.current = null;
+        setUserRole('customer');
+        setSubscriptionTier('free');
+        setSubscriptionStatus('free');
+        setSubscriptionPeriodEnd(null);
+        setCancelAtPeriodEnd(false);
+        setCheckoutSyncState({ status: 'idle', retryCount: 0 });
         setDraftHydratedUserId(null);
         setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
         setBoostOverridesByUser({});
@@ -428,7 +501,101 @@ export default function App() {
     };
   }, []);
 
+  // Refresh subscription fields from profiles whenever Settings is opened so any background billing change is reflected
+  useEffect(() => {
+    if (!activeUserId || activeTab !== 'settings') return;
+    let isCancelled = false;
+    const targetUserId = activeUserId;
 
+    supabase
+      .from('profiles')
+      .select('role,subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end')
+      .eq('user_id', targetUserId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (isCancelled || window.__activeUserId !== targetUserId || !data) return;
+        const loadedTier = data.subscription_tier || 'free';
+        if (loadedTier === 'pro') {
+          checkoutConfirmedProUserIdRef.current = targetUserId;
+        }
+        const preserveCheckoutProForThisUser =
+          checkoutConfirmedProUserIdRef.current === targetUserId && loadedTier !== 'pro';
+
+        if (data.role) setUserRole(data.role);
+        if (preserveCheckoutProForThisUser) {
+          setSubscriptionTier('pro');
+          setSubscriptionStatus('active');
+        } else {
+          setSubscriptionTier(loadedTier);
+          setSubscriptionStatus(data.subscription_status || 'free');
+          setSubscriptionPeriodEnd(data.subscription_period_end || null);
+          setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeUserId, activeTab]);
+
+  // Poll profile subscription status when returning from checkout; survives language switches and provides manual retry recovery
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+
+  useEffect(() => {
+    if (!activeUserId || typeof window === 'undefined') return;
+    if (checkoutSyncState.status !== 'polling') return;
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('checkout') === 'success') {
+      params.delete('checkout');
+      const nextSearch = params.toString();
+      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, '', nextUrl);
+    }
+
+    let isCancelled = false;
+    let attempts = 0;
+    let timerId = null;
+    const targetUserId = activeUserId;
+
+    const pollSubscription = async () => {
+      if (isCancelled || window.__activeUserId !== targetUserId) return;
+      attempts += 1;
+      const { data } = await supabase
+        .from('profiles')
+        .select('subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end')
+        .eq('user_id', targetUserId)
+        .maybeSingle();
+
+      if (isCancelled || window.__activeUserId !== targetUserId) return;
+
+      if (data?.subscription_tier === 'pro') {
+        checkoutConfirmedProUserIdRef.current = targetUserId;
+        setSubscriptionTier('pro');
+        setSubscriptionStatus(data.subscription_status || 'active');
+        setSubscriptionPeriodEnd(data.subscription_period_end || null);
+        setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
+        setCheckoutSyncState({ status: 'idle', retryCount: 0 });
+        setAlertMsg(tRef.current('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
+        return;
+      }
+
+      if (attempts < 6) {
+        timerId = setTimeout(pollSubscription, 2500);
+      } else {
+        setCheckoutSyncState((prev) => ({ ...prev, status: 'delayed' }));
+      }
+    };
+
+    timerId = setTimeout(pollSubscription, 800);
+    return () => {
+      isCancelled = true;
+      if (timerId) clearTimeout(timerId);
+    };
+  }, [activeUserId, checkoutSyncState.status, checkoutSyncState.retryCount]);
 
   const handleLogoutRequest = () => {
     setShowLogoutConfirm(true);
@@ -438,6 +605,8 @@ export default function App() {
     try {
       window.__activeUserId = null;
       window.__fetchingUserId = null;
+      window.__loadedUserId = null;
+      checkoutConfirmedProUserIdRef.current = null;
       await supabase.auth.signOut();
       setSession(null);
       setExpenses([]);
@@ -447,6 +616,10 @@ export default function App() {
       setSalary('');
       setUserRole('customer');
       setSubscriptionTier('free');
+      setSubscriptionStatus('free');
+      setSubscriptionPeriodEnd(null);
+      setCancelAtPeriodEnd(false);
+      setCheckoutSyncState({ status: 'idle', retryCount: 0 });
       setDraftHydratedUserId(null);
       setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
       setBoostOverridesByUser({});
@@ -575,11 +748,10 @@ export default function App() {
     t
   ]);
 
-
-
   const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
   const [metaHydrationRetryTick, setMetaHydrationRetryTick] = useState(0);
   const [prefillRecurrenceType, setPrefillRecurrenceType] = useState('monthly');
+  const [legalModalSection, setLegalModalSection] = useState(null);
   const isMetaHydratedRef = useRef(false);
   const metaHydrationRetryCountRef = useRef({});
   const sessionModifiedMetaRef = useRef({});
@@ -698,7 +870,6 @@ export default function App() {
     const scheduleHydrationRetry = () => {
       const retries = metaHydrationRetryCountRef.current[targetUserId] || 0;
       metaHydrationRetryCountRef.current[targetUserId] = retries + 1;
-      // Fast retries (4s) for the first 3 attempts, then periodic 30s recovery so hydration can self-heal without reload
       const delayMs = retries < 3 ? 4000 : 30000;
       retryTimerId = setTimeout(() => {
         if (!isCancelled && activeUserIdRef.current === targetUserId) {
@@ -762,7 +933,6 @@ export default function App() {
             };
           });
 
-          // Ensure any offline/unsynced edits for expenses not yet in remoteMeta are also retained
           Object.entries(userSessionEdits).forEach(([expId, editVal]) => {
             if (editVal && typeof editVal === 'object') {
               mergedMap[expId] = editVal;
@@ -868,7 +1038,6 @@ export default function App() {
       return { ...prev, [targetUserId]: nextMap };
     });
 
-    // If profile hydration had previously failed, trigger an immediate hydration retry so this edit can sync
     if (!isMetaHydratedRef.current) {
       metaHydrationRetryCountRef.current[targetUserId] = 0;
       setMetaHydrationRetryTick((t) => t + 1);
@@ -985,7 +1154,6 @@ export default function App() {
   const autoReminderRetryTimersRef = useRef({});
   const [reminderRetryTick, setReminderRetryTick] = useState(0);
 
-  // Clean up any scheduled retry timers only when App unmounts
   useEffect(() => {
     const timersMap = autoReminderRetryTimersRef.current;
     return () => {
@@ -1051,7 +1219,6 @@ export default function App() {
       for (const { cycle, periodKey } of cycleConfigs) {
         if (isCancelled || activeUserIdRef.current !== effectUserId) break;
 
-        // Only remind for recurring items matching this cycle that are neither skipped nor already confirmed
         const cyclePendingExpenses = activeMonthlyExpenses
           .filter((exp) => exp.is_recurring)
           .map((exp) => {
@@ -1100,7 +1267,7 @@ export default function App() {
           const res = await sendRecurringExpenseReminderEmail({
             userId: effectUserId,
             recipientEmail: effectUserEmail,
-            username: username || effectUserEmail.split('@')[0],
+            username: sanitizeUsername(username || effectUserEmail.split('@')[0]),
             periodKey,
             recurrenceCycle: cycle,
             pendingExpenses: cyclePendingExpenses,
@@ -1156,9 +1323,11 @@ export default function App() {
     formatCurrency,
     reminderRetryTick
   ]);
+
+  // Gate both Formal Audit and Visual Dashboard Excel exports to MANAGED Pro
   const handleExportData = async (exportFormat) => {
-    if (exportFormat === 'visual' && !hasProAccess) {
-      setUpgradePromptFeature('visual_excel_reports');
+    if (!hasProAccess) {
+      setUpgradePromptFeature('excel_audit_exports');
       return;
     }
     const todayStr = getToday();
@@ -1434,7 +1603,7 @@ export default function App() {
         }
       }
 
-      // 2. FORWARD RECURRING EXPENSES (Monthly/Daily -> nextMonthStamp; Yearly -> nextYearStamp)
+      // 2. FORWARD RECURRING EXPENSES
       const recurringExpenses = monthlyExpenses.filter(e => e.is_recurring);
       let newRecurring = [];
       if (recurringExpenses.length > 0) {
@@ -1489,7 +1658,7 @@ export default function App() {
         setAssetAdjustments([...data, ...assetAdjustments]);
       }
 
-      // 4. GAMIFICATION (Excludes skipped recurring expenses from the perfect-month check)
+      // 4. GAMIFICATION
       let isPerfectMonth = true;
       const expenseCategoriesForCheck = categories.filter(c => c.type !== 'asset');
       expenseCategoriesForCheck.forEach(cat => {
@@ -1527,9 +1696,15 @@ export default function App() {
     }
   };
 
+  // Gate creating more than 3 budget categories to MANAGED Pro
   const handleAddCategory = async (e) => {
     e.preventDefault();
     if (isReadOnly || !newCategoryName.trim()) return;
+    if (!hasProAccess && categories.length >= 3) {
+      setIsCategoryModalOpen(false);
+      setUpgradePromptFeature('custom_categories_limit');
+      return;
+    }
 
     const goalVal = newCategoryType === 'asset' ? (parseFloat(newCategoryGoal) || 0) : 0;
     const colors = ['teal-600', 'orange-600', 'cyan-600', 'purple-600', 'rose-600', 'amber-600'];
@@ -2413,7 +2588,7 @@ export default function App() {
             <p className="text-xs text-gray-600 dark:text-zinc-400 mb-6 leading-relaxed">
               {t(
                 'pro_upgrade_desc',
-                'Your account is currently on the Free Tier. Upgrade to MANAGED Pro (or request a Special VIP pass from an administrator in Support) to unlock unlimited Sandbox sheets, Visual Dashboard Excel reports, and multi-goal Wealth Objectives.'
+                'Your account is currently on the Free Tier. Upgrade to MANAGED Pro in Settings → Subscription to unlock Formal & Visual Excel Audit Exports, Unlimited Custom Categories, Unlimited Sterling AI Commands, Multi-Sheet Sandboxes, and Multi-Goal Wealth Objectives.'
               )}
             </p>
             <div className="flex gap-3">
@@ -2428,11 +2603,11 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setUpgradePromptFeature(null);
-                  setActiveTab('support');
+                  setActiveTab('settings');
                 }}
                 className="flex-1 py-2.5 rounded-lg font-bold text-xs bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm transition-colors"
               >
-                {t('request_pro_access', 'Request Pro Access')}
+                {t('upgrade_modal_goto_billing', 'Go to Settings → Subscription')}
               </button>
             </div>
           </div>
@@ -2457,6 +2632,49 @@ export default function App() {
           {alertMsg && (
             <div className="mb-6 p-3 rounded-md text-sm font-medium border bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/20 dark:border-emerald-500/40 dark:text-emerald-200 shadow-sm">
               {alertMsg}
+            </div>
+          )}
+
+          {checkoutSyncState.status === 'delayed' && !hasProAccess && (
+            <div
+              role="status"
+              className="mb-6 p-4 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm"
+            >
+              <span className="text-xs font-semibold">
+                {t(
+                  'err_checkout_sync_delayed',
+                  'Subscription activation is taking longer than expected. Click Retry Status Check or Reload to sync your MANAGED Pro status.'
+                )}
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCheckoutSyncState((prev) => ({
+                      status: 'polling',
+                      retryCount: prev.retryCount + 1
+                    }))
+                  }
+                  className="px-3 py-1.5 rounded-md text-xs font-bold bg-emerald-700 hover:bg-emerald-800 text-white transition-colors"
+                >
+                  {t('retry_checkout_sync_btn', 'Retry Status Check')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="px-3 py-1.5 rounded-md text-xs font-bold bg-white dark:bg-zinc-800 border border-amber-300 dark:border-zinc-700 text-gray-800 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors"
+                >
+                  {t('reload_page_btn', 'Reload Page')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCheckoutSyncState({ status: 'idle', retryCount: 0 })}
+                  aria-label={t('dismiss', 'Dismiss')}
+                  className="px-2 py-1 text-xs font-bold opacity-70 hover:opacity-100"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
           )}
 
@@ -2495,6 +2713,8 @@ export default function App() {
               <CashFlowTab
                 key={activeUserId || 'guest'}
                 userId={activeUserId}
+                hasProAccess={hasProAccess}
+                onRequireProUpgrade={setUpgradePromptFeature}
                 expenseMetaMap={expenseMetaMap}
                 updateExpenseMeta={updateExpenseMeta}
                 isExpenseSkippedForCurrentPeriod={isExpenseSkippedForCurrentPeriod}
@@ -2723,9 +2943,9 @@ export default function App() {
                 setSalary={setSalary}
                 currencyMode={currencyMode}
                 setCurrencyMode={setCurrencyMode}
+                setCurrency={setCurrency}
                 customCurrency={customCurrency}
                 setCustomCurrency={setCustomCurrency}
-                setCurrency={setCurrency}
                 exportScope={exportScope}
                 setExportScope={setExportScope}
                 exportMonth={exportMonth}
@@ -2736,6 +2956,17 @@ export default function App() {
                 emailRemindersEnabled={emailRemindersEnabled}
                 setEmailRemindersEnabled={setEmailRemindersEnabled}
                 userEmail={session?.user?.email || ''}
+                userId={session?.user?.id || ''}
+                subscriptionTier={subscriptionTier}
+                setSubscriptionTier={setSubscriptionTier}
+                userRole={userRole}
+                subscriptionStatus={subscriptionStatus}
+                setSubscriptionStatus={setSubscriptionStatus}
+                subscriptionPeriodEnd={subscriptionPeriodEnd}
+                setSubscriptionPeriodEnd={setSubscriptionPeriodEnd}
+                cancelAtPeriodEnd={cancelAtPeriodEnd}
+                setCancelAtPeriodEnd={setCancelAtPeriodEnd}
+                onConfirmProForUser={confirmProForUser}
               />
             )}
             {activeTab === 'support' && (
@@ -2762,6 +2993,8 @@ export default function App() {
         <AIAssistantDrawer
           key={activeUserId || 'guest'}
           userId={activeUserId}
+          hasProAccess={hasProAccess}
+          onRequireProUpgrade={setUpgradePromptFeature}
           lastAddedExpenseId={lastAddedExpenseId}
           parsedSalary={parsedSalary}
           salary={salary}
@@ -2906,7 +3139,6 @@ export default function App() {
               .insert([rec ? { ...basePayload, recurrence_type: validRecType } : basePayload])
               .select();
 
-            // Only retry without recurrence_type if PostgREST/Postgres rejected recurrence_type as an unknown column
             const isMissingRecurrenceColumn =
               Boolean(error) &&
               (error.code === 'PGRST204' ||
@@ -2937,6 +3169,14 @@ export default function App() {
           }}
           onDirectCreateCategory={async ({ name, type = 'expense', percentage = 0, targetGoal = 0 }) => {
             if (isReadOnly) return { ok: false, error: `The ledger for **${selectedMonth}** is locked and read-only.` };
+            if (!hasProAccess && categories.length >= 3) {
+              setUpgradePromptFeature('custom_categories_limit');
+              return {
+                ok: false,
+                code: 'pro_limit',
+                error: t('ai_err_category_limit_pro', 'Free Tier workspaces include up to 3 budget categories. Upgrade to MANAGED Pro to create unlimited custom categories.')
+              };
+            }
             const cleanName = (name || '').trim();
             if (!cleanName) return { ok: false, error: 'Please provide a valid category name.' };
 
@@ -3000,7 +3240,27 @@ export default function App() {
             return { ok: true, category: updatedList.find(c => c.id === createdCat.id) || createdCat };
           }}
         />
-      </main >
-    </div >
+        <footer className="py-6 text-center text-xs text-gray-400 dark:text-zinc-500 flex items-center justify-center gap-4">
+          <button type="button" onClick={() => setLegalModalSection('terms')} className="hover:underline">
+            Terms of Service (18+)
+          </button>
+          <span>•</span>
+          <button type="button" onClick={() => setLegalModalSection('privacy')} className="hover:underline">
+            Privacy Policy
+          </button>
+          <span>•</span>
+          <button type="button" onClick={() => setLegalModalSection('cookies')} className="hover:underline">
+            Storage Notice
+          </button>
+        </footer>
+      </main>
+
+      <LegalModal
+        isOpen={Boolean(legalModalSection)}
+        initialSection={legalModalSection || 'terms'}
+        onSelectSection={setLegalModalSection}
+        onClose={() => setLegalModalSection(null)}
+      />
+    </div>
   );
 }
