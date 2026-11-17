@@ -68,24 +68,63 @@ export function getAIQuotaStatus(userId, hasProAccess, nowMs = Date.now()) {
 }
 
 /**
- * Records a single AI command execution for a Free-tier user atomically.
+ * Atomically checks and reserves a single AI command slot for a Free-tier user.
+ * Refuses reservation if 5 commands are already recorded within the 48-hour window.
  * @param {string} userId
  * @param {boolean} hasProAccess
  * @param {number} [nowMs]
  */
-export function recordAICommandUsage(userId, hasProAccess, nowMs = Date.now()) {
-  if (hasProAccess || !userId || typeof window === 'undefined') {
-    return getAIQuotaStatus(userId, hasProAccess, nowMs);
+export function tryConsumeAICommandQuota(userId, hasProAccess, nowMs = Date.now()) {
+  if (hasProAccess || !userId) {
+    return {
+      allowed: true,
+      remaining: Infinity,
+      limit: Infinity,
+      resetInHours: 0
+    };
   }
+
   try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return {
+        allowed: true,
+        remaining: FREE_AI_COMMAND_LIMIT - 1,
+        limit: FREE_AI_COMMAND_LIMIT,
+        resetInHours: 48
+      };
+    }
+
     const storage = window.localStorage;
-    if (!storage) return getAIQuotaStatus(userId, false, nowMs);
     const key = getStorageKey(userId);
     const active = getActiveAIUsageTimestamps(userId, nowMs);
-    const updated = [...active, nowMs].slice(-FREE_AI_COMMAND_LIMIT);
+
+    if (active.length >= FREE_AI_COMMAND_LIMIT) {
+      const oldestTs = active[0] || nowMs;
+      const msUntilNextSlot = Math.max(0, oldestTs + FREE_AI_WINDOW_MS - nowMs);
+      return {
+        allowed: false,
+        remaining: 0,
+        limit: FREE_AI_COMMAND_LIMIT,
+        resetInHours: Math.max(1, Math.ceil(msUntilNextSlot / (60 * 60 * 1000)))
+      };
+    }
+
+    const updated = [...active, nowMs];
     storage.setItem(key, JSON.stringify(updated));
-    return getAIQuotaStatus(userId, false, nowMs);
+
+    const remaining = Math.max(0, FREE_AI_COMMAND_LIMIT - updated.length);
+    const oldestTs = updated[0] || nowMs;
+    const msUntilNextSlot = Math.max(0, oldestTs + FREE_AI_WINDOW_MS - nowMs);
+
+    return {
+      allowed: true,
+      remaining,
+      limit: FREE_AI_COMMAND_LIMIT,
+      resetInHours: Math.max(1, Math.ceil(msUntilNextSlot / (60 * 60 * 1000)))
+    };
   } catch {
     return getAIQuotaStatus(userId, false, nowMs);
   }
 }
+
+export const recordAICommandUsage = tryConsumeAICommandQuota;

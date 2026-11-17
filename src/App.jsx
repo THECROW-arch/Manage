@@ -119,6 +119,29 @@ export default function App() {
   const [emailRemindersEnabled, setEmailRemindersEnabled] = useState(true);
   const [lastReminderPeriod, setLastReminderPeriod] = useState(null);
 
+  // Scopes checkout/sandbox Pro confirmation to the specific userId that upgraded
+  const checkoutConfirmedProUserIdRef = useRef(null);
+
+  // Tracks pending checkout synchronization independently of the URL query parameter
+  const [checkoutSyncState, setCheckoutSyncState] = useState(() => {
+    if (typeof window === 'undefined') return { status: 'idle', retryCount: 0 };
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('checkout') === 'success') {
+        return { status: 'polling', retryCount: 0 };
+      }
+    } catch {
+      // Ignore URL parsing errors
+    }
+    return { status: 'idle', retryCount: 0 };
+  });
+
+  const confirmProForUser = useCallback((uid) => {
+    if (uid) {
+      checkoutConfirmedProUserIdRef.current = uid;
+    }
+  }, []);
+
   const hasProAccess = useMemo(() => {
     const cleanRole = String(userRole || '').trim().toLowerCase();
     const cleanTier = String(subscriptionTier || 'free').trim().toLowerCase();
@@ -230,14 +253,24 @@ export default function App() {
   const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
 
   const fetchUserData = async (userId, isBackgroundSync = false) => {
+    const previousLoadedUserId = window.__loadedUserId;
     window.__activeUserId = userId;
     if (window.__fetchingUserId === userId) return;
-    if (isBackgroundSync && window.__loadedUserId === userId) return;
+    if (isBackgroundSync && previousLoadedUserId === userId) return;
     window.__fetchingUserId = userId;
     const isStale = () => window.__activeUserId !== userId;
 
-    if (window.__loadedUserId !== userId) {
+    if (previousLoadedUserId !== userId) {
       setLoadingData(true);
+      // Clear any previous account's subscription state immediately when switching accounts
+      if (checkoutConfirmedProUserIdRef.current !== userId) {
+        checkoutConfirmedProUserIdRef.current = null;
+        setUserRole('customer');
+        setSubscriptionTier('free');
+        setSubscriptionStatus('free');
+        setSubscriptionPeriodEnd(null);
+        setCancelAtPeriodEnd(false);
+      }
     }
     try {
       let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
@@ -264,11 +297,29 @@ export default function App() {
       if (profile) {
         const loadedRole = profile.role || 'user';
         const loadedTier = profile.subscription_tier || 'free';
+        const loadedStatus = profile.subscription_status || 'free';
+        const loadedPeriodEnd = profile.subscription_period_end || null;
+        const loadedCancelAtEnd = Boolean(profile.cancel_at_period_end);
+
+        if (loadedTier === 'pro') {
+          checkoutConfirmedProUserIdRef.current = userId;
+        }
+
+        // Preserve a checkout poll Pro result ONLY when it belongs to the exact userId being hydrated
+        const preserveCheckoutProForThisUser =
+          checkoutConfirmedProUserIdRef.current === userId && loadedTier !== 'pro';
+
         setUserRole(loadedRole);
-        setSubscriptionTier(currentTier => (currentTier === 'pro' ? 'pro' : loadedTier));
-        setSubscriptionStatus(currentTier => (currentTier === 'pro' ? 'active' : (profile.subscription_status || 'free')));
-        setSubscriptionPeriodEnd(profile.subscription_period_end || null);
-        setCancelAtPeriodEnd(Boolean(profile.cancel_at_period_end));
+        if (preserveCheckoutProForThisUser) {
+          setSubscriptionTier('pro');
+          setSubscriptionStatus('active');
+        } else {
+          setSubscriptionTier(loadedTier);
+          setSubscriptionStatus(loadedStatus);
+          setSubscriptionPeriodEnd(loadedPeriodEnd);
+          setCancelAtPeriodEnd(loadedCancelAtEnd);
+        }
+
         // Validate saved tab access against loaded role safely
         setActiveTab(currentTab => {
           if (currentTab === 'dev_dashboard' && loadedRole !== 'dev' && loadedRole !== 'owner') return 'cashflow';
@@ -420,11 +471,22 @@ export default function App() {
       setSession(session);
       if (session) {
         if (event === 'TOKEN_REFRESHED') return;
+        if (checkoutConfirmedProUserIdRef.current && checkoutConfirmedProUserIdRef.current !== session.user.id) {
+          checkoutConfirmedProUserIdRef.current = null;
+          setCheckoutSyncState({ status: 'idle', retryCount: 0 });
+        }
         fetchUserData(session.user.id, true);
       } else {
         window.__activeUserId = null;
         window.__fetchingUserId = null;
         window.__loadedUserId = null;
+        checkoutConfirmedProUserIdRef.current = null;
+        setUserRole('customer');
+        setSubscriptionTier('free');
+        setSubscriptionStatus('free');
+        setSubscriptionPeriodEnd(null);
+        setCancelAtPeriodEnd(false);
+        setCheckoutSyncState({ status: 'idle', retryCount: 0 });
         setDraftHydratedUserId(null);
         setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
         setBoostOverridesByUser({});
@@ -439,7 +501,44 @@ export default function App() {
     };
   }, []);
 
-  // Poll profile subscription status briefly when returning from Lemon Squeezy checkout (?checkout=success)
+  // Refresh subscription fields from profiles whenever Settings is opened so any background billing change is reflected
+  useEffect(() => {
+    if (!activeUserId || activeTab !== 'settings') return;
+    let isCancelled = false;
+    const targetUserId = activeUserId;
+
+    supabase
+      .from('profiles')
+      .select('role,subscription_tier,subscription_status,subscription_period_end,cancel_at_period_end')
+      .eq('user_id', targetUserId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (isCancelled || window.__activeUserId !== targetUserId || !data) return;
+        const loadedTier = data.subscription_tier || 'free';
+        if (loadedTier === 'pro') {
+          checkoutConfirmedProUserIdRef.current = targetUserId;
+        }
+        const preserveCheckoutProForThisUser =
+          checkoutConfirmedProUserIdRef.current === targetUserId && loadedTier !== 'pro';
+
+        if (data.role) setUserRole(data.role);
+        if (preserveCheckoutProForThisUser) {
+          setSubscriptionTier('pro');
+          setSubscriptionStatus('active');
+        } else {
+          setSubscriptionTier(loadedTier);
+          setSubscriptionStatus(data.subscription_status || 'free');
+          setSubscriptionPeriodEnd(data.subscription_period_end || null);
+          setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeUserId, activeTab]);
+
+  // Poll profile subscription status when returning from checkout; survives language switches and provides manual retry recovery
   const tRef = useRef(t);
   useEffect(() => {
     tRef.current = t;
@@ -447,22 +546,23 @@ export default function App() {
 
   useEffect(() => {
     if (!activeUserId || typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('checkout') !== 'success') return;
+    if (checkoutSyncState.status !== 'polling') return;
 
-    params.delete('checkout');
-    const nextSearch = params.toString();
-    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
-    window.history.replaceState({}, '', nextUrl);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('checkout') === 'success') {
+      params.delete('checkout');
+      const nextSearch = params.toString();
+      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+      window.history.replaceState({}, '', nextUrl);
+    }
 
     let isCancelled = false;
     let attempts = 0;
     let timerId = null;
     const targetUserId = activeUserId;
-    const hasAppliedProRef = { current: false };
 
     const pollSubscription = async () => {
-      if (isCancelled || window.__activeUserId !== targetUserId || hasAppliedProRef.current) return;
+      if (isCancelled || window.__activeUserId !== targetUserId) return;
       attempts += 1;
       const { data } = await supabase
         .from('profiles')
@@ -470,36 +570,32 @@ export default function App() {
         .eq('user_id', targetUserId)
         .maybeSingle();
 
-      if (isCancelled || window.__activeUserId !== targetUserId || hasAppliedProRef.current) return;
+      if (isCancelled || window.__activeUserId !== targetUserId) return;
 
       if (data?.subscription_tier === 'pro') {
-        hasAppliedProRef.current = true;
+        checkoutConfirmedProUserIdRef.current = targetUserId;
         setSubscriptionTier('pro');
         setSubscriptionStatus(data.subscription_status || 'active');
         setSubscriptionPeriodEnd(data.subscription_period_end || null);
         setCancelAtPeriodEnd(Boolean(data.cancel_at_period_end));
+        setCheckoutSyncState({ status: 'idle', retryCount: 0 });
         setAlertMsg(tRef.current('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
         return;
       }
 
       if (attempts < 6) {
-        timerId = setTimeout(pollSubscription, 3000);
+        timerId = setTimeout(pollSubscription, 2500);
       } else {
-        setAlertMsg(
-          tRef.current(
-            'err_checkout_sync_delayed',
-            'Subscription activation is taking longer than expected. Click here or refresh to sync your Pro status.'
-          )
-        );
+        setCheckoutSyncState((prev) => ({ ...prev, status: 'delayed' }));
       }
     };
 
-    timerId = setTimeout(pollSubscription, 1000);
+    timerId = setTimeout(pollSubscription, 800);
     return () => {
       isCancelled = true;
       if (timerId) clearTimeout(timerId);
     };
-  }, [activeUserId]);
+  }, [activeUserId, checkoutSyncState.status, checkoutSyncState.retryCount]);
 
   const handleLogoutRequest = () => {
     setShowLogoutConfirm(true);
@@ -509,6 +605,8 @@ export default function App() {
     try {
       window.__activeUserId = null;
       window.__fetchingUserId = null;
+      window.__loadedUserId = null;
+      checkoutConfirmedProUserIdRef.current = null;
       await supabase.auth.signOut();
       setSession(null);
       setExpenses([]);
@@ -521,6 +619,7 @@ export default function App() {
       setSubscriptionStatus('free');
       setSubscriptionPeriodEnd(null);
       setCancelAtPeriodEnd(false);
+      setCheckoutSyncState({ status: 'idle', retryCount: 0 });
       setDraftHydratedUserId(null);
       setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
       setBoostOverridesByUser({});
@@ -2536,6 +2635,49 @@ export default function App() {
             </div>
           )}
 
+          {checkoutSyncState.status === 'delayed' && !hasProAccess && (
+            <div
+              role="status"
+              className="mb-6 p-4 rounded-lg border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm"
+            >
+              <span className="text-xs font-semibold">
+                {t(
+                  'err_checkout_sync_delayed',
+                  'Subscription activation is taking longer than expected. Click Retry Status Check or Reload to sync your MANAGED Pro status.'
+                )}
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCheckoutSyncState((prev) => ({
+                      status: 'polling',
+                      retryCount: prev.retryCount + 1
+                    }))
+                  }
+                  className="px-3 py-1.5 rounded-md text-xs font-bold bg-emerald-700 hover:bg-emerald-800 text-white transition-colors"
+                >
+                  {t('retry_checkout_sync_btn', 'Retry Status Check')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="px-3 py-1.5 rounded-md text-xs font-bold bg-white dark:bg-zinc-800 border border-amber-300 dark:border-zinc-700 text-gray-800 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors"
+                >
+                  {t('reload_page_btn', 'Reload Page')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCheckoutSyncState({ status: 'idle', retryCount: 0 })}
+                  aria-label={t('dismiss', 'Dismiss')}
+                  className="px-2 py-1 text-xs font-bold opacity-70 hover:opacity-100"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+
           <MobileHeader
             activeTab={activeTab}
             setActiveTab={setActiveTab}
@@ -2824,6 +2966,7 @@ export default function App() {
                 setSubscriptionPeriodEnd={setSubscriptionPeriodEnd}
                 cancelAtPeriodEnd={cancelAtPeriodEnd}
                 setCancelAtPeriodEnd={setCancelAtPeriodEnd}
+                onConfirmProForUser={confirmProForUser}
               />
             )}
             {activeTab === 'support' && (

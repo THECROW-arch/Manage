@@ -40,7 +40,8 @@ export default function SettingsTab({
   subscriptionPeriodEnd = null,
   setSubscriptionPeriodEnd,
   cancelAtPeriodEnd = false,
-  setCancelAtPeriodEnd
+  setCancelAtPeriodEnd,
+  onConfirmProForUser
 }) {
   const { t, i18n } = useTranslation();
   const [isProcessingDanger, setIsProcessingDanger] = useState(false);
@@ -73,7 +74,6 @@ export default function SettingsTab({
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
-      billingOpIdRef.current += 1;
     };
   }, []);
 
@@ -95,6 +95,8 @@ export default function SettingsTab({
 
   /**
    * Starts a MANAGED Pro checkout session or sandbox upgrade.
+   * Reconciles App-owned subscription state even if SettingsTab unmounts before completion,
+   * provided the same user account remains active.
    */
   const handleUpgradeClick = async () => {
     if (isBillingBusy) return;
@@ -108,26 +110,34 @@ export default function SettingsTab({
       msg: { text: '', type: '' }
     });
 
-    const isStillCurrent = () =>
+    const isSameActiveAccount = (res) =>
+      activeAccountRef.current === originAccount &&
+      (!originUserId || window.__activeUserId === originUserId) &&
+      !res?.staleAccount &&
+      (!originUserId || !res?.userId || res.userId === originUserId);
+
+    const canUpdateLocalUI = () =>
       isMountedRef.current &&
       activeAccountRef.current === originAccount &&
       billingOpIdRef.current === opId;
 
     try {
       const res = await startProCheckoutSession(originUserId);
-      if (!isStillCurrent() || res?.staleAccount || (originUserId && res?.userId && res.userId !== originUserId)) {
+      if (!isSameActiveAccount(res)) {
         return;
       }
 
       if (!res?.ok) {
-        setBillingState({
-          account: originAccount,
-          busy: false,
-          msg: {
-            text: res?.error || t('err_checkout_start', 'Unable to start checkout session right now.'),
-            type: 'error'
-          }
-        });
+        if (canUpdateLocalUI()) {
+          setBillingState({
+            account: originAccount,
+            busy: false,
+            msg: {
+              text: res?.error || t('err_checkout_start', 'Unable to start checkout session right now.'),
+              type: 'error'
+            }
+          });
+        }
         return;
       }
 
@@ -137,21 +147,26 @@ export default function SettingsTab({
       }
 
       if (res.simulated) {
+        // Always update App-level billing state if the same account is active, even if SettingsTab unmounted
+        onConfirmProForUser?.(originUserId);
         setSubscriptionTier?.('pro');
         setSubscriptionStatus?.(res.subscriptionStatus || 'active');
         setSubscriptionPeriodEnd?.(res.subscriptionPeriodEnd || null);
         setCancelAtPeriodEnd?.(false);
-        setBillingState({
-          account: originAccount,
-          busy: false,
-          msg: {
-            text: t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'),
-            type: 'success'
-          }
-        });
+
+        if (canUpdateLocalUI()) {
+          setBillingState({
+            account: originAccount,
+            busy: false,
+            msg: {
+              text: t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'),
+              type: 'success'
+            }
+          });
+        }
       }
     } catch (err) {
-      if (!isStillCurrent()) return;
+      if (!canUpdateLocalUI()) return;
       console.error('Upgrade failed:', err);
       setBillingState({
         account: originAccount,
@@ -162,7 +177,7 @@ export default function SettingsTab({
         }
       });
     } finally {
-      if (isStillCurrent()) {
+      if (canUpdateLocalUI()) {
         setBillingState((prev) =>
           prev.account === originAccount ? { ...prev, busy: false } : prev
         );
@@ -173,6 +188,7 @@ export default function SettingsTab({
   /**
    * 1-Click subscription cancellation: immediately stops future recurring billing
    * while keeping Pro features active until the end of the current paid period.
+   * Reconciles App-owned state even if SettingsTab unmounts while the request is in flight.
    */
   const handleOneClickCancel = async () => {
     if (isBillingBusy || !isPaidPro || cancelAtPeriodEnd) return;
@@ -186,56 +202,67 @@ export default function SettingsTab({
       msg: { text: '', type: '' }
     });
 
-    const isStillCurrent = () =>
+    const isSameActiveAccount = (res) =>
+      activeAccountRef.current === originAccount &&
+      (!originUserId || window.__activeUserId === originUserId) &&
+      !res?.staleAccount &&
+      (!originUserId || !res?.userId || res.userId === originUserId);
+
+    const canUpdateLocalUI = () =>
       isMountedRef.current &&
       activeAccountRef.current === originAccount &&
       billingOpIdRef.current === opId;
 
     try {
       const res = await cancelProSubscription(originUserId);
-      if (!isStillCurrent() || res?.staleAccount || (originUserId && res?.userId && res.userId !== originUserId)) {
+      if (!isSameActiveAccount(res)) {
         return;
       }
 
       if (!res?.ok) {
-        setBillingState({
-          account: originAccount,
-          busy: false,
-          msg: {
-            text: res?.error || t('err_cancel_sub', 'Could not cancel subscription right now. Please try again.'),
-            type: 'error'
-          }
-        });
+        if (canUpdateLocalUI()) {
+          setBillingState({
+            account: originAccount,
+            busy: false,
+            msg: {
+              text: res?.error || t('err_cancel_sub', 'Could not cancel subscription right now. Please try again.'),
+              type: 'error'
+            }
+          });
+        }
         return;
       }
 
+      // Always apply completed cancellation state to App if the same account is still active
       setSubscriptionStatus?.(res.subscriptionStatus || 'canceled_pending_expiry');
       if (res.subscriptionPeriodEnd) {
         setSubscriptionPeriodEnd?.(res.subscriptionPeriodEnd);
       }
       setCancelAtPeriodEnd?.(true);
 
-      const endStr = res.subscriptionPeriodEnd
-        ? new Date(res.subscriptionPeriodEnd).toLocaleDateString(undefined, {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric'
-          })
-        : 'the end of your billing period';
+      if (canUpdateLocalUI()) {
+        const endStr = res.subscriptionPeriodEnd
+          ? new Date(res.subscriptionPeriodEnd).toLocaleDateString(undefined, {
+              year: 'numeric',
+              month: 'short',
+              day: 'numeric'
+            })
+          : 'the end of your billing period';
 
-      setBillingState({
-        account: originAccount,
-        busy: false,
-        msg: {
-          text: t(
-            'succ_sub_canceled',
-            `Recurring billing has been stopped immediately. You will not be charged again, and your Pro features remain active until ${endStr}.`
-          ),
-          type: 'success'
-        }
-      });
+        setBillingState({
+          account: originAccount,
+          busy: false,
+          msg: {
+            text: t(
+              'succ_sub_canceled',
+              `Recurring billing has been stopped immediately. You will not be charged again, and your Pro features remain active until ${endStr}.`
+            ),
+            type: 'success'
+          }
+        });
+      }
     } catch (err) {
-      if (!isStillCurrent()) return;
+      if (!canUpdateLocalUI()) return;
       console.error('Cancel subscription failed:', err);
       setBillingState({
         account: originAccount,
@@ -246,7 +273,7 @@ export default function SettingsTab({
         }
       });
     } finally {
-      if (isStillCurrent()) {
+      if (canUpdateLocalUI()) {
         setBillingState((prev) =>
           prev.account === originAccount ? { ...prev, busy: false } : prev
         );

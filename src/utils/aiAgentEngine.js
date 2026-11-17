@@ -1,6 +1,6 @@
 import i18n from '../i18n';
 import { calculateProgressiveTax, getToday } from './constants';
-import { getAIQuotaStatus, recordAICommandUsage } from './aiQuotaManager';
+import { tryConsumeAICommandQuota } from './aiQuotaManager';
 /**
  * Normalizes common user spelling typos and maps French, Spanish, and Arabic
  * natural-language commands into canonical intent tokens so all 23 handlers work across languages.
@@ -207,18 +207,17 @@ export async function processAIAgentTurn(rawInput, ctx) {
     const hasProAccess = Boolean(ctx?.hasProAccess);
     const quotaUserId = ctx?.userId || null;
     if (!hasProAccess && quotaUserId) {
-        const quota = getAIQuotaStatus(quotaUserId, false);
-        if (!quota.allowed) {
+        const reservation = tryConsumeAICommandQuota(quotaUserId, false);
+        if (!reservation.allowed) {
             ctx?.onRequireProUpgrade?.('sterling_ai_unlimited');
             return {
                 reply: t('ai_err_quota_reached', {
-                    limit: quota.limit,
-                    hours: quota.resetInHours,
-                    defaultValue: `You have used all ${quota.limit} free Sterling AI commands for the last 48 hours. Next free command unlocks in ~${quota.resetInHours}h, or upgrade to MANAGED Pro for unlimited AI access.`
+                    limit: reservation.limit,
+                    hours: reservation.resetInHours,
+                    defaultValue: `You have used all ${reservation.limit} free Sterling AI commands for the last 48 hours. Next free command unlocks in ~${reservation.resetInHours}h, or upgrade to MANAGED Pro for unlimited AI access.`
                 })
             };
         }
-        recordAICommandUsage(quotaUserId, false);
     }
 
     const text = rawTrimmed;
