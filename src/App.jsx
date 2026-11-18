@@ -1629,8 +1629,35 @@ export default function App() {
     }
   };
 
+  const catDeleteConcurrencyRef = useRef({
+    unlockAllEpoch: 0,
+    expCatChangedExternally: false,
+    adjCatChangedExternally: false,
+    expectedExpCatId: null,
+    expectedAdjCatId: null
+  });
+
+  useEffect(() => {
+    if (
+      catDeleteConcurrencyRef.current.expectedExpCatId !== null &&
+      expenseCategoryId !== catDeleteConcurrencyRef.current.expectedExpCatId
+    ) {
+      catDeleteConcurrencyRef.current.expCatChangedExternally = true;
+    }
+  }, [expenseCategoryId]);
+
+  useEffect(() => {
+    if (
+      catDeleteConcurrencyRef.current.expectedAdjCatId !== null &&
+      adjCatId !== catDeleteConcurrencyRef.current.expectedAdjCatId
+    ) {
+      catDeleteConcurrencyRef.current.adjCatChangedExternally = true;
+    }
+  }, [adjCatId]);
+
   const handleUnlockAll = () => {
     if (isReadOnly) return;
+    catDeleteConcurrencyRef.current.unlockAllEpoch += 1;
     setLockedCategories([]);
     setAlertMsg(t('msg_all_unlocked'));
   };
@@ -1913,16 +1940,25 @@ export default function App() {
   };
 
   const handleDeleteCategory = async (idToDelete) => {
-    if (isReadOnly) return;
-    if (categories.length <= 1) { setAlertMsg(t('err_keep_one_cat')); return; }
+    if (isReadOnly) return false;
+    if (categories.length <= 1) {
+      setAlertMsg(t('err_keep_one_cat'));
+      return false;
+    }
 
     const prevCategories = [...categories];
     const prevExpenses = [...expenses];
+    const wasDeletedCategoryLocked = lockedCategories.includes(idToDelete);
+    const unlockAllEpochAtStart = catDeleteConcurrencyRef.current.unlockAllEpoch;
+    const prevExpenseCategoryId = expenseCategoryId;
+    const prevAdjCatId = adjCatId;
     const categoryToRemove = categories.find(c => c.id === idToDelete);
+    if (!categoryToRemove) return false;
+
     const remainingCategories = categories.filter(c => c.id !== idToDelete).map(c => ({ ...c }));
     const changedCategories = [];
 
-    if (categoryToRemove && Number(categoryToRemove.percentage) > 0 && remainingCategories.length > 0) {
+    if (Number(categoryToRemove.percentage) > 0 && remainingCategories.length > 0) {
       let freed = Number(categoryToRemove.percentage) || 0;
       for (let i = 0; i < remainingCategories.length && freed > 0; i++) {
         const currentPct = Number(remainingCategories[i].percentage) || 0;
@@ -1937,27 +1973,64 @@ export default function App() {
       }
     }
 
+    const switchedExpCat = expenseCategoryId === idToDelete && remainingCategories.length > 0;
+    const fallbackExpCatId = switchedExpCat
+      ? (remainingCategories.find(c => c.type !== 'asset') || remainingCategories[0])?.id || ''
+      : expenseCategoryId;
+
+    const switchedAdjCat = adjCatId === idToDelete;
+    const fallbackAdjCatId = switchedAdjCat
+      ? remainingCategories.find(c => c.type === 'asset')?.id || ''
+      : adjCatId;
+
+    catDeleteConcurrencyRef.current.expectedExpCatId = switchedExpCat ? fallbackExpCatId : null;
+    catDeleteConcurrencyRef.current.expCatChangedExternally = false;
+    catDeleteConcurrencyRef.current.expectedAdjCatId = switchedAdjCat ? fallbackAdjCatId : null;
+    catDeleteConcurrencyRef.current.adjCatChangedExternally = false;
+
     setCategories(remainingCategories);
-    setExpenses(expenses.filter(e => e.category_id !== idToDelete));
-    if (expenseCategoryId === idToDelete && remainingCategories.length > 0) setExpenseCategoryId(remainingCategories[0].id);
+    setLockedCategories(current => current.filter(id => id !== idToDelete));
+    setExpenses(current => current.filter(e => e.category_id !== idToDelete));
+    if (switchedExpCat) {
+      setExpenseCategoryId(fallbackExpCatId);
+    }
+    if (switchedAdjCat) {
+      setAdjCatId(fallbackAdjCatId);
+    }
 
     try {
-      await supabase.from('expenses').delete().eq('category_id', idToDelete).eq('user_id', session.user.id);
-      const { error } = await supabase.from('categories').delete().eq('id', idToDelete).eq('user_id', session.user.id);
-      if (error) throw error;
-
-      for (const updated of changedCategories) {
-        const { error: pctErr } = await supabase
-          .from('categories')
-          .update({ percentage: updated.percentage })
-          .eq('id', updated.id)
-          .eq('user_id', session.user.id);
-        if (pctErr) throw pctErr;
-      }
+      const { error: rpcError } = await supabase.rpc('delete_category_and_redistribute', {
+        p_category_id: idToDelete,
+        p_redistribution: changedCategories
+      });
+      if (rpcError) throw rpcError;
+      return true;
     } catch {
       setAlertMsg(t('err_del_cat'));
       setCategories(prevCategories);
+      if (
+        wasDeletedCategoryLocked &&
+        catDeleteConcurrencyRef.current.unlockAllEpoch === unlockAllEpochAtStart
+      ) {
+        setLockedCategories(current =>
+          current.includes(idToDelete) ? current : [...current, idToDelete]
+        );
+      }
       setExpenses(prevExpenses);
+      if (switchedExpCat && !catDeleteConcurrencyRef.current.expCatChangedExternally) {
+        setExpenseCategoryId(current =>
+          current === fallbackExpCatId ? prevExpenseCategoryId : current
+        );
+      }
+      if (switchedAdjCat && !catDeleteConcurrencyRef.current.adjCatChangedExternally) {
+        setAdjCatId(current =>
+          current === fallbackAdjCatId ? prevAdjCatId : current
+        );
+      }
+      return false;
+    } finally {
+      catDeleteConcurrencyRef.current.expectedExpCatId = null;
+      catDeleteConcurrencyRef.current.expectedAdjCatId = null;
     }
   };
 
@@ -2558,9 +2631,11 @@ export default function App() {
 
     const tempId = crypto.randomUUID();
     const targetAdjDate = adjDate || `${selectedMonth}-${getToday().slice(8, 10)}`;
-    const prevAdjustments = [...assetAdjustments];
 
-    setAssetAdjustments([{ id: tempId, user_id: session.user.id, category_id: adjCatId, amount: val, note: adjNote.trim(), adjustment_date: targetAdjDate }, ...assetAdjustments]);
+    setAssetAdjustments(current => [
+      { id: tempId, user_id: session.user.id, category_id: adjCatId, amount: val, note: adjNote.trim(), adjustment_date: targetAdjDate },
+      ...current
+    ]);
     setAdjAmount(''); setAdjNote('');
 
     try {
@@ -2570,7 +2645,7 @@ export default function App() {
       if (error) throw error;
       setAssetAdjustments(current => current.map(a => a.id === tempId ? data[0] : a));
     } catch {
-      setAssetAdjustments(prevAdjustments);
+      setAssetAdjustments(current => current.filter(a => a.id !== tempId));
       setAlertMsg(t('err_log_adj'));
     }
   };
