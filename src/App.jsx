@@ -1804,7 +1804,13 @@ export default function App() {
             ? e.skipped_periods
             : [];
         const retainedSkipped = Array.from(
-          new Set(existingSkipped.map(String).filter(p => p > selectedMonth))
+          new Set(
+            existingSkipped.map(String).filter(p => {
+              if (p.length >= 7) return p.slice(0, 7) > selectedMonth;
+              if (p.length === 4) return p > selectedMonth.slice(0, 4);
+              return p > selectedMonth;
+            })
+          )
         );
 
         recMetaToHydrate.push({

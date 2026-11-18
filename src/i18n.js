@@ -1374,7 +1374,7 @@ const phase12Translations = {
     toggle_ai_assistant: 'Toggle MANAGED AI Assistant',
     close_ai: 'Close AI',
     ai_assistant: 'AI Agent',
-    pro_feature_badge: 'MANAGED Pro Feature',
+    pro_feature_badge: 'MANAGED Pro • $6.99/month (tax excluded)',
     pro_unlock_title: 'Unlock {{feature}}',
     pro_feature_visual_excel: 'Visual Dashboard Excel Reports',
     pro_feature_unlimited_sandbox: 'Unlimited Sandbox Calculation Sheets',
@@ -1436,7 +1436,7 @@ const phase12Translations = {
     toggle_ai_assistant: "Basculer l'assistant IA MANAGED",
     close_ai: 'Fermer IA',
     ai_assistant: 'Agent IA',
-    pro_feature_badge: 'Fonctionnalité MANAGED Pro',
+    pro_feature_badge: 'Fonctionnalité MANAGED Pro • $6.99/mo',
     pro_unlock_title: 'Débloquer {{feature}}',
     pro_feature_visual_excel: 'Rapports Excel Tableau de Bord Visuel',
     pro_feature_unlimited_sandbox: 'Feuilles de Calcul Sandbox Illimitées',
@@ -1498,7 +1498,7 @@ const phase12Translations = {
     toggle_ai_assistant: 'Alternar asistente de IA MANAGED',
     close_ai: 'Cerrar IA',
     ai_assistant: 'Agente IA',
-    pro_feature_badge: 'Función MANAGED Pro',
+    pro_feature_badge: 'Función MANAGED Pro • $6.99/mo',
     pro_unlock_title: 'Desbloquear {{feature}}',
     pro_feature_visual_excel: 'Informes Excel de Panel Visual',
     pro_feature_unlimited_sandbox: 'Hojas de Cálculo Sandbox Ilimitadas',
@@ -1560,7 +1560,7 @@ const phase12Translations = {
     toggle_ai_assistant: 'تبديل مساعد الذكاء الاصطناعي',
     close_ai: 'إغلاق المساعد',
     ai_assistant: 'وكيل الذكاء الاصطناعي',
-    pro_feature_badge: 'ميزة MANAGED Pro',
+    pro_feature_badge: 'ميزة MANAGED Pro • $6.99/mo',
     pro_unlock_title: 'فتح {{feature}}',
     pro_feature_visual_excel: 'تقارير إكسل للوحة القيادة المرئية',
     pro_feature_unlimited_sandbox: 'أوراق حساب تجريبية غير محدودة',
@@ -2002,7 +2002,7 @@ const proGatesAndLimitTranslations = {
     pro_gate_excel_export: 'Excel Audit & Visual Dashboard Exports (Formal & Visual .xlsx reports)',
     pro_gate_custom_categories: 'Unlimited Custom Budget Categories (Free tier includes up to 3 categories)',
     pro_gate_sterling_ai: 'Unlimited Sterling AI Commands (Free tier includes 5 commands every 48 hours)',
-    upgrade_modal_goto_billing: 'Go to Settings → Subscription'
+    upgrade_modal_goto_billing: 'Go to Settings → Subscription ($6.99/mo)'
   },
   fr: {
     ai_err_input_too_long: 'Votre commande est trop longue (maximum 500 caractères). Veuillez raccourcir votre message et réessayer.',
@@ -2011,7 +2011,7 @@ const proGatesAndLimitTranslations = {
     pro_gate_excel_export: 'Exports Excel Audit Formel et Tableau de Bord Visuel (.xlsx)',
     pro_gate_custom_categories: 'Catégories de budget personnalisées illimitées (jusqu’à 3 en version gratuite)',
     pro_gate_sterling_ai: 'Commandes Sterling AI illimitées (5 commandes toutes les 48h en version gratuite)',
-    upgrade_modal_goto_billing: 'Aller à Paramètres → Abonnement'
+    upgrade_modal_goto_billing: 'Aller à Paramètres → Abonnement ($6.99/mo)'
   },
   es: {
     ai_err_input_too_long: 'Tu comando es demasiado largo (máximo 500 caracteres). Acorta tu mensaje e inténtalo de nuevo.',
@@ -2020,7 +2020,7 @@ const proGatesAndLimitTranslations = {
     pro_gate_excel_export: 'Exportaciones Excel de Auditoría Formal y Panel Visual (.xlsx)',
     pro_gate_custom_categories: 'Categorías de presupuesto personalizadas ilimitadas (hasta 3 en el plan gratuito)',
     pro_gate_sterling_ai: 'Comandos ilimitados de Sterling AI (5 comandos cada 48h en el plan gratuito)',
-    upgrade_modal_goto_billing: 'Ir a Ajustes → Suscripción'
+    upgrade_modal_goto_billing: 'Ir a Ajustes → Suscripción ($6.99/mo)'
   },
   ar: {
     ai_err_input_too_long: 'رسالتك طويلة جداً (الحد الأقصى 500 حرف). يرجى اختصار الرسالة والمحاولة مرة أخرى.',
@@ -2029,7 +2029,7 @@ const proGatesAndLimitTranslations = {
     pro_gate_excel_export: 'تصدير تقارير التدقيق الرسمي ولوحة التحكم المرئية (ملفات Excel)',
     pro_gate_custom_categories: 'فئات ميزانية مخصصة غير محدودة (تشمل الباقة المجانية حتى 3 فئات)',
     pro_gate_sterling_ai: 'أوامر Sterling AI غير محدودة (تشمل الباقة المجانية 5 أوامر كل 48 ساعة)',
-    upgrade_modal_goto_billing: 'الانتقال إلى الإعدادات ← الاشتراك'
+    upgrade_modal_goto_billing: 'الانتقال إلى الإعدادات ← الاشتراك ($6.99/mo)'
   }
 };
 
