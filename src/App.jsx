@@ -2334,26 +2334,19 @@ export default function App() {
     });
 
     try {
-      let insertedExps = [];
-      if (newBundleTransactions.length > 0) {
-        const { data, error: expError } = await supabase.from('expenses').insert(newBundleTransactions).select();
-        if (expError) throw expError;
-        insertedExps = data;
-      }
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('finalize_bundle', {
+        p_bundle_id: bundle.id,
+        p_expense_inserts: newBundleTransactions,
+        p_adjustment_inserts: newPortfolioWithdrawals
+      });
+      if (rpcError) throw rpcError;
 
-      let insertedAdjs = [];
-      if (newPortfolioWithdrawals.length > 0) {
-        const { data, error: adjError } = await supabase.from('asset_adjustments').insert(newPortfolioWithdrawals).select();
-        if (adjError) throw adjError;
-        insertedAdjs = data;
-      }
+      const insertedExps = Array.isArray(rpcResult?.inserted_expenses) ? rpcResult.inserted_expenses : [];
+      const insertedAdjs = Array.isArray(rpcResult?.inserted_adjustments) ? rpcResult.inserted_adjustments : [];
 
-      const { error: bundleError } = await supabase.from('bundles').update({ status: 'locked' }).eq('id', bundle.id);
-      if (bundleError) throw bundleError;
-
-      if (insertedExps.length > 0) setExpenses([...insertedExps, ...expenses]);
-      if (insertedAdjs.length > 0) setAssetAdjustments([...insertedAdjs, ...assetAdjustments]);
-      setBundles(bundles.map(b => b.id === bundle.id ? { ...b, status: 'locked' } : b));
+      if (insertedExps.length > 0) setExpenses(current => [...insertedExps, ...current]);
+      if (insertedAdjs.length > 0) setAssetAdjustments(current => [...insertedAdjs, ...current]);
+      setBundles(current => current.map(b => b.id === bundle.id ? { ...b, status: 'locked' } : b));
       setAlertMsg(t('succ_bundle_locked', { name: bundle.name }));
     } catch (error) {
       setAlertMsg(t('err_locking_occasion', { error: error.message || 'Database error' }));

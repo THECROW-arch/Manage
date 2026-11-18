@@ -1,5 +1,3 @@
-New-Item -ItemType Directory -Path "supabase/migrations" -Force | Out-Null
-@'
 CREATE OR REPLACE FUNCTION public.delete_category_and_redistribute(
   p_category_id uuid,
   p_redistribution jsonb DEFAULT '[]'::jsonb
@@ -18,6 +16,9 @@ BEGIN
   IF v_uid IS NULL THEN
     RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
   END IF;
+
+  -- Serialize concurrent category deletions for this user
+  PERFORM 1 FROM public.profiles WHERE user_id = v_uid FOR UPDATE;
 
   SELECT count(*) INTO v_total_categories
   FROM public.categories
@@ -52,4 +53,3 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public.delete_category_and_redistribute(uuid, jsonb) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.delete_category_and_redistribute(uuid, jsonb) TO authenticated;
-'@ | Set-Content -Path "supabase/migrations/20261118000000_delete_category_and_redistribute.sql" -Encoding UTF8
