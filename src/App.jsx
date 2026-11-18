@@ -33,7 +33,7 @@ const readUserStorage = (prefix, uid, fallback) => {
 };
 
 /**
- * Main application component orchestrating global state, data fetching, and tab routing.
+- Main application component orchestrating global state, data fetching, and tab routing.
  */
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -1261,8 +1261,8 @@ export default function App() {
   const assetCategories = categories.filter(c => c.type === 'asset');
 
   /**
-   * Shared creation handler for Wealth Objectives used by both the Portfolio form and Sterling AI.
-   * Enforces the 1-objective Free Tier limit consistently across both creation paths.
+- Shared creation handler for Wealth Objectives used by both the Portfolio form and Sterling AI.
+- Enforces the 1-objective Free Tier limit consistently across both creation paths.
    */
   const handleCreateWealthObjective = ({ name, targetAmount, autoPulls = {} }) => {
     if (isReadOnly) {
@@ -1735,6 +1735,7 @@ export default function App() {
     setCategories(newCategories);
   };
 
+  // Atomic Month-End Closure via Postgres RPC (`close_month`)
   const handleCloseMonth = async () => {
     if (closedMonths.some(c => c.month === selectedMonth)) {
       setAlertMsg(t('err_month_already_closed', { month: selectedMonth }));
@@ -1744,16 +1745,15 @@ export default function App() {
     const [year, month] = selectedMonth.split('-');
     const nextDate = new Date(year, parseInt(month), 1);
     const nextMonthStamp = nextDate.getFullYear() + '-' + String(nextDate.getMonth() + 1).padStart(2, '0') + '-01';
-
-    const previousAdj = [...assetAdjustments];
-    const previousClosed = [...closedMonths];
-    const previousExpenses = [...expenses];
+    const nextMonthYYYYMM = nextMonthStamp.slice(0, 7);
+    const nextYearStamp = `${Number(year) + 1}-${String(month).padStart(2, '0')}-01`;
+    const todayStr = getToday();
 
     try {
-      // 1. AGGREGATE BATCHED EXPENSES
+      // 1. PREPARE BATCHED EXPENSE AGGREGATION
       const batchedExpenses = activeMonthlyExpenses.filter(e => e.is_batched);
-      let newlyAggregated = [];
-      let idsToDelete = [];
+      const newlyAggregatedPayloads = [];
+      const idsToDelete = [];
 
       if (batchedExpenses.length > 0) {
         const grouped = batchedExpenses.reduce((acc, curr) => {
@@ -1767,113 +1767,149 @@ export default function App() {
         const closedMonthEndStamp = `${selectedMonth}-28`;
         for (const [, exps] of Object.entries(grouped)) {
           const sum = exps.reduce((total, e) => total + parseFloat(e.cost), 0);
-          newlyAggregated.push({
-            user_id: session.user.id, name: `${exps[0].name.trim()} (Batched x${exps.length})`, cost: sum,
-            category_id: exps[0].category_id, category: exps[0].category,
+          newlyAggregatedPayloads.push({
+            user_id: session.user.id,
+            name: `${exps[0].name.trim()} (Batched x${exps.length})`,
+            cost: sum,
+            category_id: exps[0].category_id,
+            category: exps[0].category,
             expense_date: closedMonthEndStamp,
-            is_recurring: false, is_batched: false
+            is_recurring: false,
+            is_batched: false,
+            recurrence_type: 'monthly',
+            skipped_periods: []
           });
           idsToDelete.push(...exps.map(e => e.id));
         }
-
-        if (idsToDelete.length > 0) await supabase.from('expenses').delete().in('id', idsToDelete);
-        if (newlyAggregated.length > 0) {
-          const { data, error } = await supabase.from('expenses').insert(newlyAggregated).select();
-          if (error) throw error;
-          newlyAggregated = data;
-        }
       }
 
-      // 2. FORWARD RECURRING EXPENSES
+      // 2. PREPARE FORWARDED RECURRING EXPENSES (Preserving frequency, daily dates, and future skipped periods)
       const recurringExpenses = monthlyExpenses.filter(e => e.is_recurring);
-      let newRecurring = [];
-      if (recurringExpenses.length > 0) {
-        const nextYearStamp = `${Number(year) + 1}-${String(month).padStart(2, '0')}-01`;
-        const recPayloads = recurringExpenses.map(e => {
-          const sourceFreq = expenseMetaMap[e.id]?.recurrenceType || 'monthly';
-          const targetDate = sourceFreq === 'yearly' ? nextYearStamp : nextMonthStamp;
-          return {
-            user_id: session.user.id,
-            name: e.name,
-            cost: e.cost,
-            category_id: e.category_id,
-            category: e.category,
-            expense_date: targetDate,
-            is_recurring: true,
-            is_batched: false,
-            recurrence_type: sourceFreq,
-            skipped_periods: []
-          };
-        });
-        const { data, error } = await supabase.from('expenses').insert(recPayloads).select();
-        if (error) throw error;
-        newRecurring = data || [];
-        newRecurring.forEach((insertedRow, idx) => {
-          const sourceExp = recurringExpenses[idx];
-          const sourceFreq = sourceExp ? expenseMetaMap[sourceExp.id]?.recurrenceType : null;
-          if (insertedRow?.id && sourceFreq) {
-            updateExpenseMeta(insertedRow.id, { recurrenceType: sourceFreq });
-          }
-        });
-      }
+      const recMetaToHydrate = [];
+      const recPayloads = recurringExpenses.map(e => {
+        const meta = expenseMetaMap[e.id] || {};
+        const rawFreq = meta.recurrenceType || e.recurrence_type || 'monthly';
+        const sourceFreq = ['daily', 'monthly', 'yearly'].includes(rawFreq) ? rawFreq : 'monthly';
+        const nextDailyDate = todayStr.startsWith(nextMonthYYYYMM) ? todayStr : nextMonthStamp;
+        const targetDate =
+          sourceFreq === 'yearly'
+            ? nextYearStamp
+            : sourceFreq === 'daily'
+              ? nextDailyDate
+              : nextMonthStamp;
 
-      // 3. WEALTH SWEEP
+        const existingSkipped = Array.isArray(meta.skippedPeriods)
+          ? meta.skippedPeriods
+          : Array.isArray(e.skipped_periods)
+            ? e.skipped_periods
+            : [];
+        const retainedSkipped = Array.from(
+          new Set(existingSkipped.map(String).filter(p => p > selectedMonth))
+        );
+
+        recMetaToHydrate.push({
+          recurrenceType: sourceFreq,
+          skippedPeriods: retainedSkipped
+        });
+
+        return {
+          user_id: session.user.id,
+          name: e.name,
+          cost: e.cost,
+          category_id: e.category_id,
+          category: e.category,
+          expense_date: targetDate,
+          is_recurring: true,
+          is_batched: false,
+          recurrence_type: sourceFreq,
+          skipped_periods: retainedSkipped
+        };
+      });
+
+      // 3. PREPARE WEALTH SWEEP ADJUSTMENTS
       const newAdjustments = [];
       assetCategories.forEach(cat => {
         const allocated = parsedSalary * (cat.percentage / 100);
-        const spentFromAsset = activeMonthlyExpenses.filter(e => e.category_id === cat.id).reduce((sum, e) => sum + parseFloat(e.cost), 0);
+        const spentFromAsset = activeMonthlyExpenses
+          .filter(e => e.category_id === cat.id)
+          .reduce((sum, e) => sum + parseFloat(e.cost), 0);
         const amountToSweep = Math.max(0, allocated - spentFromAsset);
 
         if (amountToSweep > 0) {
           newAdjustments.push({
-            user_id: session.user.id, category_id: cat.id, amount: amountToSweep,
+            user_id: session.user.id,
+            category_id: cat.id,
+            amount: amountToSweep,
             adjustment_date: nextMonthStamp,
             note: `Month-End Auto-Sweep (${selectedMonth})`
           });
         }
       });
 
-      if (newAdjustments.length > 0) {
-        const { data, error } = await supabase.from('asset_adjustments').insert(newAdjustments).select();
-        if (error) throw error;
-        setAssetAdjustments([...data, ...assetAdjustments]);
-      }
-
-      // 4. GAMIFICATION
+      // 4. COMPUTE GAMIFICATION STREAK
       let isPerfectMonth = true;
       const expenseCategoriesForCheck = categories.filter(c => c.type !== 'asset');
       expenseCategoriesForCheck.forEach(cat => {
         const categoryBase = parsedSalary * (cat.percentage / 100);
-        const spent = activeMonthlyExpenses.filter(e => e.category_id === cat.id).reduce((sum, e) => sum + parseFloat(e.cost), 0);
+        const spent = activeMonthlyExpenses
+          .filter(e => e.category_id === cat.id)
+          .reduce((sum, e) => sum + parseFloat(e.cost), 0);
         if (categoryBase > 0 && spent > categoryBase) isPerfectMonth = false;
       });
 
       const newStreak = isPerfectMonth ? currentStreak + 1 : 0;
       const newLongest = Math.max(newStreak, longestStreak);
-      await supabase.from('profiles').update({ current_streak: newStreak, longest_streak: newLongest }).eq('user_id', session.user.id);
+
+      // 5. EXECUTE SINGLE ATOMIC TRANSACTION VIA RPC
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('close_month', {
+        p_month: selectedMonth,
+        p_batched_delete_ids: idsToDelete,
+        p_batched_inserts: newlyAggregatedPayloads,
+        p_recurring_inserts: recPayloads,
+        p_sweep_adjustments: newAdjustments,
+        p_new_streak: newStreak,
+        p_new_longest: newLongest,
+        p_category_snapshot: categories
+      });
+
+      if (rpcError) throw rpcError;
+
+      const insertedBatched = Array.isArray(rpcResult?.inserted_batched) ? rpcResult.inserted_batched : [];
+      const insertedRecurring = Array.isArray(rpcResult?.inserted_recurring) ? rpcResult.inserted_recurring : [];
+      const insertedAdjustments = Array.isArray(rpcResult?.inserted_adjustments) ? rpcResult.inserted_adjustments : [];
+      const closedRecord = rpcResult?.closed_month || {
+        user_id: session.user.id,
+        month: selectedMonth,
+        category_snapshot: categories
+      };
+
+      insertedRecurring.forEach((insertedRow, idx) => {
+        const metaInfo = recMetaToHydrate[idx];
+        if (insertedRow?.id && metaInfo) {
+          updateExpenseMeta(insertedRow.id, {
+            recurrenceType: metaInfo.recurrenceType,
+            skippedPeriods: metaInfo.skippedPeriods,
+            confirmedPeriods: []
+          });
+        }
+      });
+
+      if (insertedAdjustments.length > 0) {
+        setAssetAdjustments(current => [...insertedAdjustments, ...current]);
+      }
       setCurrentStreak(newStreak);
       setLongestStreak(newLongest);
+      setClosedMonths(current => [...current, closedRecord]);
+      setExpenses(current => {
+        const remaining = current.filter(e => !idsToDelete.includes(e.id));
+        return [...insertedRecurring, ...insertedBatched, ...remaining];
+      });
 
-      // 5. FINALIZE MONTH CLOSURE & SAVE SNAPSHOT
-      const newClosedRecord = { user_id: session.user.id, month: selectedMonth, category_snapshot: categories };
-      const { data: closedData, error: closeError } = await supabase.from('closed_months').insert([newClosedRecord]).select();
-      if (closeError) throw closeError;
-
-      setClosedMonths([...closedMonths, closedData[0]]);
-      const updatedExpenses = expenses.filter(e => !idsToDelete.includes(e.id));
-      setExpenses([...newRecurring, ...newlyAggregated, ...updatedExpenses]);
-
-      const nextMonthYYYYMM = nextMonthStamp.slice(0, 7);
       setSelectedMonth(nextMonthYYYYMM);
-
       setAlertMsg(t('succ_month_closed', { month: selectedMonth }));
       window.scrollTo({ top: 0, behavior: 'smooth' });
-
     } catch (error) {
       setAlertMsg(t('err_db_closing_month', { error: error.message || error.details }));
-      setAssetAdjustments(previousAdj);
-      setClosedMonths(previousClosed);
-      setExpenses(previousExpenses);
     }
   };
 
@@ -2831,7 +2867,7 @@ export default function App() {
               ★
             </div>
             <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 mb-2">
-              {t('pro_feature_badge', 'MANAGED Pro Feature')}
+              {t('pro_feature_badge', 'MANAGED Pro • $6.99/month (tax excluded)')}
             </span>
             <h2 id="pro-upgrade-title" className="text-xl font-black text-gray-900 dark:text-white mb-2">
               {t('pro_unlock_title', {
@@ -2842,7 +2878,7 @@ export default function App() {
             <p className="text-xs text-gray-600 dark:text-zinc-400 mb-6 leading-relaxed">
               {t(
                 'pro_upgrade_desc',
-                'Your account is currently on the Free Tier. Upgrade to MANAGED Pro in Settings → Subscription to unlock Formal & Visual Excel Audit Exports, Unlimited Custom Categories, Unlimited Sterling AI Commands, Multi-Sheet Sandboxes, and Multi-Goal Wealth Objectives.'
+                'Your account is currently on the Free Tier. Upgrade to MANAGED Pro ($6.99/month, tax excluded) in Settings → Subscription to unlock Formal & Visual Excel Audit Exports, Unlimited Custom Categories, Unlimited Sterling AI Commands, Multi-Sheet Sandboxes, and Multi-Goal Wealth Objectives. Includes 1-click cancellation and a 2-Hour Unused Refund Policy.'
               )}
             </p>
             <div className="flex gap-3">
@@ -2861,7 +2897,7 @@ export default function App() {
                 }}
                 className="flex-1 py-2.5 rounded-lg font-bold text-xs bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm transition-colors"
               >
-                {t('upgrade_modal_goto_billing', 'Go to Settings → Subscription')}
+                {t('upgrade_modal_goto_billing', 'Go to Settings → Subscription ($6.99/mo)')}
               </button>
             </div>
           </div>

@@ -15,39 +15,8 @@
     <meta property="og:description" content="Take control of your finances with smart allocations and real-time tracking." />
     <meta property="og:type" content="website" />
 
-    <!-- Automatically crops empty margins from /favicon.png and adds a high-contrast badge for the browser tab -->
-    <script>
-      window.addEventListener('DOMContentLoaded', () => {
-        const img = new Image();
-        img.src = '/favicon.png';
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = 64;
-          canvas.height = 64;
-          const ctx = canvas.getContext('2d');
-
-          // Draw a sleek rounded squircle badge so the dark hand pops in dark browser tabs
-          ctx.fillStyle = '#F8FAFC';
-          ctx.strokeStyle = '#10B981';
-          ctx.lineWidth = 4;
-          ctx.beginPath();
-          ctx.roundRect(2, 2, 60, 60, 16);
-          ctx.fill();
-          ctx.stroke();
-
-          // Zoom in 2.1x on the center of favicon.png to crop out the empty transparent margins
-          const zoom = 2.1;
-          const sw = img.width / zoom;
-          const sh = img.height / zoom;
-          const sx = (img.width - sw) / 2;
-          const sy = (img.height - sh) / 2;
-          ctx.drawImage(img, sx, sy, sw, sh, 4, 4, 56, 56);
-
-          const link = document.getElementById('dynamic-favicon');
-          if (link) link.href = canvas.toDataURL('image/png');
-        };
-      });
-    </script>
+    <!-- Externalized favicon badge initializer (compliant with strict script-src 'self' CSP) -->
+    <script src="/favicon-init.js" defer></script>
   </head>
   <body class="bg-gray-50 dark:bg-zinc-950 text-gray-900 dark:text-white antialiased">
     <div id="root"></div>

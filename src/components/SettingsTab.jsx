@@ -11,10 +11,10 @@ import {
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
 /**
- * Renders the user account preferences, subscription, 1-click cancellation & 2-hour refund controls,
- * theme toggle, baseline salary configuration, global currency/language selectors,
- * custom-scoped Excel data export controls, and advanced security settings.
- * @param {Object} props - Component properties
+- Renders the user account preferences, subscription ($6.99/mo), 1-click cancellation & 2-hour refund controls,
+- theme toggle, baseline salary configuration, global currency/language selectors,
+- custom-scoped Excel data export controls, and advanced security settings.
+- @param {Object} props - Component properties
  */
 export default function SettingsTab({
   theme,
@@ -133,7 +133,7 @@ export default function SettingsTab({
       (isPaidPro && isWithinTwoHours && !proFeaturesUsed && !hasClaimedRefund));
 
   /**
-   * Starts a MANAGED Pro checkout session or sandbox upgrade.
+- Starts a MANAGED Pro checkout session or sandbox upgrade.
    */
   const handleUpgradeClick = async () => {
     if (isBillingBusy) return;
@@ -224,8 +224,8 @@ export default function SettingsTab({
   };
 
   /**
-   * 1-Click subscription cancellation: immediately stops future recurring billing
-   * while keeping Pro features active until the end of the current paid period.
+- 1-Click subscription cancellation: immediately stops future recurring billing
+- while keeping Pro features active until the end of the current paid period.
    */
   const handleOneClickCancel = async () => {
     if (isBillingBusy || !isPaidPro || cancelAtPeriodEnd) return;
@@ -318,8 +318,8 @@ export default function SettingsTab({
   };
 
   /**
-   * 2-Hour Unused Refund handler: verifies eligibility on the server, issues a full refund,
-   * and immediately revokes MANAGED Pro access back to the Free Tier.
+- 2-Hour Unused Refund handler: verifies eligibility on the server, issues a full refund,
+- and immediately revokes MANAGED Pro access back to the Free Tier.
    */
   const handleRequestRefund = async () => {
     if (isBillingBusy || !isRefundEligible) return;
@@ -425,7 +425,7 @@ export default function SettingsTab({
   };
 
   /**
-   * Handles updating the user's password via Supabase Auth.
+- Handles updating the user's password via Supabase Auth.
    */
   const handleUpdatePassword = async (e) => {
     e.preventDefault();
@@ -455,7 +455,7 @@ export default function SettingsTab({
   };
 
   /**
-   * Triggers a hard deletion of all user financial data.
+- Triggers an atomic hard deletion of all user financial data via Supabase RPC.
    */
   const handleWipeData = async () => {
     if (!window.confirm(t('confirm_wipe_data', 'WARNING: This will permanently delete all your financial data, expenses, and history. This action cannot be undone. Are you absolutely sure?'))) {
@@ -468,19 +468,26 @@ export default function SettingsTab({
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const results = await Promise.all([
-        supabase.from('expenses').delete().eq('user_id', session.user.id),
-        supabase.from('asset_adjustments').delete().eq('user_id', session.user.id),
-        supabase.from('bundles').delete().eq('user_id', session.user.id),
-        supabase.from('sandbox_sheets').delete().eq('user_id', session.user.id),
-        supabase.from('closed_months').delete().eq('user_id', session.user.id),
-      ]);
-
-      const hasError = results.some(res => res.error !== null);
-      if (hasError) {
-        console.error("Partial wipe failure:", results.filter(r => r.error));
-        alert(t('err_data_wipe_partial', 'Failed to completely wipe data. Some records may remain. Please try again.'));
+      const { error } = await supabase.rpc('wipe_user_financial_data');
+      if (error) {
+        console.error('Atomic wipe failed:', error);
+        alert(t('err_data_wipe_partial', 'Failed to wipe financial data. No records were deleted. Please try again.'));
         return;
+      }
+
+      const uid = session.user.id;
+      try {
+        localStorage.removeItem(`managed_monthly_boosts_${uid}`);
+        localStorage.removeItem(`managed_wealth_objectives_${uid}`);
+        localStorage.removeItem(`managed_expense_meta_${uid}`);
+        localStorage.removeItem(`managed_unsynced_expense_meta_${uid}`);
+        localStorage.removeItem(`managed_last_expense_${uid}`);
+        localStorage.removeItem(`managed_last_reminder_${uid}`);
+        localStorage.removeItem(`managed_last_reminder_${uid}_daily`);
+        localStorage.removeItem(`managed_last_reminder_${uid}_monthly`);
+        localStorage.removeItem(`managed_last_reminder_${uid}_yearly`);
+      } catch {
+        // Ignore storage cleanup errors
       }
 
       alert(t('succ_data_wiped', 'All financial data has been successfully wiped.'));
@@ -494,7 +501,7 @@ export default function SettingsTab({
   };
 
   /**
-   * Triggers permanent account deletion via Supabase RPC.
+- Triggers permanent account deletion via Supabase RPC.
    */
   const handleDeleteAccount = async () => {
     if (!window.confirm(t('confirm_delete_account', 'DANGER: This will permanently delete your entire account, profile, and all associated data. You will be logged out immediately. Are you sure?'))) {
@@ -534,21 +541,28 @@ export default function SettingsTab({
               {t('subscription_subhead', 'Manage your MANAGED plan, 1-click cancellation, and refund eligibility.')}
             </p>
           </div>
-          <span
-            className={`px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider ${
-              isPaidPro || isRoleGrantedPro
-                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30'
-                : 'bg-gray-100 text-gray-700 dark:bg-zinc-800 dark:text-zinc-300 border border-gray-200 dark:border-zinc-700'
-            }`}
-          >
-            {isPaidPro
-              ? cancelAtPeriodEnd
-                ? t('plan_pro_canceling', 'MANAGED Pro (Cancels at Period End)')
-                : t('plan_pro', 'MANAGED Pro')
-              : isRoleGrantedPro
-                ? t('plan_pro_role', `MANAGED Pro (${userRole})`)
-                : t('plan_free', 'Free Tier')}
-          </span>
+          <div className="flex flex-col items-end gap-1">
+            <span
+              className={`px-3 py-1 rounded-full text-xs font-extrabold uppercase tracking-wider ${
+                isPaidPro || isRoleGrantedPro
+                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30'
+                  : 'bg-gray-100 text-gray-700 dark:bg-zinc-800 dark:text-zinc-300 border border-gray-200 dark:border-zinc-700'
+              }`}
+            >
+              {isPaidPro
+                ? cancelAtPeriodEnd
+                  ? t('plan_pro_canceling', 'MANAGED Pro (Cancels at Period End)')
+                  : t('plan_pro', 'MANAGED Pro')
+                : isRoleGrantedPro
+                  ? t('plan_pro_role', `MANAGED Pro (${userRole})`)
+                  : t('plan_free', 'Free Tier')}
+            </span>
+            {!isRoleGrantedPro && (
+              <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
+                {t('pro_price_badge', 'MANAGED Pro: $6.99 / month (tax excluded)')}
+              </span>
+            )}
+          </div>
         </div>
 
         {billingMsg.text && (
@@ -571,14 +585,14 @@ export default function SettingsTab({
                   <p>
                     {t(
                       'sub_canceled_notice',
-                      `Recurring billing is stopped. You will not be charged again, and your Pro features remain active until ${formattedPeriodEnd || 'the end of your current billing period'}.`
+                      `Recurring billing ($6.99/mo) is stopped. You will not be charged again, and your Pro features remain active until ${formattedPeriodEnd || 'the end of your current billing period'}.`
                     )}
                   </p>
                 ) : (
                   <p>
                     {t(
                       'sub_active_notice',
-                      `Your MANAGED Pro subscription is active${formattedPeriodEnd ? ` (renews on ${formattedPeriodEnd})` : ''}. You can cancel with one click at any time.`
+                      `Your MANAGED Pro subscription ($6.99/month, tax excluded) is active${formattedPeriodEnd ? ` (renews on ${formattedPeriodEnd})` : ''}. You can cancel with one click at any time.`
                     )}
                   </p>
                 )}
@@ -611,7 +625,7 @@ export default function SettingsTab({
               <p>
                 {t(
                   'sub_free_notice',
-                  'Upgrade to MANAGED Pro for Formal & Visual Excel Audits, unlimited Custom Categories, unlimited Sterling AI commands, multi-sheet Sandboxes, and multi-goal Wealth Objectives.'
+                  'Upgrade to MANAGED Pro for $6.99/month (tax excluded) to unlock Formal & Visual Excel Audits, unlimited Custom Categories, unlimited Sterling AI commands, multi-sheet Sandboxes, and multi-goal Wealth Objectives. Includes 1-click cancellation anytime and a 2-Hour Unused Refund Policy.'
                 )}
               </p>
             )}
@@ -670,7 +684,7 @@ export default function SettingsTab({
                   >
                     {isBillingBusy
                       ? t('starting_checkout', 'Starting Checkout...')
-                      : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro')}
+                      : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro — $6.99/mo')}
                   </button>
                 )}
               </>
