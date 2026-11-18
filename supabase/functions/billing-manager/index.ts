@@ -16,7 +16,9 @@ const corsHeaders = {
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const PREPARING_LOCK_STALE_MS = 15 * 1000;
-const DISPATCHED_RECONCILE_COOLDOWN_MS = 10 * 1000;
+const PROVIDER_REFUND_FETCH_TIMEOUT_MS = 20 * 1000;
+const TRANSPORT_FAILED_SETTLE_MS = 5 * 1000;
+const DISPATCHED_RECONCILE_COOLDOWN_MS = 90 * 1000;
 
 const ALLOWED_RETURN_ORIGINS = new Set([
   "https://sterlingmanagedapp.com",
@@ -185,16 +187,27 @@ async function recordBillingEvent(params: {
 }
 
 function parseIntentEventType(rawType: string | undefined): {
-  stage: "preparing" | "dispatched" | "other";
+  stage: "preparing" | "dispatched" | "transport_failed" | "other";
   token: string;
   timestampMs: number;
 } {
   const str = String(rawType || "").trim();
   const parts = str.split(":");
-  if (parts.length >= 3 && (parts[0] === "intent_preparing" || parts[0] === "intent_dispatched")) {
+  if (
+    parts.length >= 3 &&
+    (parts[0] === "intent_preparing" ||
+      parts[0] === "intent_dispatched" ||
+      parts[0] === "intent_transport_failed")
+  ) {
     const ts = Number(parts[2]);
+    const stage =
+      parts[0] === "intent_preparing"
+        ? "preparing"
+        : parts[0] === "intent_dispatched"
+          ? "dispatched"
+          : "transport_failed";
     return {
-      stage: parts[0] === "intent_preparing" ? "preparing" : "dispatched",
+      stage,
       token: parts[1],
       timestampMs: Number.isFinite(ts) ? ts : 0
     };
@@ -202,11 +215,44 @@ function parseIntentEventType(rawType: string | undefined): {
   return { stage: "other", token: "", timestampMs: 0 };
 }
 
+async function takeoverRefundIntentLock(params: {
+  supabaseUrl: string;
+  serviceRoleKey: string;
+  eventId: string;
+  expectedEventType: string;
+}): Promise<{ ok: boolean; claimed: boolean; lockToken: string }> {
+  const { supabaseUrl, serviceRoleKey, eventId, expectedEventType } = params;
+  const lockToken = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  const preparingState = `intent_preparing:${lockToken}:${Date.now()}`;
+  try {
+    const res = await fetch(
+      `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}&event_type=eq.${encodeURIComponent(expectedEventType)}`,
+      {
+        method: "PATCH",
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({ event_type: preparingState })
+      }
+    );
+    if (!res.ok) return { ok: false, claimed: false, lockToken: "" };
+    const rows = await res.json().catch(() => null);
+    const claimed = Array.isArray(rows) && rows.length > 0;
+    return { ok: true, claimed, lockToken: claimed ? lockToken : "" };
+  } catch {
+    return { ok: false, claimed: false, lockToken: "" };
+  }
+}
+
 /**
  * Atomically claims or recovers a refund intent lock:
- * - Inserts `intent_preparing:<token>:<now>` with `Prefer: return=minimal` (or verifies ownership via token if response dropped).
- * - If an existing row is in `intent_preparing` and older than 15s (abandoned before provider dispatch), atomically takes it over via conditional PATCH.
- * - If an existing row is in `intent_dispatched` and older than 10s (transport failure left provider state unknown), returns `needsProviderReconcile: true`.
+ * - Inserts `intent_preparing:<token>:<now>` (or verifies ownership via token if response dropped).
+ * - Recoverable via conditional PATCH if `intent_preparing` is older than 15s (abandoned before dispatch).
+ * - Triggers provider reconciliation ONLY when `intent_transport_failed` is recorded (in-flight request terminated)
+ *   or when `intent_dispatched` is older than 90s (well past the 20s provider fetch timeout).
  */
 async function claimOrRecoverRefundIntentLock(params: {
   supabaseUrl: string;
@@ -252,17 +298,11 @@ async function claimOrRecoverRefundIntentLock(params: {
       };
     }
 
-    // Inspect existing row (handles both 409 Conflict and dropped insert responses)
     const currentCheck = await checkBillingEventRecorded(supabaseUrl, serviceRoleKey, eventId);
-    if (!currentCheck.ok) {
+    if (!currentCheck.ok || !currentCheck.exists) {
       return { ok: false, claimed: false, lockToken: "", needsProviderReconcile: false };
     }
 
-    if (!currentCheck.exists) {
-      return { ok: false, claimed: false, lockToken: "", needsProviderReconcile: false };
-    }
-
-    // If our own POST committed right before a network glitch, we already own the lock
     if (currentCheck.eventType === preparingState) {
       return {
         ok: true,
@@ -275,40 +315,28 @@ async function claimOrRecoverRefundIntentLock(params: {
     const parsed = parseIntentEventType(currentCheck.eventType);
     const ageMs = nowMs - parsed.timestampMs;
 
-    // Recover stale `intent_preparing` row that never reached provider dispatch
     if (parsed.stage === "preparing" && parsed.timestampMs > 0 && ageMs >= PREPARING_LOCK_STALE_MS) {
-      const takeoverRes = await fetch(
-        `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}&event_type=eq.${encodeURIComponent(String(currentCheck.eventType))}`,
-        {
-          method: "PATCH",
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`,
-            "Content-Type": "application/json",
-            Prefer: "return=representation"
-          },
-          body: JSON.stringify({ event_type: preparingState })
-        }
-      ).catch(() => null);
-
-      if (!takeoverRes || !takeoverRes.ok) {
+      const takeover = await takeoverRefundIntentLock({
+        supabaseUrl,
+        serviceRoleKey,
+        eventId,
+        expectedEventType: String(currentCheck.eventType)
+      });
+      if (!takeover.ok) {
         return { ok: false, claimed: false, lockToken: "", needsProviderReconcile: false };
       }
-
-      const updatedRows = await takeoverRes.json().catch(() => null);
-      if (Array.isArray(updatedRows) && updatedRows.length > 0) {
+      if (takeover.claimed) {
         return {
           ok: true,
           claimed: true,
-          lockToken,
+          lockToken: takeover.lockToken,
           needsProviderReconcile: false
         };
       }
     }
 
-    // If a previous request dispatched to the provider and suffered a transport error (or legacy marker),
-    // trigger provider-state reconciliation after cooldown instead of blocking forever
     if (
+      (parsed.stage === "transport_failed" && parsed.timestampMs > 0 && ageMs >= TRANSPORT_FAILED_SETTLE_MS) ||
       (parsed.stage === "dispatched" && parsed.timestampMs > 0 && ageMs >= DISPATCHED_RECONCILE_COOLDOWN_MS) ||
       parsed.stage === "other"
     ) {
@@ -333,10 +361,6 @@ async function claimOrRecoverRefundIntentLock(params: {
   }
 }
 
-/**
- * Transitions the owned intent lock from `intent_preparing` to `intent_dispatched` immediately before
- * calling the provider refund endpoint.
- */
 async function markRefundIntentDispatched(params: {
   supabaseUrl: string;
   serviceRoleKey: string;
@@ -367,6 +391,33 @@ async function markRefundIntentDispatched(params: {
     };
   } catch {
     return { ok: false, dispatchedState: "" };
+  }
+}
+
+async function markRefundIntentTransportFailed(params: {
+  supabaseUrl: string;
+  serviceRoleKey: string;
+  eventId: string;
+  expectedDispatchedState: string;
+  lockToken: string;
+}): Promise<void> {
+  const { supabaseUrl, serviceRoleKey, eventId, expectedDispatchedState, lockToken } = params;
+  const failedState = `intent_transport_failed:${lockToken}:${Date.now()}`;
+  try {
+    await fetch(
+      `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}&event_type=eq.${encodeURIComponent(expectedDispatchedState)}`,
+      {
+        method: "PATCH",
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ event_type: failedState })
+      }
+    );
+  } catch {
+    // Ignore error; 90s dispatched fallback still applies
   }
 }
 
@@ -422,7 +473,8 @@ async function reconcileProviderRefundState(params: {
             headers: {
               "x-api-key": creemApiKey,
               Accept: "application/json"
-            }
+            },
+            signal: AbortSignal.timeout(PROVIDER_REFUND_FETCH_TIMEOUT_MS)
           }
         );
         if (!resp.ok) return "unknown";
@@ -436,19 +488,30 @@ async function reconcileProviderRefundState(params: {
             : {};
         const txStatus = String(lastTx.status || data.transaction_status || "").toLowerCase();
         const refundedAmount = Number(lastTx.refunded_amount ?? data.refunded_amount ?? 0);
+        const amountPaid = Number(
+          lastTx.amount_paid ?? lastTx.amount ?? data.amount_paid ?? data.amount ?? 0
+        );
+        const isPartialRefund =
+          txStatus === "partialrefund" ||
+          txStatus === "partial_refund" ||
+          (refundedAmount > 0 && (amountPaid <= 0 || refundedAmount < amountPaid));
+        const isConfirmedFullRefund =
+          !isPartialRefund &&
+          (subStatus === "refunded" ||
+            txStatus === "refunded" ||
+            txStatus === "succeeded_refund" ||
+            (amountPaid > 0 && refundedAmount >= amountPaid));
 
-        if (
-          subStatus === "refunded" ||
-          txStatus === "refunded" ||
-          txStatus === "succeeded_refund" ||
-          refundedAmount > 0
-        ) {
+        if (isConfirmedFullRefund) {
           return "refunded";
         }
         if (
+          isPartialRefund ||
           txStatus === "refund_pending" ||
           txStatus === "pending_refund" ||
-          txStatus === "processing"
+          txStatus === "processing" ||
+          txStatus === "requiresaction" ||
+          txStatus === "requires_action"
         ) {
           return "pending";
         }
@@ -468,7 +531,8 @@ async function reconcileProviderRefundState(params: {
           headers: {
             Accept: "application/vnd.api+json",
             Authorization: `Bearer ${lemonApiKey}`
-          }
+          },
+          signal: AbortSignal.timeout(PROVIDER_REFUND_FETCH_TIMEOUT_MS)
         }
       );
       if (!resp.ok) return "unknown";
@@ -498,11 +562,23 @@ async function updateProfileBillingRow(params: {
   patchBody: Record<string, unknown>;
   minUpdatedAtIso?: string;
   subscriptionId?: string;
+  excludeStatuses?: string[];
 }): Promise<{ ok: boolean; updatedCount: number; status: number; error?: string }> {
-  const { supabaseUrl, serviceRoleKey, userId, patchBody, minUpdatedAtIso, subscriptionId } = params;
+  const {
+    supabaseUrl,
+    serviceRoleKey,
+    userId,
+    patchBody,
+    minUpdatedAtIso,
+    subscriptionId,
+    excludeStatuses
+  } = params;
   let query = `user_id=eq.${encodeURIComponent(userId)}`;
   if (subscriptionId) {
     query += `&subscription_id=eq.${encodeURIComponent(subscriptionId)}`;
+  }
+  if (Array.isArray(excludeStatuses) && excludeStatuses.length > 0) {
+    query += `&or=(subscription_status.is.null,subscription_status.not.in.(${excludeStatuses.map((s) => encodeURIComponent(s)).join(",")}))`;
   }
   if (minUpdatedAtIso) {
     query += `&or=(subscription_updated_at.is.null,subscription_updated_at.lte.${encodeURIComponent(minUpdatedAtIso)})`;
@@ -1671,17 +1747,64 @@ Deno.serve(async (req: Request) => {
       currentStatus === "refund_cancel_pending" ||
       currentStatus === "refund_finalize_pending";
 
+    const lemonApiKey = Deno.env.get("LEMONSQUEEZY_API_KEY") || "";
+
+    // When a refund is marked pending, reconcile with the provider first so a missed webhook can still finalize
     if (!txAlreadyRefunded && (currentStatus === "refund_pending" || isRefundPending)) {
-      return new Response(
-        JSON.stringify({
-          ok: false,
-          pending: true,
-          subscriptionStatus: "refund_pending",
-          error:
-            "Your refund is currently pending confirmation with the payment provider. Your workspace will update automatically as soon as the provider completes the refund."
-        }),
-        { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      if (provider !== "sandbox") {
+        const pendingProviderState = await reconcileProviderRefundState({
+          provider,
+          creemBaseUrl,
+          creemApiKey,
+          lemonApiKey,
+          subId,
+          orderId
+        });
+
+        if (pendingProviderState === "refunded") {
+          const txSaved = await recordBillingEvent({
+            supabaseUrl,
+            serviceRoleKey,
+            eventId: refundTxMarkerId,
+            provider,
+            eventType: "refund_tx_succeeded",
+            userId
+          });
+          if (!txSaved) {
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                error: "Refund confirmed with provider, but saving local state failed. Please retry."
+              }),
+              { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+          txAlreadyRefunded = true;
+          isResumingPartialRefund = true;
+        } else {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              pending: true,
+              subscriptionStatus: "refund_pending",
+              error:
+                "Your refund is currently pending confirmation with the payment provider. Your workspace will update automatically as soon as the provider completes the refund."
+            }),
+            { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      } else {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            pending: true,
+            subscriptionStatus: "refund_pending",
+            error:
+              "Your refund is currently pending confirmation with the payment provider. Your workspace will update automatically as soon as the provider completes the refund."
+          }),
+          { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
     if (!isResumingPartialRefund) {
@@ -1752,8 +1875,6 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const lemonApiKey = Deno.env.get("LEMONSQUEEZY_API_KEY") || "";
-
     if (provider !== "sandbox") {
       if (provider === "creem") {
         if (!creemApiKey || !orderId || orderId.startsWith("ord_")) {
@@ -1804,8 +1925,6 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // If an earlier request dispatched to the provider and suffered a transport failure,
-      // reconcile the actual provider state before deciding whether to advance, wait, or re-claim.
       if (!intentLock.claimed && intentLock.needsProviderReconcile) {
         const providerState = await reconcileProviderRefundState({
           provider,
@@ -1850,6 +1969,7 @@ Deno.serve(async (req: Request) => {
             serviceRoleKey,
             userId,
             subscriptionId: subId || undefined,
+            excludeStatuses: ["refunded", "refund_cancel_pending", "refund_finalize_pending"],
             patchBody: {
               subscription_status: "refund_pending"
             }
@@ -1865,20 +1985,13 @@ Deno.serve(async (req: Request) => {
             { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         } else if (providerState === "not_refunded" && intentLock.existingEventType) {
-          await releaseOwnedRefundIntentLock({
+          const takeover = await takeoverRefundIntentLock({
             supabaseUrl,
             serviceRoleKey,
             eventId: refundIntentMarkerId,
             expectedEventType: intentLock.existingEventType
           });
-          intentLock = await claimOrRecoverRefundIntentLock({
-            supabaseUrl,
-            serviceRoleKey,
-            eventId: refundIntentMarkerId,
-            provider,
-            userId
-          });
-          if (!intentLock.ok) {
+          if (!takeover.ok) {
             return new Response(
               JSON.stringify({
                 ok: false,
@@ -1887,6 +2000,12 @@ Deno.serve(async (req: Request) => {
               { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }
+          intentLock = {
+            ok: true,
+            claimed: takeover.claimed,
+            lockToken: takeover.lockToken,
+            needsProviderReconcile: false
+          };
         } else {
           return new Response(
             JSON.stringify({
@@ -1910,8 +2029,6 @@ Deno.serve(async (req: Request) => {
           );
         }
 
-        // Transition lock to `intent_dispatched` before calling the provider.
-        // If the network drops after dispatch, the lock is KEPT so retries reconcile with the provider first.
         const dispatchMark = await markRefundIntentDispatched({
           supabaseUrl,
           serviceRoleKey,
@@ -1936,28 +2053,35 @@ Deno.serve(async (req: Request) => {
             method: "POST",
             headers: {
               "x-api-key": creemApiKey,
-              "Content-Type": "application/json"
+              "Content-Type": "application/json",
+              "Idempotency-Key": refundIntentMarkerId
             },
+            signal: AbortSignal.timeout(PROVIDER_REFUND_FETCH_TIMEOUT_MS),
             body: JSON.stringify({
               transaction_id: orderId,
               reason: "requested_by_customer"
             })
           }).catch(() => null);
 
-          // Transport error (refundResp === null): DO NOT release the lock! Outcome at Creem is unknown.
           if (!refundResp) {
+            await markRefundIntentTransportFailed({
+              supabaseUrl,
+              serviceRoleKey,
+              eventId: refundIntentMarkerId,
+              expectedDispatchedState: dispatchedEventType,
+              lockToken: intentLock.lockToken
+            });
             return new Response(
               JSON.stringify({
                 ok: false,
                 error:
-                  "Network connection to the payment provider was interrupted while submitting your refund. Please wait 10 seconds and click Request 2-Hour Refund again to verify its status safely."
+                  "Network connection to the payment provider was interrupted while submitting your refund. Please wait 5 seconds and click Request 2-Hour Refund again to verify its status safely."
               }),
               { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }
 
           if (!refundResp.ok) {
-            // Release lock ONLY on definitive 4xx provider rejection (for 5xx, provider outcome may be ambiguous)
             if (refundResp.status >= 400 && refundResp.status < 500) {
               await releaseOwnedRefundIntentLock({
                 supabaseUrl,
@@ -1974,7 +2098,6 @@ Deno.serve(async (req: Request) => {
 
           const refundData = (await refundResp.json().catch(() => null)) as Record<string, unknown> | null;
           if (!refundData || typeof refundData !== "object") {
-            // Response body could not be parsed after HTTP 200; keep lock so retry reconciles
             return new Response(
               JSON.stringify({
                 ok: false,
@@ -1989,13 +2112,23 @@ Deno.serve(async (req: Request) => {
             (refundData.object as Record<string, unknown>) ||
             refundData;
           const refundStatus = String(refundObj.status || "").trim().toLowerCase();
+          const immediateRefundedAmt = Number(
+            refundObj.refunded_amount ?? refundObj.refund_amount ?? refundObj.amount ?? 0
+          );
+          const immediateTotalAmt = Number(
+            refundObj.amount_paid ?? refundObj.total_amount ?? refundObj.transaction_amount ?? 0
+          );
+          const isImmediatePartial =
+            refundStatus === "partialrefund" ||
+            refundStatus === "partial_refund" ||
+            (immediateTotalAmt > 0 &&
+              immediateRefundedAmt > 0 &&
+              immediateRefundedAmt < immediateTotalAmt);
 
           if (
             refundStatus === "failed" ||
             refundStatus === "canceled" ||
-            refundStatus === "cancelled" ||
-            refundStatus === "requiresaction" ||
-            refundStatus === "requires_action"
+            refundStatus === "cancelled"
           ) {
             await releaseOwnedRefundIntentLock({
               supabaseUrl,
@@ -2012,18 +2145,14 @@ Deno.serve(async (req: Request) => {
             );
           }
 
-          if (!refundStatus) {
-            // Unknown status format on HTTP 200: keep lock for reconciliation
-            return new Response(
-              JSON.stringify({
-                ok: false,
-                error: "Refund response status was unrecognized. Please retry in 10 seconds to verify."
-              }),
-              { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-            );
-          }
+          const isConfirmedCreemFullRefund =
+            !isImmediatePartial &&
+            (refundStatus === "succeeded" ||
+              refundStatus === "refunded" ||
+              refundStatus === "completed" ||
+              refundStatus === "succeeded_refund");
 
-          if (refundStatus === "pending" || refundStatus === "processing") {
+          if (!isConfirmedCreemFullRefund) {
             const fastWebhookCheck = await checkBillingEventRecorded(
               supabaseUrl,
               serviceRoleKey,
@@ -2062,6 +2191,7 @@ Deno.serve(async (req: Request) => {
                   serviceRoleKey,
                   userId,
                   subscriptionId: subId || undefined,
+                  excludeStatuses: ["refunded", "refund_cancel_pending", "refund_finalize_pending"],
                   patchBody: {
                     subscription_status: "refund_pending"
                   }
@@ -2087,8 +2217,10 @@ Deno.serve(async (req: Request) => {
               headers: {
                 Accept: "application/vnd.api+json",
                 "Content-Type": "application/vnd.api+json",
-                Authorization: `Bearer ${lemonApiKey}`
+                Authorization: `Bearer ${lemonApiKey}`,
+                "Idempotency-Key": refundIntentMarkerId
               },
+              signal: AbortSignal.timeout(PROVIDER_REFUND_FETCH_TIMEOUT_MS),
               body: JSON.stringify({
                 data: {
                   type: "orders",
@@ -2098,13 +2230,19 @@ Deno.serve(async (req: Request) => {
             }
           ).catch(() => null);
 
-          // Transport error (refundResp === null): DO NOT release the lock!
           if (!refundResp) {
+            await markRefundIntentTransportFailed({
+              supabaseUrl,
+              serviceRoleKey,
+              eventId: refundIntentMarkerId,
+              expectedDispatchedState: dispatchedEventType,
+              lockToken: intentLock.lockToken
+            });
             return new Response(
               JSON.stringify({
                 ok: false,
                 error:
-                  "Network connection to the payment provider was interrupted while submitting your refund. Please wait 10 seconds and retry to verify its status safely."
+                  "Network connection to the payment provider was interrupted while submitting your refund. Please wait 5 seconds and retry to verify its status safely."
               }),
               { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
@@ -2123,6 +2261,86 @@ Deno.serve(async (req: Request) => {
               JSON.stringify({ ok: false, error: "Payment provider could not process the refund right now." }),
               { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
+          }
+
+          const lemonData = (await refundResp.json().catch(() => null)) as Record<string, unknown> | null;
+          if (!lemonData || typeof lemonData !== "object") {
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                error: "Refund submitted, but provider response could not be read. Please retry in 10 seconds to verify."
+              }),
+              { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+
+          const lsDataObj = (lemonData.data as Record<string, unknown>) || lemonData;
+          const lsAttrs = (lsDataObj.attributes as Record<string, unknown>) || lsDataObj;
+          const lsStatus = String(lsAttrs.status || "").trim().toLowerCase();
+          const lsRefundedAmt = Number(lsAttrs.refunded_amount ?? 0);
+          const lsTotalAmt = Number(lsAttrs.total ?? lsAttrs.subtotal ?? 0);
+          const isLsPartial =
+            lsStatus === "partial_refund" ||
+            (lsTotalAmt > 0 && lsRefundedAmt > 0 && lsRefundedAmt < lsTotalAmt);
+          const isConfirmedLsFullRefund =
+            !isLsPartial && (Boolean(lsAttrs.refunded) || lsStatus === "refunded");
+
+          if (!isConfirmedLsFullRefund) {
+            const fastWebhookCheck = await checkBillingEventRecorded(
+              supabaseUrl,
+              serviceRoleKey,
+              refundTxMarkerId
+            );
+
+            if (!fastWebhookCheck.ok) {
+              return new Response(
+                JSON.stringify({
+                  ok: false,
+                  error: "Refund submitted, but status verification failed. Please refresh the page."
+                }),
+                { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+              );
+            }
+
+            if (!fastWebhookCheck.exists) {
+              await recordBillingEvent({
+                supabaseUrl,
+                serviceRoleKey,
+                eventId: refundPendingMarkerId,
+                provider,
+                eventType: "refund_pending",
+                userId
+              });
+
+              const recheckCompleted = await checkBillingEventRecorded(
+                supabaseUrl,
+                serviceRoleKey,
+                refundTxMarkerId
+              );
+
+              if (!recheckCompleted.ok || !recheckCompleted.exists) {
+                await updateProfileBillingRow({
+                  supabaseUrl,
+                  serviceRoleKey,
+                  userId,
+                  subscriptionId: subId || undefined,
+                  excludeStatuses: ["refunded", "refund_cancel_pending", "refund_finalize_pending"],
+                  patchBody: {
+                    subscription_status: "refund_pending"
+                  }
+                });
+                return new Response(
+                  JSON.stringify({
+                    ok: false,
+                    pending: true,
+                    subscriptionStatus: "refund_pending",
+                    error:
+                      "Your refund request was submitted and is pending confirmation from the payment provider."
+                  }),
+                  { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+                );
+              }
+            }
           }
         }
 

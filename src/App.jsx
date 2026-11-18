@@ -1629,8 +1629,35 @@ export default function App() {
     }
   };
 
+  const catDeleteConcurrencyRef = useRef({
+    unlockAllEpoch: 0,
+    expCatChangedExternally: false,
+    adjCatChangedExternally: false,
+    expectedExpCatId: null,
+    expectedAdjCatId: null
+  });
+
+  useEffect(() => {
+    if (
+      catDeleteConcurrencyRef.current.expectedExpCatId !== null &&
+      expenseCategoryId !== catDeleteConcurrencyRef.current.expectedExpCatId
+    ) {
+      catDeleteConcurrencyRef.current.expCatChangedExternally = true;
+    }
+  }, [expenseCategoryId]);
+
+  useEffect(() => {
+    if (
+      catDeleteConcurrencyRef.current.expectedAdjCatId !== null &&
+      adjCatId !== catDeleteConcurrencyRef.current.expectedAdjCatId
+    ) {
+      catDeleteConcurrencyRef.current.adjCatChangedExternally = true;
+    }
+  }, [adjCatId]);
+
   const handleUnlockAll = () => {
     if (isReadOnly) return;
+    catDeleteConcurrencyRef.current.unlockAllEpoch += 1;
     setLockedCategories([]);
     setAlertMsg(t('msg_all_unlocked'));
   };
@@ -1921,7 +1948,8 @@ export default function App() {
 
     const prevCategories = [...categories];
     const prevExpenses = [...expenses];
-    const prevLockedCategories = [...lockedCategories];
+    const wasDeletedCategoryLocked = lockedCategories.includes(idToDelete);
+    const unlockAllEpochAtStart = catDeleteConcurrencyRef.current.unlockAllEpoch;
     const prevExpenseCategoryId = expenseCategoryId;
     const prevAdjCatId = adjCatId;
     const categoryToRemove = categories.find(c => c.id === idToDelete);
@@ -1945,16 +1973,29 @@ export default function App() {
       }
     }
 
+    const switchedExpCat = expenseCategoryId === idToDelete && remainingCategories.length > 0;
+    const fallbackExpCatId = switchedExpCat
+      ? (remainingCategories.find(c => c.type !== 'asset') || remainingCategories[0])?.id || ''
+      : expenseCategoryId;
+
+    const switchedAdjCat = adjCatId === idToDelete;
+    const fallbackAdjCatId = switchedAdjCat
+      ? remainingCategories.find(c => c.type === 'asset')?.id || ''
+      : adjCatId;
+
+    catDeleteConcurrencyRef.current.expectedExpCatId = switchedExpCat ? fallbackExpCatId : null;
+    catDeleteConcurrencyRef.current.expCatChangedExternally = false;
+    catDeleteConcurrencyRef.current.expectedAdjCatId = switchedAdjCat ? fallbackAdjCatId : null;
+    catDeleteConcurrencyRef.current.adjCatChangedExternally = false;
+
     setCategories(remainingCategories);
     setLockedCategories(current => current.filter(id => id !== idToDelete));
     setExpenses(current => current.filter(e => e.category_id !== idToDelete));
-    if (expenseCategoryId === idToDelete && remainingCategories.length > 0) {
-      const nextExpCat = remainingCategories.find(c => c.type !== 'asset') || remainingCategories[0];
-      setExpenseCategoryId(nextExpCat?.id || '');
+    if (switchedExpCat) {
+      setExpenseCategoryId(fallbackExpCatId);
     }
-    if (adjCatId === idToDelete) {
-      const nextAssetCat = remainingCategories.find(c => c.type === 'asset');
-      setAdjCatId(nextAssetCat?.id || '');
+    if (switchedAdjCat) {
+      setAdjCatId(fallbackAdjCatId);
     }
 
     try {
@@ -1967,11 +2008,29 @@ export default function App() {
     } catch {
       setAlertMsg(t('err_del_cat'));
       setCategories(prevCategories);
-      setLockedCategories(prevLockedCategories);
+      if (
+        wasDeletedCategoryLocked &&
+        catDeleteConcurrencyRef.current.unlockAllEpoch === unlockAllEpochAtStart
+      ) {
+        setLockedCategories(current =>
+          current.includes(idToDelete) ? current : [...current, idToDelete]
+        );
+      }
       setExpenses(prevExpenses);
-      setExpenseCategoryId(prevExpenseCategoryId);
-      setAdjCatId(prevAdjCatId);
+      if (switchedExpCat && !catDeleteConcurrencyRef.current.expCatChangedExternally) {
+        setExpenseCategoryId(current =>
+          current === fallbackExpCatId ? prevExpenseCategoryId : current
+        );
+      }
+      if (switchedAdjCat && !catDeleteConcurrencyRef.current.adjCatChangedExternally) {
+        setAdjCatId(current =>
+          current === fallbackAdjCatId ? prevAdjCatId : current
+        );
+      }
       return false;
+    } finally {
+      catDeleteConcurrencyRef.current.expectedExpCatId = null;
+      catDeleteConcurrencyRef.current.expectedAdjCatId = null;
     }
   };
 
