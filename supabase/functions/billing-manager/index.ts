@@ -17,7 +17,7 @@ const corsHeaders = {
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const PREPARING_LOCK_STALE_MS = 15 * 1000;
 const PROVIDER_REFUND_FETCH_TIMEOUT_MS = 20 * 1000;
-const TRANSPORT_FAILED_SETTLE_MS = 5 * 1000;
+const TRANSPORT_FAILED_SETTLE_MS = 60 * 1000;
 const DISPATCHED_RECONCILE_COOLDOWN_MS = 90 * 1000;
 
 const ALLOWED_RETURN_ORIGINS = new Set([
@@ -449,9 +449,31 @@ async function releaseOwnedRefundIntentLock(params: {
   }
 }
 
+async function deleteBillingEventMarker(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  eventId: string
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${supabaseUrl}/rest/v1/billing_webhook_events?event_id=eq.${encodeURIComponent(eventId)}`,
+      {
+        method: "DELETE",
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
+      }
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Queries Creem or Lemon Squeezy to reconcile a retained `intent_dispatched` lock
- * when an earlier request experienced a network/transport failure.
+ * Queries Creem or Lemon Squeezy to reconcile a retained refund lock or pending marker,
+ * matching the specific target transaction (`orderId`) rather than assuming `last_transaction`.
  */
 async function reconcileProviderRefundState(params: {
   provider: string;
@@ -464,61 +486,117 @@ async function reconcileProviderRefundState(params: {
   const { provider, creemBaseUrl, creemApiKey, lemonApiKey, subId, orderId } = params;
   try {
     if (provider === "creem") {
-      if (!creemApiKey) return "unknown";
-      if (subId) {
-        const resp = await fetch(
-          `${creemBaseUrl}/v1/subscriptions?subscription_id=${encodeURIComponent(subId)}`,
-          {
-            method: "GET",
-            headers: {
-              "x-api-key": creemApiKey,
-              Accept: "application/json"
-            },
-            signal: AbortSignal.timeout(PROVIDER_REFUND_FETCH_TIMEOUT_MS)
-          }
-        );
-        if (!resp.ok) return "unknown";
-        const data = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
-        if (!data || typeof data !== "object") return "unknown";
+      if (!creemApiKey || !subId) return "unknown";
+      const resp = await fetch(
+        `${creemBaseUrl}/v1/subscriptions?subscription_id=${encodeURIComponent(subId)}`,
+        {
+          method: "GET",
+          headers: {
+            "x-api-key": creemApiKey,
+            Accept: "application/json"
+          },
+          signal: AbortSignal.timeout(PROVIDER_REFUND_FETCH_TIMEOUT_MS)
+        }
+      );
+      if (!resp.ok) return "unknown";
+      const data = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!data || typeof data !== "object") return "unknown";
 
-        const subStatus = String(data.status || "").toLowerCase();
-        const lastTx =
-          typeof data.last_transaction === "object" && data.last_transaction !== null
-            ? (data.last_transaction as Record<string, unknown>)
-            : {};
-        const txStatus = String(lastTx.status || data.transaction_status || "").toLowerCase();
-        const refundedAmount = Number(lastTx.refunded_amount ?? data.refunded_amount ?? 0);
-        const amountPaid = Number(
-          lastTx.amount_paid ?? lastTx.amount ?? data.amount_paid ?? data.amount ?? 0
-        );
-        const isPartialRefund =
-          txStatus === "partialrefund" ||
-          txStatus === "partial_refund" ||
-          (refundedAmount > 0 && (amountPaid <= 0 || refundedAmount < amountPaid));
-        const isConfirmedFullRefund =
-          !isPartialRefund &&
-          (subStatus === "refunded" ||
-            txStatus === "refunded" ||
-            txStatus === "succeeded_refund" ||
-            (amountPaid > 0 && refundedAmount >= amountPaid));
-
-        if (isConfirmedFullRefund) {
-          return "refunded";
-        }
-        if (
-          isPartialRefund ||
-          txStatus === "refund_pending" ||
-          txStatus === "pending_refund" ||
-          txStatus === "processing" ||
-          txStatus === "requiresaction" ||
-          txStatus === "requires_action"
-        ) {
-          return "pending";
-        }
-        if (subStatus === "active" || subStatus === "canceled" || subStatus === "scheduled_cancel") {
-          return "not_refunded";
-        }
+      const subStatus = String(data.status || "").toLowerCase();
+      if (subStatus === "refunded") {
+        return "refunded";
       }
+
+      // Resolve the exact transaction matching `orderId` rather than blindly reading `last_transaction`
+      let targetTx: Record<string, unknown> | null = null;
+      const lastTx =
+        typeof data.last_transaction === "object" && data.last_transaction !== null
+          ? (data.last_transaction as Record<string, unknown>)
+          : null;
+      const lastTxId = pickValidTransactionId(
+        lastTx?.id,
+        data.last_transaction_id,
+        data.transaction_id
+      );
+
+      if (orderId) {
+        if (lastTx && lastTxId === orderId) {
+          targetTx = lastTx;
+        } else if (Array.isArray(data.transactions)) {
+          for (const item of data.transactions) {
+            if (typeof item === "object" && item !== null) {
+              const cand = item as Record<string, unknown>;
+              if (pickValidTransactionId(cand.id, cand.transaction_id) === orderId) {
+                targetTx = cand;
+                break;
+              }
+            }
+          }
+        }
+        // If `orderId` was specified and the subscription's latest transaction is a different ID
+        // that we could not locate in `transactions`, do not infer state from the wrong transaction.
+        if (!targetTx && lastTxId && lastTxId !== orderId) {
+          return "unknown";
+        }
+      } else {
+        targetTx = lastTx;
+      }
+
+      if (!targetTx) {
+        return "unknown";
+      }
+
+      const txStatus = String(targetTx.status || "").toLowerCase();
+      const refundStatus = String(targetTx.refund_status || "").toLowerCase();
+      const refundedAmount = Number(targetTx.refunded_amount ?? 0);
+      const amountPaid = Number(targetTx.amount_paid ?? targetTx.amount ?? 0);
+
+      const isPartialRefund =
+        txStatus === "partialrefund" ||
+        txStatus === "partial_refund" ||
+        refundStatus === "partialrefund" ||
+        refundStatus === "partial_refund" ||
+        (refundedAmount > 0 && (amountPaid <= 0 || refundedAmount < amountPaid));
+
+      const isConfirmedFullRefund =
+        !isPartialRefund &&
+        (txStatus === "refunded" ||
+          txStatus === "succeeded_refund" ||
+          refundStatus === "succeeded" ||
+          refundStatus === "refunded" ||
+          (amountPaid > 0 && refundedAmount >= amountPaid));
+
+      if (isConfirmedFullRefund) {
+        return "refunded";
+      }
+
+      if (
+        isPartialRefund ||
+        txStatus === "refund_pending" ||
+        txStatus === "pending_refund" ||
+        txStatus === "processing" ||
+        txStatus === "requiresaction" ||
+        txStatus === "requires_action" ||
+        refundStatus === "pending" ||
+        refundStatus === "processing" ||
+        refundStatus === "requiresaction" ||
+        refundStatus === "requires_action"
+      ) {
+        return "pending";
+      }
+
+      if (
+        refundedAmount === 0 &&
+        (txStatus === "paid" ||
+          txStatus === "succeeded" ||
+          txStatus === "completed" ||
+          refundStatus === "failed" ||
+          refundStatus === "canceled" ||
+          refundStatus === "cancelled")
+      ) {
+        return "not_refunded";
+      }
+
       return "unknown";
     }
 
@@ -540,10 +618,19 @@ async function reconcileProviderRefundState(params: {
       const dataObj = (payload?.data as Record<string, unknown>) || {};
       const attrs = (dataObj.attributes as Record<string, unknown>) || {};
       const statusStr = String(attrs.status || "").toLowerCase();
-      if (Boolean(attrs.refunded) || statusStr === "refunded") {
+      const refundedAmt = Number(attrs.refunded_amount ?? 0);
+      const totalAmt = Number(attrs.total ?? attrs.subtotal ?? 0);
+      const isPartial =
+        statusStr === "partial_refund" ||
+        (totalAmt > 0 && refundedAmt > 0 && refundedAmt < totalAmt);
+
+      if (!isPartial && (Boolean(attrs.refunded) || statusStr === "refunded")) {
         return "refunded";
       }
-      if (statusStr === "paid") {
+      if (isPartial || statusStr === "pending" || statusStr === "processing") {
+        return "pending";
+      }
+      if (statusStr === "paid" && refundedAmt === 0) {
         return "not_refunded";
       }
       return "unknown";
@@ -1722,13 +1809,14 @@ Deno.serve(async (req: Request) => {
     const refundCancelMarkerId = `refund_cancel_done_${provider}_${refundKeyId}`;
     const refundPendingMarkerId = `refund_pending_${provider}_${refundKeyId}`;
 
-    const [txMarkerRes, cancelMarkerRes, pendingMarkerRes] = await Promise.all([
+    const [txMarkerRes, cancelMarkerRes, pendingMarkerRes, intentMarkerRes] = await Promise.all([
       checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundTxMarkerId),
       checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundCancelMarkerId),
-      checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundPendingMarkerId)
+      checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundPendingMarkerId),
+      checkBillingEventRecorded(supabaseUrl, serviceRoleKey, refundIntentMarkerId)
     ]);
 
-    if (!txMarkerRes.ok || !cancelMarkerRes.ok || !pendingMarkerRes.ok) {
+    if (!txMarkerRes.ok || !cancelMarkerRes.ok || !pendingMarkerRes.ok || !intentMarkerRes.ok) {
       return new Response(
         JSON.stringify({
           ok: false,
@@ -1740,7 +1828,9 @@ Deno.serve(async (req: Request) => {
 
     let txAlreadyRefunded = txMarkerRes.exists;
     const cancelAlreadyCompleted = cancelMarkerRes.exists;
-    const isRefundPending = pendingMarkerRes.exists;
+    let isRefundPending = pendingMarkerRes.exists;
+    let hasRetainedIntent = intentMarkerRes.exists;
+    let retainedIntentType = intentMarkerRes.eventType || "";
 
     let isResumingPartialRefund =
       txAlreadyRefunded ||
@@ -1749,7 +1839,9 @@ Deno.serve(async (req: Request) => {
 
     const lemonApiKey = Deno.env.get("LEMONSQUEEZY_API_KEY") || "";
 
-    // When a refund is marked pending, reconcile with the provider first so a missed webhook can still finalize
+    // 1. Reconcile pending refunds BEFORE fresh-refund eligibility checks.
+    //    If the provider confirms the pending refund failed/canceled (`not_refunded`), clear the
+    //    pending marker and intent lock so the user is never stuck in HTTP 202 forever.
     if (!txAlreadyRefunded && (currentStatus === "refund_pending" || isRefundPending)) {
       if (provider !== "sandbox") {
         const pendingProviderState = await reconcileProviderRefundState({
@@ -1781,6 +1873,26 @@ Deno.serve(async (req: Request) => {
           }
           txAlreadyRefunded = true;
           isResumingPartialRefund = true;
+        } else if (pendingProviderState === "not_refunded") {
+          // Provider confirmed no refund occurred (pending refund failed or was canceled):
+          // clear pending/intent markers and restore active status so the user can retry a fresh refund.
+          await Promise.all([
+            deleteBillingEventMarker(supabaseUrl, serviceRoleKey, refundPendingMarkerId),
+            deleteBillingEventMarker(supabaseUrl, serviceRoleKey, refundIntentMarkerId)
+          ]);
+          await updateProfileBillingRow({
+            supabaseUrl,
+            serviceRoleKey,
+            userId,
+            subscriptionId: subId || undefined,
+            excludeStatuses: ["refunded", "refund_cancel_pending", "refund_finalize_pending"],
+            patchBody: {
+              subscription_status: "active"
+            }
+          });
+          isRefundPending = false;
+          hasRetainedIntent = false;
+          retainedIntentType = "";
         } else {
           return new Response(
             JSON.stringify({
@@ -1804,6 +1916,94 @@ Deno.serve(async (req: Request) => {
           }),
           { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
+      }
+    }
+
+    // 2. Reconcile any retained dispatched/transport-failed intent BEFORE the 2-hour deadline check
+    //    so a refund submitted just before the 2-hour cutoff can still finalize if its response timed out.
+    if (!isResumingPartialRefund && hasRetainedIntent && provider !== "sandbox") {
+      const parsedRetained = parseIntentEventType(retainedIntentType);
+      const retainedAgeMs = Date.now() - parsedRetained.timestampMs;
+
+      if (parsedRetained.stage !== "preparing") {
+        const isReadyToReconcile =
+          (parsedRetained.stage === "transport_failed" &&
+            parsedRetained.timestampMs > 0 &&
+            retainedAgeMs >= TRANSPORT_FAILED_SETTLE_MS) ||
+          (parsedRetained.stage === "dispatched" &&
+            parsedRetained.timestampMs > 0 &&
+            retainedAgeMs >= DISPATCHED_RECONCILE_COOLDOWN_MS) ||
+          parsedRetained.stage === "other";
+
+        const earlyProviderState = await reconcileProviderRefundState({
+          provider,
+          creemBaseUrl,
+          creemApiKey,
+          lemonApiKey,
+          subId,
+          orderId
+        });
+
+        if (earlyProviderState === "refunded") {
+          const txSaved = await recordBillingEvent({
+            supabaseUrl,
+            serviceRoleKey,
+            eventId: refundTxMarkerId,
+            provider,
+            eventType: "refund_tx_succeeded",
+            userId
+          });
+          if (!txSaved) {
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                error: "Refund confirmed with provider, but saving local state failed. Please retry."
+              }),
+              { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+          txAlreadyRefunded = true;
+          isResumingPartialRefund = true;
+        } else if (earlyProviderState === "pending") {
+          await recordBillingEvent({
+            supabaseUrl,
+            serviceRoleKey,
+            eventId: refundPendingMarkerId,
+            provider,
+            eventType: "refund_pending",
+            userId
+          });
+          await updateProfileBillingRow({
+            supabaseUrl,
+            serviceRoleKey,
+            userId,
+            subscriptionId: subId || undefined,
+            excludeStatuses: ["refunded", "refund_cancel_pending", "refund_finalize_pending"],
+            patchBody: {
+              subscription_status: "refund_pending"
+            }
+          });
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              pending: true,
+              subscriptionStatus: "refund_pending",
+              error:
+                "Your refund request is pending confirmation from the payment provider."
+            }),
+            { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        } else if (!isReadyToReconcile || earlyProviderState === "unknown") {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              error:
+                "A previous refund request is still being verified with the payment provider. Please wait 60 seconds and try again."
+            }),
+            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+        // If earlyProviderState === "not_refunded" and cooldown has elapsed, fall through to fresh eligibility check
       }
     }
 
