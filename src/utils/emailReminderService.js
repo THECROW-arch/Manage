@@ -117,12 +117,23 @@ export async function sendRecurringExpenseReminderEmail({
     }
 
     const dispatchPromise = (async () => {
-        let existingMap = {};
+        let localMap = {};
+        try {
+            localMap = parseReminderPeriodMap(
+                localStorage.getItem(`managed_last_reminder_${userId}`)
+            );
+        } catch {
+            // Keep empty fallback map
+        }
 
-        if (onlyIfNotSent) {
-            const verification = await checkReminderDeliveryStatus(userId, recurrenceCycle, periodKey);
-            existingMap = verification.currentMap || {};
+        const verification = onlyIfNotSent
+            ? await checkReminderDeliveryStatus(userId, recurrenceCycle, periodKey)
+            : null;
+        const existingMap = verification
+            ? { ...localMap, ...(verification.currentMap || {}) }
+            : localMap;
 
+        if (verification) {
             if (verification.state === 'sent') {
                 const updatedMap = { ...existingMap, [recurrenceCycle]: periodKey };
                 const serializedMap = JSON.stringify(updatedMap);
