@@ -5,15 +5,17 @@ CREATE TABLE IF NOT EXISTS public.user_ledger_epochs (
   last_wiped_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE public.user_ledger_epochs ADD COLUMN IF NOT EXISTS wipe_request_id uuid;
 ALTER TABLE public.user_ledger_epochs ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.user_ledger_epochs FROM anon, authenticated;
+GRANT SELECT ON public.user_ledger_epochs TO authenticated;
 
 DROP POLICY IF EXISTS "Users can manage own ledger epoch" ON public.user_ledger_epochs;
 CREATE POLICY "Users can manage own ledger epoch"
   ON public.user_ledger_epochs
-  FOR ALL
+  FOR SELECT
   TO authenticated
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = auth.uid());
 
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS wipe_epoch bigint NOT NULL DEFAULT 0;
 ALTER TABLE public.expenses ADD COLUMN IF NOT EXISTS wipe_epoch bigint NOT NULL DEFAULT 0;
@@ -107,6 +109,20 @@ BEGIN
 END;
 $$;
 
+-- Statement triggers run before PostgreSQL locks any profile tuple.
+CREATE OR REPLACE FUNCTION public.lock_profile_account()
+RETURNS trigger LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+  IF auth.uid() IS NOT NULL THEN
+    PERFORM pg_advisory_xact_lock(hashtext('user_ledger_' || auth.uid()::text));
+  END IF;
+  RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_profiles_account_lock ON public.profiles;
+CREATE TRIGGER trg_profiles_account_lock BEFORE INSERT OR UPDATE ON public.profiles
+FOR EACH STATEMENT EXECUTE FUNCTION public.lock_profile_account();
+
 DROP TRIGGER IF EXISTS trg_profiles_wipe_guard ON public.profiles;
 CREATE TRIGGER trg_profiles_wipe_guard
   BEFORE INSERT OR UPDATE ON public.profiles
@@ -146,10 +162,10 @@ CREATE TRIGGER trg_closed_months_wipe_guard
 -- 1. Atomic Financial Data Wipe RPC
 DROP FUNCTION IF EXISTS public.wipe_user_financial_data();
 
-CREATE OR REPLACE FUNCTION public.wipe_user_financial_data()
+CREATE OR REPLACE FUNCTION public.wipe_user_financial_data(p_request_id uuid DEFAULT gen_random_uuid())
 RETURNS bigint
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
@@ -162,11 +178,11 @@ BEGIN
 
   PERFORM pg_advisory_xact_lock(hashtext('user_ledger_' || v_uid::text));
 
-  INSERT INTO public.user_ledger_epochs (user_id, wipe_epoch, last_wiped_at)
-  VALUES (v_uid, 1, now())
+  INSERT INTO public.user_ledger_epochs (user_id, wipe_epoch, last_wiped_at, wipe_request_id)
+  VALUES (v_uid, 1, now(), p_request_id)
   ON CONFLICT (user_id) DO UPDATE
   SET wipe_epoch = public.user_ledger_epochs.wipe_epoch + 1,
-      last_wiped_at = now()
+      last_wiped_at = now(), wipe_request_id = p_request_id
   RETURNING wipe_epoch INTO v_new_epoch;
 
   DELETE FROM public.closed_months WHERE user_id = v_uid;
@@ -190,8 +206,8 @@ BEGIN
 END;
 $$;
 
-REVOKE EXECUTE ON FUNCTION public.wipe_user_financial_data() FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.wipe_user_financial_data() TO authenticated;
+REVOKE EXECUTE ON FUNCTION public.wipe_user_financial_data(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.wipe_user_financial_data(uuid) TO authenticated;
 
 -- 2. Atomic Month-End Close RPC (with per-row expense & category snapshot verification)
 DROP FUNCTION IF EXISTS public.close_month(text, uuid[], jsonb, jsonb, jsonb, integer, integer, jsonb);
@@ -286,6 +302,10 @@ BEGIN
     RAISE EXCEPTION 'Month % is already closed', p_month USING ERRCODE = '23505';
   END IF;
 
+  IF EXISTS (SELECT 1 FROM public.closed_months WHERE user_id = v_uid AND month > p_month) THEN
+    RAISE EXCEPTION 'Months must be closed chronologically' USING ERRCODE = '23514';
+  END IF;
+
   -- Per-row verification of every expense in p_month (catches swapped amounts even when count and sum are unchanged)
   IF p_expected_expenses IS NOT NULL THEN
     SELECT count(*) INTO v_live_month_count
@@ -335,6 +355,7 @@ BEGIN
           AND name = (v_item->>'name')
           AND ROUND(percentage, 2) = ROUND((v_item->>'percentage')::numeric, 2)
           AND type = (v_item->>'type')
+        FOR UPDATE
       ) THEN
         RAISE EXCEPTION 'Budget category allocations changed in another session while closing month; please reload and try again' USING ERRCODE = '40001';
       END IF;

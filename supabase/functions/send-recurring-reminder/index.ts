@@ -15,7 +15,7 @@ const corsHeaders = {
 
 const VALID_CYCLES = new Set(["daily", "monthly", "yearly"]);
 const MAX_EXPENSE_ITEMS = 250;
-const MAX_REMINDERS_PER_HOUR = 6;
+const MAX_REPLAY_AGE_MS = 23 * 60 * 60 * 1000;
 const IN_FLIGHT_RECONCILE_WAIT_MS = 30 * 1000;
 
 interface StructuredExpenseItem {
@@ -368,18 +368,18 @@ Deno.serve(async (req: Request) => {
     const claimRpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/claim_reminder_delivery`, {
       method: "POST",
       headers: {
-        apikey: supabaseAnonKey,
-        Authorization: authHeader,
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
+        p_user_id: userId,
         p_recipient_email: authUser.email,
         p_period_key: periodKey,
         p_subject: rendered.subject,
         p_html_body: rendered.htmlBody,
         p_text_body: rendered.textBody,
-        p_expense_count: sanitizedItems.length,
-        p_max_per_hour: MAX_REMINDERS_PER_HOUR
+        p_expense_count: sanitizedItems.length
       })
     });
 
@@ -412,16 +412,21 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    if (claimStatus === "unresolved") {
+      return new Response(JSON.stringify({ error: "Delivery remains unresolved and requires reconciliation; automatic replay is disabled." }),
+        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
     let queueRowId = "";
     let subjectToSend = rendered.subject;
     let htmlToSend = rendered.htmlBody;
     let textToSend = rendered.textBody;
 
     if (claimStatus === "in_progress") {
-      const createdAtMs = claimData?.created_at ? Date.parse(String(claimData.created_at)) : NaN;
-      const ageMs = Number.isFinite(createdAtMs) ? Date.now() - createdAtMs : 0;
+      const createdAtMs = claimData?.first_attempt_at ? Date.parse(String(claimData.first_attempt_at)) : NaN;
+      const ageMs = Number.isFinite(createdAtMs) ? Date.now() - createdAtMs : Infinity;
 
-      if (ageMs < IN_FLIGHT_RECONCILE_WAIT_MS) {
+      if (ageMs < IN_FLIGHT_RECONCILE_WAIT_MS || ageMs >= MAX_REPLAY_AGE_MS) {
         return new Response(
           JSON.stringify({ error: "A reminder for this period is already being processed." }),
           { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -444,21 +449,23 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // 4. Send via Resend with deterministic Idempotency-Key so retries never send duplicate emails
+    // 4. Replay only within the bounded provider idempotency window.
     const resendApiKey = Deno.env.get("RESEND_API_KEY");
     const fromAddress = Deno.env.get("REMINDER_FROM_EMAIL") || "MANAGED <onboarding@resend.dev>";
 
     if (!resendApiKey) {
-      await fetch(
-        `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}&status=eq.processing`,
-        {
-          method: "DELETE",
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`
+      if (claimStatus === "claimed") {
+        await fetch(
+          `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}&status=eq.processing`,
+          {
+            method: "DELETE",
+            headers: {
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${serviceRoleKey}`
+            }
           }
-        }
-      );
+        );
+      }
       return new Response(
         JSON.stringify({ error: "RESEND_API_KEY is not configured in Supabase Edge Function secrets." }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -485,9 +492,19 @@ Deno.serve(async (req: Request) => {
     }).catch(() => null);
 
     if (!resendResponse || !resendResponse.ok) {
-      // Only release the claim if Resend explicitly rejected with 4xx (not delivered).
-      // For network timeouts or 5xx, keep the 'processing' claim intact so retries reconcile via Idempotency-Key.
-      if (resendResponse && resendResponse.status >= 400 && resendResponse.status < 500) {
+      const providerError = await resendResponse?.json().catch(() => ({}));
+      const conflict = resendResponse?.status === 409 ||
+        ['concurrent_idempotent_requests', 'invalid_idempotent_request'].includes(providerError?.name);
+      if (providerError?.name === 'invalid_idempotent_request') {
+        await fetch(`${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}`, {
+          method: "PATCH",
+          headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ replay_blocked: true })
+        });
+      }
+      // An error on a replay cannot disprove an earlier ambiguous delivery.
+      if (claimStatus === "claimed" && !conflict && resendResponse &&
+          [400, 401, 403, 404, 422, 429].includes(resendResponse.status)) {
         await fetch(
           `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}&status=eq.processing`,
           {

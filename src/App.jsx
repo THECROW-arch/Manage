@@ -347,9 +347,42 @@ export default function App() {
     }
     try {
       const billingEpochAtFetchStart = billingStateEpochRef.current;
-      let { data: profile } = await supabase.from('profiles').select('*').eq('user_id', userId).single();
+      let { data: cats } = await supabase.from('categories').select('*').eq('user_id', userId).order('created_at', { ascending: true });
       if (isStale()) return;
+      cats = cats || [];
 
+      if (cats.length === 0) {
+        const defaultCats = [
+          { user_id: userId, name: 'Needs', percentage: 50, color: 'emerald-600', type: 'expense', target_goal: 0 },
+          { user_id: userId, name: 'Wants', percentage: 30, color: 'pink-600', type: 'expense', target_goal: 0 },
+          { user_id: userId, name: 'Savings', percentage: 20, color: 'green-600', type: 'asset', target_goal: 50000 }
+        ];
+        const { data: seededCats } = await supabase.from('categories').insert(defaultCats).select();
+        if (isStale()) return;
+        cats = seededCats || defaultCats;
+      }
+
+      let snapshot;
+      let loadedWipeEpoch;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const before = await supabase.from('user_ledger_epochs').select('wipe_epoch').eq('user_id', userId).maybeSingle();
+        if (isStale()) return;
+        if (before.error) throw before.error;
+        loadedWipeEpoch = Number(before.data?.wipe_epoch || 0);
+        const tables = ['profiles', 'expenses', 'bundles', 'sandbox_sheets', 'asset_adjustments', 'closed_months'];
+        const results = await Promise.all(tables.map(table => supabase.from(table).select('*').eq('user_id', userId)));
+        const after = await supabase.from('user_ledger_epochs').select('wipe_epoch').eq('user_id', userId).maybeSingle();
+        if (isStale()) return;
+        if (after.error) throw after.error;
+        const failed = results.find(result => result.error);
+        if (failed) throw failed.error;
+        if (loadedWipeEpoch === Number(after.data?.wipe_epoch || 0)) {
+          snapshot = Object.fromEntries(tables.map((table, index) => [table, results[index].data || []]));
+          break;
+        }
+      }
+      if (!snapshot) throw new Error('Ledger changed during refresh. Please reload.');
+      let profile = snapshot.profiles[0];
       if (!profile) {
         const { data: authData } = await supabase.auth.getUser();
         if (isStale()) return;
@@ -359,6 +392,7 @@ export default function App() {
 
         const { data: newProfile } = await supabase.from('profiles').insert([{
           user_id: userId,
+          wipe_epoch: loadedWipeEpoch,
           username: registeredUsername,
           role: 'user',
           subscription_tier: 'free'
@@ -366,6 +400,11 @@ export default function App() {
         if (isStale()) return;
 
         profile = newProfile;
+        const epochCheck = await supabase.from('user_ledger_epochs').select('wipe_epoch').eq('user_id', userId).maybeSingle();
+        if (isStale()) return;
+        if (epochCheck.error || Number(epochCheck.data?.wipe_epoch || 0) !== loadedWipeEpoch) {
+          throw new Error('Ledger changed during profile creation. Please reload.');
+        }
       }
 
       if (profile) {
@@ -467,28 +506,13 @@ export default function App() {
             !Array.isArray(profile.monthly_boosts)
             ? profile.monthly_boosts
             : {};
-        const mergedBoosts = Object.keys(dbBoosts).length > 0 ? dbBoosts : localBoosts;
+        const mergedBoosts = loadedWipeEpoch > 0 || Object.keys(dbBoosts).length > 0 ? dbBoosts : localBoosts;
         setBoostOverridesByUser(prev => ({ ...prev, [userId]: mergedBoosts }));
 
         const localObjectives = readUserStorage('managed_wealth_objectives', userId, []);
         const dbObjectives = Array.isArray(profile.wealth_objectives) ? profile.wealth_objectives : [];
-        const mergedObjectives = dbObjectives.length > 0 ? dbObjectives : localObjectives;
+        const mergedObjectives = loadedWipeEpoch > 0 || dbObjectives.length > 0 ? dbObjectives : localObjectives;
         setObjectivesByUser(prev => ({ ...prev, [userId]: mergedObjectives }));
-      }
-
-      let { data: cats } = await supabase.from('categories').select('*').eq('user_id', userId).order('created_at', { ascending: true });
-      if (isStale()) return;
-      cats = cats || [];
-
-      if (cats.length === 0) {
-        const defaultCats = [
-          { user_id: userId, name: 'Needs', percentage: 50, color: 'emerald-600', type: 'expense', target_goal: 0 },
-          { user_id: userId, name: 'Wants', percentage: 30, color: 'pink-600', type: 'expense', target_goal: 0 },
-          { user_id: userId, name: 'Savings', percentage: 20, color: 'green-600', type: 'asset', target_goal: 50000 }
-        ];
-        const { data: seededCats } = await supabase.from('categories').insert(defaultCats).select();
-        if (isStale()) return;
-        cats = seededCats || defaultCats;
       }
 
       setCategories(cats);
@@ -499,12 +523,13 @@ export default function App() {
         if (firstAssetCat) setAdjCatId(firstAssetCat.id);
       }
 
-      let { data: expensesData } = await supabase.from('expenses').select('*').eq('user_id', userId).order('expense_date', { ascending: false });
+      const expensesData = snapshot.expenses.sort((a, b) => String(b.expense_date || '').localeCompare(String(a.expense_date || '')));
       if (isStale()) return;
       const loadedExpenses = expensesData || [];
       setExpenses(loadedExpenses);
 
-      const localMeta = readUserStorage('managed_expense_meta', userId, {});
+      const storedMeta = readUserStorage('managed_expense_meta', userId, {});
+      const localMeta = Object.fromEntries(loadedExpenses.filter(exp => storedMeta[exp.id]).map(exp => [exp.id, storedMeta[exp.id]]));
       const hydratedMeta = { ...localMeta };
       loadedExpenses.forEach(exp => {
         if (!exp?.id) return;
@@ -520,19 +545,11 @@ export default function App() {
       });
       setMetaOverridesByUser(prev => ({ ...prev, [userId]: hydratedMeta }));
 
-      let { data: bundlesData } = await supabase
-        .from('bundles')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
+      const bundlesData = snapshot.bundles.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
       if (isStale()) return;
       setBundles(bundlesData || []);
 
-      let { data: sandboxData } = await supabase
-        .from('sandbox_sheets')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
+      const sandboxData = snapshot.sandbox_sheets.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
       if (isStale()) return;
 
       setSandboxSheets((sandboxData || []).map(s => ({
@@ -540,29 +557,21 @@ export default function App() {
         buckets: s.buckets || [], expenses: s.expenses || []
       })));
 
-      let { data: adjData } = await supabase.from('asset_adjustments').select('*').eq('user_id', userId).order('adjustment_date', { ascending: false });
+      const adjData = snapshot.asset_adjustments.sort((a, b) => String(b.adjustment_date || '').localeCompare(String(a.adjustment_date || '')));
       if (isStale()) return;
       setAssetAdjustments(adjData || []);
 
-      let { data: closedData } = await supabase.from('closed_months').select('*').eq('user_id', userId);
+      const closedData = snapshot.closed_months;
       if (isStale()) return;
       setClosedMonths(closedData || []);
 
-      let loadedWipeEpoch = Number(profile?.wipe_epoch || 0);
-      const { data: epochRow, error: epochErr } = await supabase
-        .from('user_ledger_epochs')
-        .select('wipe_epoch')
-        .eq('user_id', userId)
-        .maybeSingle();
-      if (isStale()) return;
-      if (!epochErr && epochRow && Number.isFinite(Number(epochRow.wipe_epoch))) {
-        loadedWipeEpoch = Number(epochRow.wipe_epoch);
-      }
       wipeEpochByUserRef.current[userId] = loadedWipeEpoch;
       setWipeEpochByUser(prev => ({ ...prev, [userId]: loadedWipeEpoch }));
 
       window.__loadedUserId = userId;
       setLoadingData(false);
+    } catch (error) {
+      if (!isStale()) setAlertMsg(error.message || 'Ledger refresh failed. Please reload.');
     } finally {
       if (window.__fetchingUserId === userId) {
         window.__fetchingUserId = null;
@@ -1771,6 +1780,15 @@ export default function App() {
     setCategories(newCategories);
   };
 
+  const hydrateForwardedRows = (rows) => {
+    rows.forEach(row => {
+      if (row.id) updateExpenseMeta(row.id, {
+        recurrenceType: row.recurrence_type || 'monthly',
+        skippedPeriods: Array.isArray(row.skipped_periods) ? row.skipped_periods : []
+      });
+    });
+  };
+
   // Atomic Month-End Closure via Postgres RPC (`close_month`) with account-switch & ambiguous-drop guards
   const handleCloseMonth = async () => {
     const originUserId = session?.user?.id;
@@ -1781,6 +1799,10 @@ export default function App() {
       return;
     }
 
+    if (closedMonths.some(c => c.month > selectedMonth)) {
+      setAlertMsg('Months must be closed chronologically; this month precedes an already closed month.');
+      return;
+    }
     const closingMonth = selectedMonth;
     const batchedExpenses = activeMonthlyExpenses.filter(e => e.is_batched);
     if (batchedExpenses.some(e => e._isOptimistic)) {
@@ -1830,7 +1852,6 @@ export default function App() {
 
       // 2. PREPARE FORWARDED RECURRING EXPENSES
       const recurringExpenses = monthlyExpenses.filter(e => e.is_recurring);
-      const recMetaToHydrate = [];
       const recPayloads = recurringExpenses.map(e => {
         const meta = expenseMetaMap[e.id] || {};
         const rawFreq = meta.recurrenceType || e.recurrence_type || 'monthly';
@@ -1857,11 +1878,6 @@ export default function App() {
             })
           )
         );
-
-        recMetaToHydrate.push({
-          recurrenceType: sourceFreq,
-          skippedPeriods: retainedSkipped
-        });
 
         return {
           user_id: originUserId,
@@ -1955,16 +1971,7 @@ export default function App() {
         category_snapshot: categories
       };
 
-      insertedRecurring.forEach((insertedRow, idx) => {
-        const metaInfo = recMetaToHydrate[idx];
-        if (insertedRow?.id && metaInfo) {
-          updateExpenseMeta(insertedRow.id, {
-            recurrenceType: metaInfo.recurrenceType,
-            skippedPeriods: metaInfo.skippedPeriods,
-            confirmedPeriods: []
-          });
-        }
-      });
+      hydrateForwardedRows(insertedRecurring);
 
       if (insertedAdjustments.length > 0) {
         setAssetAdjustments(current => [...insertedAdjustments, ...current]);
@@ -2017,7 +2024,10 @@ export default function App() {
           fetchUserData(originUserId, false);
         } else {
           if (Array.isArray(closedAllRes.data)) setClosedMonths(closedAllRes.data);
-          if (Array.isArray(expAllRes.data)) setExpenses(expAllRes.data);
+          if (Array.isArray(expAllRes.data)) {
+            setExpenses(expAllRes.data);
+            hydrateForwardedRows(expAllRes.data);
+          }
           if (Array.isArray(adjAllRes.data)) setAssetAdjustments(adjAllRes.data);
           if (!profRes.error && profRes.data) {
             setCurrentStreak(profRes.data.current_streak || 0);
@@ -2180,7 +2190,7 @@ export default function App() {
       if (window.__activeUserId !== originUserId) return false;
       if (rpcError) throw rpcError;
       return true;
-    } catch {
+    } catch (error) {
       if (window.__activeUserId !== originUserId) return false;
 
       // Check whether the RPC committed on the server before an ambiguous network drop
@@ -2198,7 +2208,7 @@ export default function App() {
         return true;
       }
 
-      setAlertMsg(t('err_del_cat'));
+      setAlertMsg(error?.code === '23514' ? error.message : t('err_del_cat'));
       setCategories(prevCategories);
       if (
         wasDeletedCategoryLocked &&
@@ -2400,7 +2410,8 @@ export default function App() {
           .select('*')
           .eq('id', bundleId)
           .maybeSingle();
-        if (window.__activeUserId === originUserId && freshBundle) {
+        if (window.__activeUserId !== originUserId) return;
+        if (freshBundle) {
           setBundles(prev => prev.map(b => b.id === bundleId ? freshBundle : b));
         }
         setAlertMsg(t('err_occasion_already_locked', 'This special occasion was already finalized and cannot be modified.'));
@@ -2438,7 +2449,8 @@ export default function App() {
           .select('*')
           .eq('id', bundleId)
           .maybeSingle();
-        if (window.__activeUserId === originUserId && freshBundle) {
+        if (window.__activeUserId !== originUserId) return;
+        if (freshBundle) {
           setBundles(prev => prev.map(b => b.id === bundleId ? freshBundle : b));
         }
         setAlertMsg(t('err_occasion_already_locked', 'This special occasion was already finalized and cannot be modified.'));
@@ -2570,6 +2582,11 @@ export default function App() {
             supabase.from('asset_adjustments').select('*').eq('user_id', originUserId).order('adjustment_date', { ascending: false })
           ]);
           if (window.__activeUserId !== originUserId) return;
+          if (expRes.error || adjRes.error) {
+            fetchUserData(originUserId, false);
+            setAlertMsg('Occasion is locked. Ledger reconciliation is incomplete; refreshing totals. Reload if totals remain unavailable.');
+            return;
+          }
           if (!expRes.error && Array.isArray(expRes.data)) setExpenses(expRes.data);
           if (!adjRes.error && Array.isArray(adjRes.data)) setAssetAdjustments(adjRes.data);
           setAlertMsg(t('succ_bundle_locked', { name: freshBundle.name || bundle.name }));

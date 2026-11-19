@@ -36,6 +36,14 @@ BEGIN
     RAISE EXCEPTION 'Cannot delete the last remaining category' USING ERRCODE = '22023';
   END IF;
 
+  IF EXISTS (
+    SELECT 1 FROM public.expenses e JOIN public.closed_months c
+      ON c.user_id = e.user_id AND c.month = substring(e.expense_date::text FROM 1 FOR 7)
+    WHERE e.user_id = v_uid AND e.category_id = p_category_id
+  ) THEN
+    RAISE EXCEPTION 'Cannot delete a category with expenses in closed months; historical expenses must be preserved' USING ERRCODE = '23514';
+  END IF;
+
   DELETE FROM public.expenses
   WHERE category_id = p_category_id AND user_id = v_uid;
 

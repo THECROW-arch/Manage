@@ -493,7 +493,8 @@ export default function SettingsTab({
       const uid = session.user.id;
       if ((originUserId && uid !== originUserId) || window.__activeUserId !== uid) return;
 
-      const { error } = await supabase.rpc('wipe_user_financial_data');
+      const requestId = crypto.randomUUID();
+      const { error } = await supabase.rpc('wipe_user_financial_data', { p_request_id: requestId });
       if (window.__activeUserId !== uid || activeAccountRef.current !== originAccount) return;
 
       if (error) {
@@ -519,16 +520,24 @@ export default function SettingsTab({
           sheetCheck.data.length === 0 &&
           closedCheck.data.length === 0;
 
-        if (allVerifiedEmpty) {
+        const receipt = await supabase.from('user_ledger_epochs').select('wipe_request_id').eq('user_id', uid).maybeSingle();
+        if (window.__activeUserId !== uid || activeAccountRef.current !== originAccount) return;
+        if (allVerifiedEmpty && !receipt.error && receipt.data?.wipe_request_id === requestId) {
           finalizeClientWipe(uid);
           return;
         }
 
         console.error('Atomic wipe failed:', error);
-        alert(t('err_data_wipe_partial', 'Failed to wipe financial data. No records were deleted. Please try again.'));
+        alert(t('err_data_wipe_unverified', 'The wipe outcome could not be verified. Reload to check your financial data before trying again.'));
         return;
       }
 
+      const receipt = await supabase.from('user_ledger_epochs').select('wipe_request_id').eq('user_id', uid).maybeSingle();
+      if (window.__activeUserId !== uid || activeAccountRef.current !== originAccount) return;
+      if (receipt.error || receipt.data?.wipe_request_id !== requestId) {
+        alert(t('err_data_wipe_unverified', 'The wipe outcome could not be verified. Reload to check your financial data before trying again.'));
+        return;
+      }
       finalizeClientWipe(uid);
     } catch (error) {
       if (originUserId && window.__activeUserId === originUserId && activeAccountRef.current === originAccount) {

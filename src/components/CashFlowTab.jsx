@@ -695,7 +695,7 @@ export default function CashFlowTab({
     const smartInsights = generateSmartInsights();
     return (
         <>
-            {isPastMonth && !closedMonths.some(c => (typeof c === 'string' ? c : c.month) === selectedMonth) && (
+            {isPastMonth && !closedMonths.some(c => (typeof c === 'string' ? c : c.month) >= selectedMonth) && (
                 <div className="w-full bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-lg p-6 mb-8 text-center">
                     <h2 className="text-xl font-bold text-amber-700 dark:text-amber-400 mb-2">Month-End Action Required</h2>
                     <p className="text-amber-600 dark:text-amber-200/80 mb-6 max-w-2xl mx-auto text-sm">
@@ -715,6 +715,7 @@ export default function CashFlowTab({
                     <h2 className="text-xs font-semibold text-gray-500 dark:text-zinc-500 mb-2 uppercase tracking-wider">{t('budget_month')}</h2>
                     <input
                         type="month"
+                        title="Months can only be closed after all previously closed months. Older months remain available for viewing."
                         value={selectedMonth}
                         onChange={(e) => setSelectedMonth(e.target.value)}
                         className="w-full px-3 py-2 rounded-md bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-zinc-200 focus:outline-none focus:border-emerald-500 transition-all text-sm cursor-pointer"
