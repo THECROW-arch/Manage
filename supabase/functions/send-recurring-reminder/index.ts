@@ -472,7 +472,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const idempotencyKey = `reminder_${userId}_${recurrenceCycle}_${sanitizeTagValue(periodKey)}`;
+    const idempotencyKey = `reminder_${userId}_${sanitizeTagValue(periodKey)}`;
     const resendResponse = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {

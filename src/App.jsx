@@ -1303,15 +1303,27 @@ export default function App() {
     });
   };
 
+  const [currentDay, setCurrentDay] = useState(() => getToday());
+
+  useEffect(() => {
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+    const msUntilMidnight = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    const timer = setTimeout(() => {
+      setCurrentDay(getToday());
+    }, msUntilMidnight);
+    return () => clearTimeout(timer);
+  }, [currentDay]);
+
   const monthlyExpenses = useMemo(
     () => expenses.filter(e => e.expense_date && e.expense_date.startsWith(selectedMonth)),
     [expenses, selectedMonth]
   );
 
   const activeMonthlyExpenses = useMemo(
-    () => monthlyExpenses.filter(e => !isExpenseSkippedForCurrentPeriod(e, selectedMonth)),
+    () => monthlyExpenses.filter(e => !isExpenseSkippedForCurrentPeriod(e, selectedMonth, currentDay)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [monthlyExpenses, selectedMonth, expenseMetaMap]
+    [monthlyExpenses, selectedMonth, expenseMetaMap, currentDay]
   );
 
   const assetCategories = useMemo(
@@ -1363,6 +1375,7 @@ export default function App() {
   const autoReminderRetryCountRef = useRef({});
   const autoReminderNextRetryAtRef = useRef({});
   const autoReminderRetryTimersRef = useRef({});
+  const lastReminderDispatchAtRef = useRef(0);
   const [reminderRetryTick, setReminderRetryTick] = useState(0);
 
   useEffect(() => {
@@ -1378,8 +1391,8 @@ export default function App() {
 
     const effectUserId = session.user.id;
     const effectUserEmail = session.user.email;
-    const currentMonthStr = getCurrentMonth();
-    const todayStr = getToday();
+    const currentMonthStr = currentDay.slice(0, 7);
+    const todayStr = currentDay;
     const activeYearStr = selectedMonth.slice(0, 4);
 
     const storedMap = parseReminderPeriodMap(lastReminderPeriod);
@@ -1427,8 +1440,6 @@ export default function App() {
     };
 
     (async () => {
-      let dispatchedInThisRun = 0;
-
       for (const { cycle, periodKey } of cycleConfigs) {
         if (isCancelled || activeUserIdRef.current !== effectUserId) break;
 
@@ -1459,6 +1470,13 @@ export default function App() {
         if (storedMap[cycle] === periodKey || cachedCyclePeriod === periodKey) continue;
 
         const attemptKey = `${effectUserId}_${cycle}_${periodKey}`;
+        if (
+          autoReminderAttemptedRef.current[attemptKey] === 'exhausted' &&
+          cyclePendingExpenses.length <= 250
+        ) {
+          delete autoReminderAttemptedRef.current[attemptKey];
+        }
+
         const currentStatus = autoReminderAttemptedRef.current[attemptKey];
         const retriesUsed = autoReminderRetryCountRef.current[attemptKey] || 0;
         const nextAllowedAt = autoReminderNextRetryAtRef.current[attemptKey] || 0;
@@ -1474,14 +1492,15 @@ export default function App() {
           continue;
         }
 
-        // Space out back-to-back cycle dispatches so Resend's 2 req/s rate limit is never exceeded
-        if (dispatchedInThisRun > 0) {
-          await new Promise((resolve) => setTimeout(resolve, 650));
+        // Space out back-to-back cycle dispatches across effect restarts so Resend's 2 req/s rate limit is never exceeded
+        const elapsedSinceLastDispatch = Date.now() - lastReminderDispatchAtRef.current;
+        if (lastReminderDispatchAtRef.current > 0 && elapsedSinceLastDispatch < 650) {
+          await new Promise((resolve) => setTimeout(resolve, 650 - elapsedSinceLastDispatch));
           if (isCancelled || activeUserIdRef.current !== effectUserId) break;
         }
 
         autoReminderAttemptedRef.current[attemptKey] = 'inflight';
-        dispatchedInThisRun += 1;
+        lastReminderDispatchAtRef.current = Date.now();
 
         try {
           const res = await sendRecurringExpenseReminderEmail({
@@ -1541,6 +1560,7 @@ export default function App() {
     selectedMonth,
     activeMonthlyExpenses,
     expenseMetaMap,
+    currentDay,
     reminderRetryTick
   ]);
 
