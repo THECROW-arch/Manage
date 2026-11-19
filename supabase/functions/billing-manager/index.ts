@@ -1,4 +1,4 @@
-export {};
+export { };
 // supabase/functions/billing-manager/index.ts
 declare const Deno: {
   env: {
@@ -895,9 +895,9 @@ Deno.serve(async (req: Request) => {
 
       customUserId = String(
         metadata.user_id ||
-          (subObj.metadata as Record<string, unknown>)?.user_id ||
-          obj.request_id ||
-          ""
+        (subObj.metadata as Record<string, unknown>)?.user_id ||
+        obj.request_id ||
+        ""
       ).trim();
 
       const objType = String(obj.object || obj.Object || "").toLowerCase();
@@ -1014,8 +1014,11 @@ Deno.serve(async (req: Request) => {
         }
       );
       if (!profLookupRes.ok) {
+        const errDetail = await profLookupRes.text().catch(() => "");
         return new Response(
-          JSON.stringify({ error: "Failed to query profile association for webhook." }),
+          JSON.stringify({
+            error: `Failed to query profile association for webhook (${profLookupRes.status}${errDetail ? `: ${errDetail}` : ""}).`
+          }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
@@ -2268,8 +2271,7 @@ Deno.serve(async (req: Request) => {
             },
             signal: AbortSignal.timeout(PROVIDER_REFUND_FETCH_TIMEOUT_MS),
             body: JSON.stringify({
-              transaction_id: orderId,
-              reason: "requested_by_customer"
+              transaction_id: orderId
             })
           }).catch(() => null);
 
@@ -2292,6 +2294,20 @@ Deno.serve(async (req: Request) => {
           }
 
           if (!refundResp.ok) {
+            const refundErrRaw = await refundResp.text().catch(() => "");
+            let refundDetail = refundErrRaw;
+            try {
+              const parsedErr = JSON.parse(refundErrRaw);
+              if (typeof parsedErr?.message === "string") {
+                refundDetail = parsedErr.message;
+              } else if (Array.isArray(parsedErr?.message)) {
+                refundDetail = parsedErr.message.join(", ");
+              } else if (typeof parsedErr?.error === "string") {
+                refundDetail = parsedErr.error;
+              }
+            } catch {
+              // Keep raw text fallback
+            }
             if (refundResp.status >= 400 && refundResp.status < 500) {
               await releaseOwnedRefundIntentLock({
                 supabaseUrl,
@@ -2301,7 +2317,10 @@ Deno.serve(async (req: Request) => {
               });
             }
             return new Response(
-              JSON.stringify({ ok: false, error: "Payment provider could not process the refund right now." }),
+              JSON.stringify({
+                ok: false,
+                error: `Payment provider could not process the refund (${refundResp.status}${refundDetail ? `: ${refundDetail}` : ""}).`
+              }),
               { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
             );
           }

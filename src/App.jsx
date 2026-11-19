@@ -3134,7 +3134,7 @@ export default function App() {
               ★
             </div>
             <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300 mb-2">
-              {t('pro_feature_badge', 'MANAGED Pro • $6.99/month (tax excluded)')}
+              {t('pro_feature_badge', 'MANAGED Pro • $6.99/month (tax included)')}
             </span>
             <h2 id="pro-upgrade-title" className="text-xl font-black text-gray-900 dark:text-white mb-2">
               {t('pro_unlock_title', {
@@ -3145,7 +3145,7 @@ export default function App() {
             <p className="text-xs text-gray-600 dark:text-zinc-400 mb-6 leading-relaxed">
               {t(
                 'pro_upgrade_desc',
-                'Your account is currently on the Free Tier. Upgrade to MANAGED Pro ($6.99/month, tax excluded) in Settings → Subscription to unlock Formal & Visual Excel Audit Exports, Unlimited Custom Categories, Unlimited Sterling AI Commands, Multi-Sheet Sandboxes, and Multi-Goal Wealth Objectives. Includes 1-click cancellation and a 2-Hour Unused Refund Policy.'
+                'Your account is currently on the Free Tier. Upgrade to MANAGED Pro ($6.99/month, tax included) in Settings → Subscription to unlock Formal & Visual Excel Audit Exports, Unlimited Custom Categories, Unlimited Sterling AI Commands, Multi-Sheet Sandboxes, and Multi-Goal Wealth Objectives. Includes 1-click cancellation and a 2-Hour Unused Refund Policy.'
               )}
             </p>
             <div className="flex gap-3">

@@ -610,7 +610,7 @@ export default function SettingsTab({
             </span>
             {!isRoleGrantedPro && (
               <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
-                {t('pro_price_badge', 'MANAGED Pro: $6.99 / month (tax excluded)')}
+                {t('pro_price_badge', 'MANAGED Pro: $6.99 / month (tax included)')}
               </span>
             )}
           </div>
@@ -643,7 +643,7 @@ export default function SettingsTab({
                   <p>
                     {t(
                       'sub_active_notice',
-                      `Your MANAGED Pro subscription ($6.99/month, tax excluded) is active${formattedPeriodEnd ? ` (renews on ${formattedPeriodEnd})` : ''}. You can cancel with one click at any time.`
+                      `Your MANAGED Pro subscription ($6.99/month, tax included) is active${formattedPeriodEnd ? ` (renews on ${formattedPeriodEnd})` : ''}. You can cancel with one click at any time.`
                     )}
                   </p>
                 )}
@@ -676,7 +676,7 @@ export default function SettingsTab({
               <p>
                 {t(
                   'sub_free_notice',
-                  'Upgrade to MANAGED Pro for $6.99/month (tax excluded) to unlock Formal & Visual Excel Audits, unlimited Custom Categories, unlimited Sterling AI commands, multi-sheet Sandboxes, and multi-goal Wealth Objectives. Includes 1-click cancellation anytime and a 2-Hour Unused Refund Policy.'
+                  'Upgrade to MANAGED Pro for $6.99/month (tax included) to unlock Formal & Visual Excel Audits, unlimited Custom Categories, unlimited Sterling AI commands, multi-sheet Sandboxes, and multi-goal Wealth Objectives. Includes 1-click cancellation anytime and a 2-Hour Unused Refund Policy.'
                 )}
               </p>
             )}
@@ -713,7 +713,7 @@ export default function SettingsTab({
                 )}
               </>
             ) : (
-              <>
+            <>
                 {isResumingRefundCancel && (
                   <button
                     type="button"
@@ -727,16 +727,26 @@ export default function SettingsTab({
                   </button>
                 )}
                 {!isRoleGrantedPro && !isResumingRefundCancel && !isRefundPendingProvider && (
-                  <button
-                    type="button"
-                    onClick={handleUpgradeClick}
-                    disabled={isBillingBusy}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isBillingBusy
-                      ? t('starting_checkout', 'Starting Checkout...')
-                      : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro — $6.99/mo')}
-                  </button>
+                  <div className="flex flex-col sm:items-end gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleUpgradeClick}
+                      disabled={isBillingBusy}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-xs font-bold transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isBillingBusy
+                        ? t('starting_checkout', 'Starting Checkout...')
+                        : t('upgrade_pro_btn', 'Upgrade to MANAGED Pro — $6.99/mo')}
+                    </button>
+                    {hasClaimedRefund && (
+                      <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                        {t(
+                          'refund_already_claimed_notice',
+                          '2-hour refund unavailable: one-time account refund was already claimed.'
+                        )}
+                      </p>
+                    )}
+                  </div>
                 )}
               </>
             )}

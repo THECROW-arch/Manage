@@ -159,6 +159,7 @@ test('server escapes HTML, strips header controls, and uses profile identity and
     assert.match(sent.html, /&lt;Admin&gt; &amp;/);
     assert.match(sent.html, /&lt;script&gt;&quot;x&quot;&lt;\/script&gt;/);
     assert.match(sent.html, /&#39;&amp;&lt;cat&gt;/);
+    // eslint-disable-next-line no-control-regex
     assert.doesNotMatch(sent.html, /<script>|forged|\u0000/);
     assert.match(sent.text, /1,000\.25 MAD/);
     assert.match(sent.subject, /2 Monthly Recurring Expenses/);
