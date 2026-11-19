@@ -16,24 +16,28 @@ export default function SupportTab({
     setSubmittingTicketUserId
 }) {
     const { t } = useTranslation();
-    const [tickets, setTickets] = useState([]);
+    const userId = session?.user?.id || null;
+    const accessToken = session?.access_token;
+
+    // Account-scoped tickets state so switching accounts never flashes or restores another user's tickets
+    const [ticketsState, setTicketsState] = useState({ userId: null, items: [] });
+    const tickets = ticketsState.userId === userId ? ticketsState.items : [];
+
     const [localSubmitting, setLocalSubmitting] = useState(false);
     const [successMsg, setSuccessMsg] = useState('');
     const loading = isSubmittingTicket || localSubmitting;
 
-    
-
     // Only persist draft after hydration for the active user has completed and draft belongs to this user
     useEffect(() => {
         if (
-            session?.user?.id &&
-            draftHydratedUserId === session.user.id &&
-            supportDraft.userId === session.user.id &&
+            userId &&
+            draftHydratedUserId === userId &&
+            supportDraft.userId === userId &&
             supportDraft.subject !== undefined
         ) {
             try {
                 localStorage.setItem(
-                    `supportDraft_${session.user.id}`,
+                    `supportDraft_${userId}`,
                     JSON.stringify({
                         subject: supportDraft.subject,
                         category: supportDraft.category,
@@ -44,22 +48,29 @@ export default function SupportTab({
                 console.warn('Failed to save draft', e);
             }
         }
-    }, [supportDraft, session?.user?.id, draftHydratedUserId]);
+    }, [supportDraft, userId, draftHydratedUserId]);
 
     const fetchRequestIdRef = useRef(0);
-    const userId = session?.user?.id;
-    const accessToken = session?.access_token;
 
     const fetchTickets = useCallback(async () => {
-        if (!userId) return;
+        const targetUserId = userId;
+        if (!targetUserId) return;
         const reqId = ++fetchRequestIdRef.current;
         const { data, error } = await supabase
             .from('support_tickets')
             .select('*')
-            .eq('user_id', userId)
+            .eq('user_id', targetUserId)
             .order('created_at', { ascending: false });
-        if (reqId !== fetchRequestIdRef.current) return;
-        if (!error && data) setTickets(data);
+
+        if (
+            reqId !== fetchRequestIdRef.current ||
+            (window.__activeUserId && window.__activeUserId !== targetUserId)
+        ) {
+            return;
+        }
+        if (!error && data) {
+            setTicketsState({ userId: targetUserId, items: data });
+        }
     }, [userId]);
 
     useEffect(() => {
@@ -95,10 +106,15 @@ export default function SupportTab({
 
         try {
             const { data, error } = await supabase.from('support_tickets').insert([newTicket]).select();
+            const isSameActiveUser =
+                (!window.__activeUserId || window.__activeUserId === submitterId) &&
+                session?.user?.id === submitterId;
 
             if (error) {
-                console.error(error);
-                alert(t('err_ticket_submit', 'Failed to submit ticket. Please try again.'));
+                if (isSameActiveUser) {
+                    console.error(error);
+                    alert(t('err_ticket_submit', 'Failed to submit ticket. Please try again.'));
+                }
                 return;
             }
 
@@ -122,8 +138,11 @@ export default function SupportTab({
                     return { userId: submitterId, ...clearedDraft };
                 });
 
-                if (session?.user?.id === submitterId) {
-                    setTickets(current => [data[0], ...current]);
+                if (isSameActiveUser) {
+                    setTicketsState(prev => ({
+                        userId: submitterId,
+                        items: prev.userId === submitterId ? [data[0], ...prev.items] : [data[0]]
+                    }));
                     setSuccessMsg(t('succ_ticket_submit', 'Ticket submitted successfully!'));
                 }
             }
@@ -137,33 +156,45 @@ export default function SupportTab({
     };
 
     const handleDeleteTicket = async (id) => {
+        const originUserId = session?.user?.id;
+        if (!originUserId) return;
         if (!window.confirm(t('confirm_delete_ticket', 'Are you sure you want to delete this ticket?'))) return;
 
         const deletedIndex = tickets.findIndex(item => item.id === id);
         const deletedTicket = tickets[deletedIndex];
         if (!deletedTicket) return;
 
-        setTickets(current => current.filter(item => item.id !== id));
+        setTicketsState(prev => {
+            if (prev.userId !== originUserId) return prev;
+            return {
+                userId: originUserId,
+                items: prev.items.filter(item => item.id !== id)
+            };
+        });
 
         try {
             const { data, error } = await supabase
                 .from('support_tickets')
                 .delete()
                 .eq('id', id)
+                .eq('user_id', originUserId)
                 .select('id');
 
+            if (window.__activeUserId && window.__activeUserId !== originUserId) return;
             if (error) throw error;
             if (!data || data.length === 0) {
                 throw new Error('No ticket was deleted.');
             }
         } catch (error) {
+            if (window.__activeUserId && window.__activeUserId !== originUserId) return;
             console.error(error);
             alert(t('err_delete_ticket', 'Failed to delete ticket.'));
-            setTickets(current => {
-                if (current.some(item => item.id === id)) return current;
-                const next = [...current];
+            setTicketsState(prev => {
+                if (prev.userId !== originUserId) return prev;
+                if (prev.items.some(item => item.id === id)) return prev;
+                const next = [...prev.items];
                 next.splice(Math.min(deletedIndex, next.length), 0, deletedTicket);
-                return next;
+                return { userId: originUserId, items: next };
             });
         }
     };

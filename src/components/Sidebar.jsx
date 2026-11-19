@@ -72,9 +72,9 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
   const getTabLabel = (tab) => t(tab.tKey, tab.fallbackLabel || tab.tKey);
 
   return (
-    <aside className={`bg-white dark:bg-zinc-900 border-r border-gray-200 dark:border-zinc-800 flex flex-col justify-between shrink-0 hidden md:flex transition-all duration-300 ${isCollapsed ? 'w-20' : 'w-64'}`}>
-      <div>
-        <div className={`px-3.5 border-b border-gray-200 dark:border-zinc-800 flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'} h-[92px]`}>
+    <aside className={`h-screen overflow-hidden bg-white dark:bg-zinc-900 border-r border-gray-200 dark:border-zinc-800 flex flex-col justify-between shrink-0 hidden md:flex transition-all duration-300 ${isCollapsed ? 'w-20' : 'w-64'}`}>
+      <div className="flex flex-col flex-1 min-h-0">
+        <div className={`px-3.5 border-b border-gray-200 dark:border-zinc-800 flex items-center shrink-0 ${isCollapsed ? 'justify-center' : 'justify-between'} h-[92px]`}>
           {!isCollapsed ? (
             <div className="flex items-center gap-2.5 min-w-0">
               <BrandEmblem className="w-11 h-11" />
@@ -85,7 +85,7 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
           )}
         </div>
 
-        <nav className="flex-1 px-3 space-y-2 mt-6">
+        <nav className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-3 space-y-1.5 mt-4 pb-3">
           {NAV_TABS.filter(tab =>
             (tab.id !== 'dev_dashboard' || userRole === 'dev' || userRole === 'owner') &&
             (tab.id !== 'owner_dashboard' || userRole === 'owner')
@@ -115,7 +115,7 @@ export default function Sidebar({ activeTab, setActiveTab, setAlertMsg, currentS
         </nav>
       </div>
 
-      <div className="p-4 border-t border-gray-200 dark:border-zinc-800 flex flex-col gap-4">
+      <div className="shrink-0 p-3.5 border-t border-gray-200 dark:border-zinc-800 flex flex-col gap-2.5">
         <button
           onClick={() => setIsCollapsed(!isCollapsed)}
           className={`w-full flex items-center ${isCollapsed ? 'justify-center' : 'gap-3 px-3'} py-2 rounded-md text-sm font-medium text-gray-400 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white transition-all`}
