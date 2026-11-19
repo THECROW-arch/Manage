@@ -472,7 +472,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const idempotencyKey = `reminder_${userId}_${sanitizeTagValue(periodKey)}`;
+    const idempotencyKey = `reminder_${userId}_${recurrenceCycle}_${sanitizeTagValue(periodKey)}`;
     const resendResponse = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -524,36 +524,48 @@ Deno.serve(async (req: Request) => {
 
     const resultData = await resendResponse.json().catch(() => ({}));
 
-    // 5. Mark queue row as 'sent' and persist updated period map on profile (fail closed)
-    const updatedMap = { ...currentPeriodMap, [recurrenceCycle]: periodKey };
+    // 5. Mark queue row as 'sent' and merge with latest profile period map (fail closed)
+    const queuePatchRes = await fetch(
+      `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}`,
+      {
+        method: "PATCH",
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ status: "sent" })
+      }
+    );
+
+    const latestProfileRes = await fetch(
+      `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}&select=last_reminder_period`,
+      {
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
+      }
+    );
+    const latestRows = latestProfileRes.ok ? await latestProfileRes.json().catch(() => []) : [];
+    const latestMap = parseReminderPeriodMap(
+      Array.isArray(latestRows) ? latestRows[0]?.last_reminder_period : currentPeriodMap
+    );
+    const updatedMap = { ...currentPeriodMap, ...latestMap, [recurrenceCycle]: periodKey };
     const serializedMap = JSON.stringify(updatedMap);
 
-    const [queuePatchRes, profilePatchRes] = await Promise.all([
-      fetch(
-        `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}`,
-        {
-          method: "PATCH",
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ status: "sent" })
-        }
-      ),
-      fetch(
-        `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}`,
-        {
-          method: "PATCH",
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ last_reminder_period: serializedMap })
-        }
-      )
-    ]);
+    const profilePatchRes = await fetch(
+      `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}`,
+      {
+        method: "PATCH",
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ last_reminder_period: serializedMap })
+      }
+    );
 
     if (!queuePatchRes.ok || !profilePatchRes.ok) {
       return new Response(

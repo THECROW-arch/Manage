@@ -610,6 +610,8 @@ export default function App() {
         setSubscriptionStartedAt(null);
         setProFeaturesUsed(false);
         setHasClaimedRefund(false);
+        setEmailRemindersEnabled(true);
+        setLastReminderPeriod(null);
         setCheckoutSyncState({ status: 'idle', retryCount: 0 });
         setDraftHydratedUserId(null);
         setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
@@ -792,6 +794,8 @@ export default function App() {
       setSubscriptionStartedAt(null);
       setProFeaturesUsed(false);
       setHasClaimedRefund(false);
+      setEmailRemindersEnabled(true);
+      setLastReminderPeriod(null);
       setCheckoutSyncState({ status: 'idle', retryCount: 0 });
       setDraftHydratedUserId(null);
       setSupportDraft({ userId: null, subject: '', category: 'general', message: '' });
@@ -887,8 +891,7 @@ export default function App() {
           tax_filing_status: taxFilingStatus,
           monthly_boosts: monthlyIncomeBoosts,
           wealth_objectives: wealthObjectives,
-          email_reminders_enabled: emailRemindersEnabled,
-          last_reminder_period: lastReminderPeriod
+          email_reminders_enabled: emailRemindersEnabled
         });
         if (window.__activeUserId !== originUserId) return;
 
@@ -935,7 +938,6 @@ export default function App() {
     monthlyIncomeBoosts,
     wealthObjectives,
     emailRemindersEnabled,
-    lastReminderPeriod,
     currentWipeEpoch,
     t
   ]);
@@ -1301,9 +1303,21 @@ export default function App() {
     });
   };
 
-  const monthlyExpenses = expenses.filter(e => e.expense_date && e.expense_date.startsWith(selectedMonth));
-  const activeMonthlyExpenses = monthlyExpenses.filter(e => !isExpenseSkippedForCurrentPeriod(e, selectedMonth));
-  const assetCategories = categories.filter(c => c.type === 'asset');
+  const monthlyExpenses = useMemo(
+    () => expenses.filter(e => e.expense_date && e.expense_date.startsWith(selectedMonth)),
+    [expenses, selectedMonth]
+  );
+
+  const activeMonthlyExpenses = useMemo(
+    () => monthlyExpenses.filter(e => !isExpenseSkippedForCurrentPeriod(e, selectedMonth)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [monthlyExpenses, selectedMonth, expenseMetaMap]
+  );
+
+  const assetCategories = useMemo(
+    () => categories.filter(c => c.type === 'asset'),
+    [categories]
+  );
 
   /**
 - Shared creation handler for Wealth Objectives used by both the Portfolio form and Sterling AI.
@@ -1413,6 +1427,8 @@ export default function App() {
     };
 
     (async () => {
+      let dispatchedInThisRun = 0;
+
       for (const { cycle, periodKey } of cycleConfigs) {
         if (isCancelled || activeUserIdRef.current !== effectUserId) break;
 
@@ -1420,7 +1436,7 @@ export default function App() {
           .filter((exp) => exp.is_recurring)
           .map((exp) => {
             const meta = expenseMetaMap[exp.id] || {};
-            const recurrenceType = meta.recurrenceType || 'monthly';
+            const recurrenceType = meta.recurrenceType || exp.recurrence_type || 'monthly';
             const isSkipped = Array.isArray(meta.skippedPeriods) && meta.skippedPeriods.includes(periodKey);
             const isConfirmed = Array.isArray(meta.confirmedPeriods) && meta.confirmedPeriods.includes(periodKey);
             return {
@@ -1458,7 +1474,14 @@ export default function App() {
           continue;
         }
 
+        // Space out back-to-back cycle dispatches so Resend's 2 req/s rate limit is never exceeded
+        if (dispatchedInThisRun > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 650));
+          if (isCancelled || activeUserIdRef.current !== effectUserId) break;
+        }
+
         autoReminderAttemptedRef.current[attemptKey] = 'inflight';
+        dispatchedInThisRun += 1;
 
         try {
           const res = await sendRecurringExpenseReminderEmail({
@@ -1468,7 +1491,6 @@ export default function App() {
             periodKey,
             recurrenceCycle: cycle,
             pendingExpenses: cyclePendingExpenses,
-            formatCurrency,
             onlyIfNotSent: true
           });
 
@@ -1489,6 +1511,8 @@ export default function App() {
               Object.assign(storedMap, parseReminderPeriodMap(res.serializedMap));
               setLastReminderPeriod(res.serializedMap);
             }
+          } else if (res?.retryable === false) {
+            autoReminderAttemptedRef.current[attemptKey] = 'exhausted';
           } else {
             scheduleBoundedRetry(attemptKey);
           }
@@ -1517,7 +1541,6 @@ export default function App() {
     selectedMonth,
     activeMonthlyExpenses,
     expenseMetaMap,
-    formatCurrency,
     reminderRetryTick
   ]);
 
