@@ -21,6 +21,7 @@ const TRANSPORT_FAILED_SETTLE_MS = 60 * 1000;
 const DISPATCHED_RECONCILE_COOLDOWN_MS = 90 * 1000;
 
 const ALLOWED_RETURN_ORIGINS = new Set([
+  "https://manage-bzx.pages.dev",
   "https://sterlingmanagedapp.com",
   "https://www.sterlingmanagedapp.com",
   "https://app.sterlingmanagedapp.com",
@@ -809,17 +810,18 @@ Deno.serve(async (req: Request) => {
   }
 
   const rawBody = await req.text();
-  const creemApiKey = Deno.env.get("CREEM_API_KEY") || "";
-  const creemProductId = Deno.env.get("CREEM_PRODUCT_ID") || "";
-  const creemBaseUrl =
+  const creemApiKey = (Deno.env.get("CREEM_API_KEY") || "").trim();
+  const creemProductId = (Deno.env.get("CREEM_PRODUCT_ID") || "").trim();
+  const creemBaseUrl = (
     Deno.env.get("CREEM_API_BASE_URL") ||
-    (creemApiKey.startsWith("creem_test_") ? "https://test-api.creem.io" : "https://api.creem.io");
+    (creemApiKey.startsWith("creem_test_") ? "https://test-api.creem.io" : "https://api.creem.io")
+  ).trim();
 
   // 1. WEBHOOK PATH: Verify HMAC-SHA256 signature (Creem or Lemon Squeezy)
   const creemSig = req.headers.get("creem-signature");
   const lemonSig = req.headers.get("x-signature");
   const incomingSig = creemSig || lemonSig;
-  const webhookSecret = Deno.env.get("PAYMENT_WEBHOOK_SECRET") || "";
+  const webhookSecret = (Deno.env.get("PAYMENT_WEBHOOK_SECRET") || "").trim();
 
   if (incomingSig) {
     if (!webhookSecret) {
@@ -1482,10 +1484,18 @@ Deno.serve(async (req: Request) => {
 
       const creemData = await creemResp.json().catch(() => ({}));
       if (!creemResp.ok || !creemData?.checkout_url) {
+        const providerDetail =
+          typeof creemData?.message === "string"
+            ? creemData.message
+            : Array.isArray(creemData?.message)
+              ? creemData.message.join(", ")
+              : typeof creemData?.error === "string"
+                ? creemData.error
+                : "";
         return new Response(
           JSON.stringify({
             ok: false,
-            error: "Could not initialize Creem checkout session. Please verify CREEM_API_KEY and CREEM_PRODUCT_ID."
+            error: `Could not initialize Creem checkout session (${creemResp.status}${providerDetail ? `: ${providerDetail}` : ""}). Please verify CREEM_API_KEY and CREEM_PRODUCT_ID.`
           }),
           { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
