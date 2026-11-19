@@ -25,6 +25,7 @@ export default function SupportTab({
 
     const [localSubmitting, setLocalSubmitting] = useState(false);
     const [successMsg, setSuccessMsg] = useState('');
+    const [confirmDeleteId, setConfirmDeleteId] = useState(null);
     const [errorState, setErrorState] = useState({ userId: null, text: '' });
     const errorMsg = errorState.userId === userId ? errorState.text : '';
     const loading = isSubmittingTicket || localSubmitting;
@@ -106,7 +107,7 @@ export default function SupportTab({
             email: session.user.email,
             subject: submittedSubject,
             category: submittedCategory,
-            priority: 'pending',
+            priority: 'medium',
             message: submittedMessage,
             status: 'open',
             admin_reply: ''
@@ -168,12 +169,13 @@ export default function SupportTab({
     const handleDeleteTicket = async (id) => {
         const originUserId = session?.user?.id;
         if (!originUserId) return;
-        if (!window.confirm(t('confirm_delete_ticket', 'Are you sure you want to delete this ticket?'))) return;
 
         const deletedIndex = tickets.findIndex(item => item.id === id);
         const deletedTicket = tickets[deletedIndex];
         if (!deletedTicket) return;
 
+        setConfirmDeleteId(null);
+        setSuccessMsg('');
         setErrorState({ userId: originUserId, text: '' });
         setTicketsState(prev => {
             if (prev.userId !== originUserId) return prev;
@@ -331,7 +333,7 @@ export default function SupportTab({
                     <div className="space-y-3">
                         {tickets.map(ticket => (
                             <div key={ticket.id} className="p-4 rounded-lg bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 space-y-2 relative group">
-                                <div className="flex justify-between items-center pr-8">
+                                <div className="flex justify-between items-center pr-24">
                                     <span className="font-bold text-sm text-gray-900 dark:text-white">{ticket.subject}</span>
                                     <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${ticket.status === 'resolved' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300' :
                                             ticket.status === 'in_progress' ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300' :
@@ -346,15 +348,35 @@ export default function SupportTab({
                                         <strong>{t('admin_response')}</strong> {ticket.admin_reply}
                                     </div>
                                 )}
-                                <button
-                                    onClick={() => handleDeleteTicket(ticket.id)}
-                                    className="absolute top-4 right-4 text-gray-400 hover:text-rose-500 transition-colors"
-                                    title="Delete Ticket"
-                                >
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                                    </svg>
-                                </button>
+                                {confirmDeleteId === ticket.id ? (
+                                    <div className="absolute top-3.5 right-3.5 flex items-center gap-1.5">
+                                        <button
+                                            type="button"
+                                            onClick={() => handleDeleteTicket(ticket.id)}
+                                            className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold transition-colors"
+                                        >
+                                            {t('confirm_delete', 'Delete')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setConfirmDeleteId(null)}
+                                            className="px-2 py-0.5 rounded bg-gray-200 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 text-[11px] font-bold hover:opacity-80 transition-opacity"
+                                        >
+                                            {t('cancel', 'Cancel')}
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteId(ticket.id)}
+                                        className="absolute top-4 right-4 text-gray-400 hover:text-rose-500 transition-colors"
+                                        title="Delete Ticket"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                                        </svg>
+                                    </button>
+                                )}
                             </div>
                         ))}
                     </div>

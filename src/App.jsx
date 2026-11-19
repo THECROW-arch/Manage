@@ -258,7 +258,19 @@ export default function App() {
   const [editingCategory, setEditingCategory] = useState(null);
   const [editingExpense, setEditingExpense] = useState(null);
 
-  const [alertMsg, setAlertMsg] = useState('');
+  const [alertState, setAlertState] = useState({ text: '', type: 'error' });
+  const alertMsg = alertState.text;
+  const setAlertMsg = useCallback((next, type = 'error') => {
+    if (!next) {
+      setAlertState({ text: '', type: 'error' });
+      return;
+    }
+    if (typeof next === 'object' && next.text !== undefined) {
+      setAlertState({ text: next.text, type: next.type || 'error' });
+      return;
+    }
+    setAlertState({ text: String(next), type });
+  }, []);
   const [currentStreak, setCurrentStreak] = useState(0);
   const [longestStreak, setLongestStreak] = useState(0);
   const [taxCountry, setTaxCountry] = useState('US');
@@ -315,11 +327,11 @@ export default function App() {
   }, [lockedCategories]);
 
   useEffect(() => {
-    if (alertMsg) {
-      const timer = setTimeout(() => setAlertMsg(''), 4000);
+    if (alertState.text) {
+      const timer = setTimeout(() => setAlertState({ text: '', type: 'error' }), 4000);
       return () => clearTimeout(timer);
     }
-  }, [alertMsg]);
+  }, [alertState.text]);
 
   const [draftHydratedUserId, setDraftHydratedUserId] = useState(null);
 
@@ -579,7 +591,7 @@ export default function App() {
         window.__fetchingUserId = null;
       }
     }
-  }, [syncPendingProFeatureUsage, t]);
+  }, [syncPendingProFeatureUsage, t, setAlertMsg]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -748,7 +760,7 @@ export default function App() {
         setProFeaturesUsed(Boolean(data.pro_features_used));
         setHasClaimedRefund(Boolean(data.has_claimed_refund));
         setCheckoutSyncState({ status: 'idle', retryCount: 0 });
-        setAlertMsg(t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
+        setAlertMsg(t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'), 'success');
         return;
       }
 
@@ -764,7 +776,7 @@ export default function App() {
       isCancelled = true;
       if (timerId) clearTimeout(timerId);
     };
-  }, [activeUserId, checkoutSyncState.status, checkoutSyncState.retryCount, t]);
+  }, [activeUserId, checkoutSyncState.status, checkoutSyncState.retryCount, t, setAlertMsg]);
 
   const handleLogoutRequest = () => {
     setShowLogoutConfirm(true);
@@ -936,7 +948,8 @@ export default function App() {
     wealthObjectives,
     emailRemindersEnabled,
     currentWipeEpoch,
-    t
+    t,
+    setAlertMsg
   ]);
 
   const [metaHydrationVersion, setMetaHydrationVersion] = useState(0);
@@ -1663,11 +1676,11 @@ export default function App() {
       if (exportFormat === 'formal') {
         await generateFormalAudit(reportData);
         markProFeatureUsed();
-        setAlertMsg(t('succ_export_formal', { period: targetPeriod }));
+        setAlertMsg(t('succ_export_formal', { period: targetPeriod }), 'success');
       } else {
         await generateVisualDashboard(reportData);
         markProFeatureUsed();
-        setAlertMsg(t('succ_export_visual', { period: targetPeriod }));
+        setAlertMsg(t('succ_export_visual', { period: targetPeriod }), 'success');
       }
     } catch (error) {
       console.error(error);
@@ -1744,7 +1757,7 @@ export default function App() {
     if (isReadOnly) return;
     catDeleteConcurrencyRef.current.unlockAllEpoch += 1;
     setLockedCategories([]);
-    setAlertMsg(t('msg_all_unlocked'));
+    setAlertMsg(t('msg_all_unlocked'), 'success');
   };
 
   const handleSmartLockAll = () => {
@@ -1756,7 +1769,7 @@ export default function App() {
     if (Math.abs(diff) < 0.1) {
       if (lockedCategories.length === categories.length) return;
       setLockedCategories(categories.map(c => c.id));
-      setAlertMsg(t('msg_perfect_balance'));
+      setAlertMsg(t('msg_perfect_balance'), 'success');
       return;
     }
 
@@ -1787,7 +1800,7 @@ export default function App() {
 
     setCategories(newCats);
     setLockedCategories(newCats.map(c => c.id));
-    setAlertMsg(auditLog.length > 0 ? t('msg_smart_lock_summary', { details: auditLog.join(', ') }) : t('msg_smart_lock_applied'));
+    setAlertMsg(auditLog.length > 0 ? t('msg_smart_lock_summary', { details: auditLog.join(', ') }) : t('msg_smart_lock_applied'), 'success');
   };
 
   const handleSliderChange = (changedId, newValue) => {
@@ -2025,7 +2038,7 @@ export default function App() {
       });
 
       setSelectedMonth(nextMonthYYYYMM);
-      setAlertMsg(t('succ_month_closed', { month: closingMonth }));
+      setAlertMsg(t('succ_month_closed', { month: closingMonth }), 'success');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (error) {
       if (window.__activeUserId !== originUserId) return;
@@ -2377,7 +2390,7 @@ export default function App() {
       const { data, error } = await supabase.from('bundles').insert([newBundle]).select();
       if (error) throw error;
       setBundles(current => current.map(b => b.id === tempId ? data[0] : b));
-      setAlertMsg(t('succ_occasion_created', { name: newBundle.name }));
+      setAlertMsg(t('succ_occasion_created', { name: newBundle.name }), 'success');
     } catch (error) {
       console.error('Supabase Bundle Error:', error);
       setAlertMsg(t('err_save_bundle_friendly', 'Could not create this special occasion right now. Please try again.'));
@@ -2603,7 +2616,7 @@ export default function App() {
       if (insertedExps.length > 0) setExpenses(current => [...insertedExps, ...current]);
       if (insertedAdjs.length > 0) setAssetAdjustments(current => [...insertedAdjs, ...current]);
       setBundles(current => current.map(b => b.id === bundle.id ? { ...b, status: 'locked' } : b));
-      setAlertMsg(t('succ_bundle_locked', { name: bundle.name }));
+      setAlertMsg(t('succ_bundle_locked', { name: bundle.name }), 'success');
     } catch (error) {
       if (window.__activeUserId !== originUserId) return;
 
@@ -3153,7 +3166,7 @@ export default function App() {
               } else {
                 setRecoveryPassword('');
                 setShowRecoveryModal(false);
-                setAlertMsg(t('succ_password_update', 'Password updated successfully!'));
+                setAlertMsg(t('succ_password_update', 'Password updated successfully!'), 'success');
               }
             }}>
               <input
@@ -3243,8 +3256,22 @@ export default function App() {
         <div className="max-w-7xl mx-auto w-full">
 
           {alertMsg && (
-            <div className="mb-6 p-3 rounded-md text-sm font-medium border bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/20 dark:border-emerald-500/40 dark:text-emerald-200 shadow-sm">
-              {alertMsg}
+            <div
+              role="status"
+              className={`mb-6 p-3 rounded-md text-sm font-medium border shadow-sm flex items-center justify-between gap-2 ${
+                alertState.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/20 dark:border-emerald-500/40 dark:text-emerald-200'
+                  : 'bg-rose-50 border-rose-200 text-rose-700 dark:bg-rose-950/50 dark:border-rose-500/40 dark:text-rose-200'
+              }`}
+            >
+              <span>{alertMsg}</span>
+              <button
+                type="button"
+                onClick={() => setAlertMsg('')}
+                className="font-black px-1 opacity-75 hover:opacity-100"
+              >
+                ✕
+              </button>
             </div>
           )}
 
