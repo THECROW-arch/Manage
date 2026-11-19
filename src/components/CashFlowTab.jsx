@@ -500,7 +500,7 @@ export default function CashFlowTab({
             console.error('Local transcription error:', err);
             setVoiceFeedback({
                 type: 'error',
-                message: `Transcription failed: ${err.message || 'Please try again.'}`
+                message: t('err_voice_transcription', 'Voice transcription could not be completed. Please try again or type your expense.')
             });
         } finally {
             setIsTranscribing(false);
@@ -578,13 +578,14 @@ export default function CashFlowTab({
             }, 60000);
         } catch (err) {
             if (micAttemptRef.current === attemptId) {
+                console.error('Microphone error:', err);
                 await releaseAudioHardware();
                 setIsListening(false);
                 setVoiceFeedback({
                     type: 'error',
                     message: err.name === 'NotAllowedError'
                         ? t('err_voice_denied', 'Microphone permission denied. Please allow microphone access in your browser.')
-                        : `Microphone error: ${err.message || 'Check your input device.'}`
+                        : t('err_voice_device', 'Could not access your microphone. Please check your input device and try again.')
                 });
             }
         }

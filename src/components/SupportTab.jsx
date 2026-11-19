@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../supabaseClient';
 
-/** 
+/**
  * Renders the customer support hub.
  * Uses lifted state (supportDraft) so written tickets survive tab switching.
  */
@@ -25,6 +25,8 @@ export default function SupportTab({
 
     const [localSubmitting, setLocalSubmitting] = useState(false);
     const [successMsg, setSuccessMsg] = useState('');
+    const [errorState, setErrorState] = useState({ userId: null, text: '' });
+    const errorMsg = errorState.userId === userId ? errorState.text : '';
     const loading = isSubmittingTicket || localSubmitting;
 
     // Only persist draft after hydration for the active user has completed and draft belongs to this user
@@ -52,31 +54,36 @@ export default function SupportTab({
 
     const fetchRequestIdRef = useRef(0);
 
-    const fetchTickets = useCallback(async () => {
+    useEffect(() => {
         const targetUserId = userId;
         if (!targetUserId) return;
+
+        let isCancelled = false;
         const reqId = ++fetchRequestIdRef.current;
-        const { data, error } = await supabase
-            .from('support_tickets')
-            .select('*')
-            .eq('user_id', targetUserId)
-            .order('created_at', { ascending: false });
 
-        if (
-            reqId !== fetchRequestIdRef.current ||
-            (window.__activeUserId && window.__activeUserId !== targetUserId)
-        ) {
-            return;
-        }
-        if (!error && data) {
-            setTicketsState({ userId: targetUserId, items: data });
-        }
-    }, [userId]);
+        (async () => {
+            const { data, error } = await supabase
+                .from('support_tickets')
+                .select('*')
+                .eq('user_id', targetUserId)
+                .order('created_at', { ascending: false });
 
-    useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        if (userId) fetchTickets();
-    }, [userId, accessToken, fetchTickets]);
+            if (
+                isCancelled ||
+                reqId !== fetchRequestIdRef.current ||
+                (window.__activeUserId && window.__activeUserId !== targetUserId)
+            ) {
+                return;
+            }
+            if (!error && data) {
+                setTicketsState({ userId: targetUserId, items: data });
+            }
+        })();
+
+        return () => {
+            isCancelled = true;
+        };
+    }, [userId, accessToken]);
 
     const handleCreateTicket = async (e) => {
         e.preventDefault();
@@ -91,6 +98,7 @@ export default function SupportTab({
         if (setSubmittingTicketUserId) setSubmittingTicketUserId(submitterId);
         else setLocalSubmitting(true);
         setSuccessMsg('');
+        setErrorState({ userId: submitterId, text: '' });
 
         const newTicket = {
             user_id: submitterId,
@@ -113,13 +121,15 @@ export default function SupportTab({
             if (error) {
                 if (isSameActiveUser) {
                     console.error(error);
-                    alert(t('err_ticket_submit', 'Failed to submit ticket. Please try again.'));
+                    setErrorState({
+                        userId: submitterId,
+                        text: t('err_ticket_submit', 'We could not send your message right now. Please try again in a moment.')
+                    });
                 }
                 return;
             }
 
             if (data && data.length > 0) {
-                // Only clear the draft if it still belongs to the submitting user AND wasn't edited during submission
                 setSupportDraft(prev => {
                     if (prev.userId && prev.userId !== submitterId) return prev;
                     const wasEditedDuringSubmit =
@@ -164,6 +174,7 @@ export default function SupportTab({
         const deletedTicket = tickets[deletedIndex];
         if (!deletedTicket) return;
 
+        setErrorState({ userId: originUserId, text: '' });
         setTicketsState(prev => {
             if (prev.userId !== originUserId) return prev;
             return {
@@ -183,12 +194,15 @@ export default function SupportTab({
             if (window.__activeUserId && window.__activeUserId !== originUserId) return;
             if (error) throw error;
             if (!data || data.length === 0) {
-                throw new Error('No ticket was deleted.');
+                throw new Error('Ticket delete returned empty');
             }
         } catch (error) {
             if (window.__activeUserId && window.__activeUserId !== originUserId) return;
             console.error(error);
-            alert(t('err_delete_ticket', 'Failed to delete ticket.'));
+            setErrorState({
+                userId: originUserId,
+                text: t('err_delete_ticket', 'Could not delete this ticket right now. Please try again.')
+            });
             setTicketsState(prev => {
                 if (prev.userId !== originUserId) return prev;
                 if (prev.items.some(item => item.id === id)) return prev;
@@ -205,6 +219,22 @@ export default function SupportTab({
                 <h1 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">{t('support_hub_title')}</h1>
                 <p className="text-sm text-gray-500 dark:text-zinc-400 mt-1">{t('support_hub_subtitle')}</p>
             </div>
+
+            {errorMsg && (
+                <div
+                    role="status"
+                    className="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-semibold flex items-center justify-between gap-2"
+                >
+                    <span>{errorMsg}</span>
+                    <button
+                        type="button"
+                        onClick={() => setErrorState({ userId, text: '' })}
+                        className="font-black px-1 opacity-75 hover:opacity-100"
+                    >
+                        ✕
+                    </button>
+                </div>
+            )}
 
             {/* FAQ Accordion Section */}
             <div className="bg-white dark:bg-zinc-900 p-6 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-sm space-y-4">
@@ -316,7 +346,6 @@ export default function SupportTab({
                                         <strong>{t('admin_response')}</strong> {ticket.admin_reply}
                                     </div>
                                 )}
-                                {/* Delete Button */}
                                 <button
                                     onClick={() => handleDeleteTicket(ticket.id)}
                                     className="absolute top-4 right-4 text-gray-400 hover:text-rose-500 transition-colors"

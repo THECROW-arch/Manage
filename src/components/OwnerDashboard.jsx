@@ -56,17 +56,20 @@ export default function OwnerDashboard() {
 
             const errors = [];
             if (rpcRes.error) {
-                errors.push(`Metrics RPC: ${rpcRes.error.message}`);
+                console.error('Metrics RPC error:', rpcRes.error);
+                errors.push('Some live metrics could not be refreshed.');
             } else if (rpcRes.data) {
                 setRpcMetrics(rpcRes.data);
             }
 
             if (ownerProfilesRes.error) {
-                errors.push(`Directory RPC: ${ownerProfilesRes.error.message}`);
+                console.error('Directory RPC error:', ownerProfilesRes.error);
+                errors.push('User directory could not be refreshed.');
             }
 
             if (ticketsRes.error) {
-                errors.push(`Support Queue: ${ticketsRes.error.message}`);
+                console.error('Support queue error:', ticketsRes.error);
+                errors.push('Support queue could not be loaded.');
                 setTicketsUnavailable(true);
             } else {
                 setTicketsUnavailable(false);
@@ -139,9 +142,10 @@ export default function OwnerDashboard() {
             }
         } catch (err) {
             if (reqId === fetchRequestIdRef.current) {
+                console.error('Command Center load error:', err);
                 setIsDirectoryStale(true);
                 setTicketsUnavailable(true);
-                setErrorMsg(err.message || 'Failed to load Command Center data.');
+                setErrorMsg('Unable to load Command Center data right now. Please try again.');
             }
         } finally {
             if (reqId === fetchRequestIdRef.current) {
@@ -234,7 +238,8 @@ export default function OwnerDashboard() {
                     return restored;
                 })
             );
-            setErrorMsg(`Failed to update user: ${err.message || 'Database error'}`);
+            console.error('Failed to update user access:', err);
+            setErrorMsg('Could not update user permissions right now. Please try again.');
         } finally {
             setSavingUserIds((prev) => {
                 const next = new Set(prev);

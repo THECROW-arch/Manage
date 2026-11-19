@@ -39,6 +39,7 @@ export default function App() {
   const { t, i18n } = useTranslation();
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryPassword, setRecoveryPassword] = useState('');
+  const [recoveryError, setRecoveryError] = useState('');
 
   // Logout Confirmation State
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -571,13 +572,14 @@ export default function App() {
       window.__loadedUserId = userId;
       setLoadingData(false);
     } catch (error) {
-      if (!isStale()) setAlertMsg(error.message || 'Ledger refresh failed. Please reload.');
+      console.error('Ledger refresh error:', error);
+      if (!isStale()) setAlertMsg(t('err_ledger_refresh', 'Could not refresh your ledger right now. Please reload the page.'));
     } finally {
       if (window.__fetchingUserId === userId) {
         window.__fetchingUserId = null;
       }
     }
-  }, [syncPendingProFeatureUsage]);
+  }, [syncPendingProFeatureUsage, t]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -695,11 +697,6 @@ export default function App() {
   }, [activeUserId, activeTab, syncPendingProFeatureUsage]);
 
   // Poll profile subscription status when returning from checkout; survives language switches and provides manual retry recovery
-  const tRef = useRef(t);
-  useEffect(() => {
-    tRef.current = t;
-  }, [t]);
-
   useEffect(() => {
     if (!activeUserId || typeof window === 'undefined') return;
     if (checkoutSyncState.status !== 'polling') return;
@@ -751,7 +748,7 @@ export default function App() {
         setProFeaturesUsed(Boolean(data.pro_features_used));
         setHasClaimedRefund(Boolean(data.has_claimed_refund));
         setCheckoutSyncState({ status: 'idle', retryCount: 0 });
-        setAlertMsg(tRef.current('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
+        setAlertMsg(t('succ_pro_activated', 'MANAGED Pro activated! Your workspace now has full Pro access.'));
         return;
       }
 
@@ -767,7 +764,7 @@ export default function App() {
       isCancelled = true;
       if (timerId) clearTimeout(timerId);
     };
-  }, [activeUserId, checkoutSyncState.status, checkoutSyncState.retryCount]);
+  }, [activeUserId, checkoutSyncState.status, checkoutSyncState.retryCount, t]);
 
   const handleLogoutRequest = () => {
     setShowLogoutConfirm(true);
@@ -2094,7 +2091,8 @@ export default function App() {
         return;
       }
 
-      setAlertMsg(t('err_db_closing_month', { error: error.message || error.details }));
+      console.error('Close month error:', error);
+      setAlertMsg(t('err_close_month_friendly', 'Could not close this month right now. Please try again.'));
     }
   };
   // Gate creating more than 3 budget categories to MANAGED Pro
@@ -2251,7 +2249,8 @@ export default function App() {
         return true;
       }
 
-      setAlertMsg(error?.code === '23514' ? error.message : t('err_del_cat'));
+      console.error('Delete category error:', error);
+      setAlertMsg(t('err_del_cat'));
       setCategories(prevCategories);
       if (
         wasDeletedCategoryLocked &&
@@ -2381,7 +2380,7 @@ export default function App() {
       setAlertMsg(t('succ_occasion_created', { name: newBundle.name }));
     } catch (error) {
       console.error('Supabase Bundle Error:', error);
-      setAlertMsg(t('err_db_save_bundle', { error: error.message || 'Failed to save bundle.' }));
+      setAlertMsg(t('err_save_bundle_friendly', 'Could not create this special occasion right now. Please try again.'));
       setBundles(current => current.filter(b => b.id !== tempId));
     }
   };
@@ -2637,7 +2636,8 @@ export default function App() {
         }
       }
 
-      setAlertMsg(t('err_locking_occasion', { error: error.message || 'Bundle items changed or database error. Please retry.' }));
+      console.error('Finalize bundle error:', error);
+      setAlertMsg(t('err_locking_occasion_friendly', 'Could not finalize this special occasion right now. Please refresh and try again.'));
     }
   };
 
@@ -3133,14 +3133,27 @@ export default function App() {
             <p className="text-sm text-gray-500 dark:text-zinc-400 mb-6">
               {t('auth_recovery_prompt', 'Please enter a new, secure password to complete your recovery.')}
             </p>
+            {recoveryError && (
+              <div className="mb-4 p-3 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800">
+                {recoveryError}
+              </div>
+            )}
             <form onSubmit={async (e) => {
               e.preventDefault();
+              setRecoveryError('');
               const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
               if (error) {
-                alert(t('err_password_update', 'Failed to update password: ') + error.message);
+                console.error('Password recovery error:', error);
+                const isSamePassword = /different from the old password/i.test(error.message || '');
+                setRecoveryError(
+                  isSamePassword
+                    ? t('err_password_same', 'Your new password must be different from your current password.')
+                    : t('err_password_update_friendly', 'Unable to update your password right now. Please try again.')
+                );
               } else {
-                alert(t('succ_password_update', 'Password updated successfully!'));
+                setRecoveryPassword('');
                 setShowRecoveryModal(false);
+                setAlertMsg(t('succ_password_update', 'Password updated successfully!'));
               }
             }}>
               <input

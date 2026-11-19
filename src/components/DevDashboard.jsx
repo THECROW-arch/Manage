@@ -12,7 +12,7 @@ export default function DevDashboard() {
     const [replyDrafts, setReplyDrafts] = useState({});
     const [priorityUpdates, setPriorityUpdates] = useState({});
     const [savingTicketIds, setSavingTicketIds] = useState({});
-    const [alertMsg, setAlertMsg] = useState('');
+    const [alertMsg, setAlertMsg] = useState({ text: '', type: 'success' });
     const fetchRequestIdRef = useRef(0);
 
     /**
@@ -54,7 +54,7 @@ export default function DevDashboard() {
         const currentTicket = tickets.find(t => t.id === ticketId);
         if (newPriority === undefined || !currentTicket || newPriority === (currentTicket.priority ?? 'pending')) return;
 
-        setAlertMsg('');
+        setAlertMsg({ text: '', type: 'success' });
         setSavingTicketIds(prev => ({ ...prev, [ticketId]: true }));
         try {
             const { data, error } = await supabase
@@ -65,7 +65,7 @@ export default function DevDashboard() {
 
             if (error || !data || data.length === 0) {
                 console.error(error);
-                setAlertMsg(`Failed to update priority for ticket ${ticketId.substring(0, 8)}`);
+                setAlertMsg({ text: `Could not update priority for ticket ${ticketId.substring(0, 8)}. Please try again.`, type: 'error' });
                 return;
             }
 
@@ -75,7 +75,7 @@ export default function DevDashboard() {
                 return updated;
             });
             setTickets(prev => prev.map(t => t.id === ticketId ? { ...t, priority: newPriority } : t));
-            setAlertMsg(`Ticket priority updated.`);
+            setAlertMsg({ text: 'Ticket priority updated.', type: 'success' });
             await fetchTickets();
         } finally {
             setSavingTicketIds(prev => {
@@ -88,7 +88,7 @@ export default function DevDashboard() {
 
     const submitReply = async (ticketId, newStatus) => {
         if (savingTicketIds[ticketId]) return;
-        setAlertMsg('');
+        setAlertMsg({ text: '', type: 'success' });
         const replyText = replyDrafts[ticketId];
         const newPriority = priorityUpdates[ticketId];
         
@@ -109,7 +109,7 @@ export default function DevDashboard() {
 
             if (error || !data || data.length === 0) {
                 console.error(error);
-                setAlertMsg(`Failed to update ticket ${ticketId.substring(0, 8)}`);
+                setAlertMsg({ text: `Could not update ticket ${ticketId.substring(0, 8)}. Please try again.`, type: 'error' });
                 return;
             }
 
@@ -123,7 +123,7 @@ export default function DevDashboard() {
                 if (updated[ticketId] === newPriority) delete updated[ticketId];
                 return updated;
             });
-            setAlertMsg(`Ticket updated successfully.`);
+            setAlertMsg({ text: 'Ticket updated successfully.', type: 'success' });
             await fetchTickets();
         } finally {
             setSavingTicketIds(prev => {
@@ -142,9 +142,15 @@ export default function DevDashboard() {
 
     return (
         <div className="max-w-6xl mx-auto space-y-6 pb-12">
-            {alertMsg && (
-                <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-md text-sm font-bold">
-                    {alertMsg}
+            {alertMsg.text && (
+                <div
+                    className={`p-3 rounded-md text-sm font-bold border ${
+                        alertMsg.type === 'error'
+                            ? 'bg-rose-50 border-rose-200 text-rose-700 dark:bg-rose-950/40 dark:border-rose-800 dark:text-rose-300'
+                            : 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-800 dark:text-emerald-300'
+                    }`}
+                >
+                    {alertMsg.text}
                 </div>
             )}
             <div className="flex justify-between items-center">
@@ -245,7 +251,7 @@ export default function DevDashboard() {
                                 <button 
                                     onClick={async () => {
                                         if (!window.confirm("Dismiss this ticket as junk/invalid? It will be deleted permanently.")) return;
-                                        setAlertMsg('');
+                                        setAlertMsg({ text: '', type: 'success' });
                                         const { data, error } = await supabase
                                             .from('support_tickets')
                                             .delete()
@@ -253,10 +259,10 @@ export default function DevDashboard() {
                                             .select('id');
                                         if (error || !data || data.length === 0) {
                                             console.error(error);
-                                            setAlertMsg(`Failed to dismiss ticket ${ticket.id.substring(0, 8)}. Check permissions.`);
+                                            setAlertMsg({ text: `Could not dismiss ticket ${ticket.id.substring(0, 8)}. Please try again.`, type: 'error' });
                                             return;
                                         }
-                                        setAlertMsg(`Ticket ${ticket.id.substring(0, 8)} dismissed.`);
+                                        setAlertMsg({ text: `Ticket ${ticket.id.substring(0, 8)} dismissed.`, type: 'success' });
                                         fetchTickets();
                                     }} 
                                     className="px-3 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded font-bold text-xs transition-colors"

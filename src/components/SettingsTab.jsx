@@ -11,10 +11,19 @@ import {
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
 /**
-- Renders the user account preferences, subscription ($6.99/mo), 1-click cancellation & 2-hour refund controls,
-- theme toggle, baseline salary configuration, global currency/language selectors,
-- custom-scoped Excel data export controls, and advanced security settings.
-- @param {Object} props - Component properties
+ * Prevents backend, RPC, Edge Function, or database strings from ever appearing in user-facing UI.
+ */
+function sanitizeUserError(rawError, fallbackText) {
+  if (!rawError || typeof rawError !== 'string') return fallbackText;
+  const technicalPattern =
+    /\b(rpc|edge function|postgres|pgrst|sql|23503|42501|22023|non-2xx|status code|failed to fetch|networkerror|syntax error|jwt|database|supabase)\b/i;
+  return technicalPattern.test(rawError) ? fallbackText : rawError;
+}
+
+/**
+ * Renders the user account preferences, subscription ($6.99/mo), 1-click cancellation & 2-hour refund controls,
+ * theme toggle, baseline salary configuration, global currency/language selectors,
+ * custom-scoped Excel data export controls, and advanced security settings.
  */
 export default function SettingsTab({
   theme,
@@ -58,17 +67,22 @@ export default function SettingsTab({
 }) {
   const { t, i18n } = useTranslation();
   const [isProcessingDanger, setIsProcessingDanger] = useState(false);
-  // --- Phase 9: Security State ---
+
+  // --- Security State ---
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordMsg, setPasswordMsg] = useState({ text: '', type: '' });
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
 
-  // --- Subscription & Billing State (Scoped per account without setState in useEffect) ---
+  // --- Scoped Account State (clears automatically when switching accounts) ---
   const activeAccountIdentity = `${userId || ''}:${userEmail || ''}`;
   const [billingState, setBillingState] = useState({
     account: activeAccountIdentity,
     busy: false,
+    msg: { text: '', type: '' }
+  });
+  const [dangerState, setDangerState] = useState({
+    account: activeAccountIdentity,
     msg: { text: '', type: '' }
   });
 
@@ -77,6 +91,10 @@ export default function SettingsTab({
   const billingMsg =
     billingState.account === activeAccountIdentity
       ? billingState.msg
+      : { text: '', type: '' };
+  const dangerMsg =
+    dangerState.account === activeAccountIdentity
+      ? dangerState.msg
       : { text: '', type: '' };
 
   const activeAccountRef = useRef(activeAccountIdentity);
@@ -90,7 +108,6 @@ export default function SettingsTab({
     };
   }, []);
 
-  // Invalidate any in-flight billing operations when account changes or logs out
   useEffect(() => {
     activeAccountRef.current = activeAccountIdentity;
     billingOpIdRef.current += 1;
@@ -132,9 +149,6 @@ export default function SettingsTab({
     (isResumingRefundCancel ||
       (isPaidPro && isWithinTwoHours && !proFeaturesUsed && !hasClaimedRefund));
 
-  /**
-- Starts a MANAGED Pro checkout session or sandbox upgrade.
-   */
   const handleUpgradeClick = async () => {
     if (isBillingBusy) return;
     const originAccount = activeAccountRef.current;
@@ -160,17 +174,16 @@ export default function SettingsTab({
 
     try {
       const res = await startProCheckoutSession(originUserId);
-      if (!isSameActiveAccount(res)) {
-        return;
-      }
+      if (!isSameActiveAccount(res)) return;
 
       if (!res?.ok) {
         if (canUpdateLocalUI()) {
+          const fallback = t('err_checkout_start', 'Unable to start checkout session right now. Please try again.');
           setBillingState({
             account: originAccount,
             busy: false,
             msg: {
-              text: res?.error || t('err_checkout_start', 'Unable to start checkout session right now.'),
+              text: sanitizeUserError(res?.error, fallback),
               type: 'error'
             }
           });
@@ -223,10 +236,6 @@ export default function SettingsTab({
     }
   };
 
-  /**
-- 1-Click subscription cancellation: immediately stops future recurring billing
-- while keeping Pro features active until the end of the current paid period.
-   */
   const handleOneClickCancel = async () => {
     if (isBillingBusy || !isPaidPro || cancelAtPeriodEnd) return;
     const originAccount = activeAccountRef.current;
@@ -252,17 +261,16 @@ export default function SettingsTab({
 
     try {
       const res = await cancelProSubscription(originUserId);
-      if (!isSameActiveAccount(res)) {
-        return;
-      }
+      if (!isSameActiveAccount(res)) return;
 
       if (!res?.ok) {
         if (canUpdateLocalUI()) {
+          const fallback = t('err_cancel_sub', 'Could not cancel subscription right now. Please try again.');
           setBillingState({
             account: originAccount,
             busy: false,
             msg: {
-              text: res?.error || t('err_cancel_sub', 'Could not cancel subscription right now. Please try again.'),
+              text: sanitizeUserError(res?.error, fallback),
               type: 'error'
             }
           });
@@ -317,10 +325,6 @@ export default function SettingsTab({
     }
   };
 
-  /**
-- 2-Hour Unused Refund handler: verifies eligibility on the server, issues a full refund,
-- and immediately revokes MANAGED Pro access back to the Free Tier.
-   */
   const handleRequestRefund = async () => {
     if (isBillingBusy || !isRefundEligible) return;
     if (
@@ -359,9 +363,7 @@ export default function SettingsTab({
       const res = await requestProSubscriptionRefund(originUserId, {
         isRecovery: isResumingRefundCancel
       });
-      if (!isSameActiveAccount(res)) {
-        return;
-      }
+      if (!isSameActiveAccount(res)) return;
 
       if (!res?.ok) {
         if (res?.subscriptionStatus) {
@@ -371,11 +373,12 @@ export default function SettingsTab({
           setHasClaimedRefund?.(true);
         }
         if (canUpdateLocalUI()) {
+          const fallback = t('err_refund_sub', 'Could not process your refund request right now. Please try again.');
           setBillingState({
             account: originAccount,
             busy: false,
             msg: {
-              text: res?.error || t('err_refund_sub', 'Could not process your refund request right now.'),
+              text: sanitizeUserError(res?.error, fallback),
               type: res?.pending ? 'success' : 'error'
             }
           });
@@ -383,7 +386,6 @@ export default function SettingsTab({
         return;
       }
 
-      // Immediately revoke Pro state on App
       onClearConfirmedProForUser?.(originUserId);
       setSubscriptionTier?.('free');
       setSubscriptionStatus?.('refunded');
@@ -424,9 +426,6 @@ export default function SettingsTab({
     }
   };
 
-  /**
-- Handles updating the user's password via Supabase Auth.
-   */
   const handleUpdatePassword = async (e) => {
     e.preventDefault();
     setPasswordMsg({ text: '', type: '' });
@@ -445,7 +444,17 @@ export default function SettingsTab({
     setIsUpdatingPassword(false);
 
     if (error) {
-      setPasswordMsg({ text: error.message, type: 'error' });
+      console.error('Password update error:', error);
+      const isRecentLoginNeeded = /reauth|recent|session/i.test(error.message || '');
+      const isSamePassword = /different from the old password/i.test(error.message || '');
+      setPasswordMsg({
+        text: isSamePassword
+          ? t('err_password_same', 'Your new password must be different from your current password.')
+          : isRecentLoginNeeded
+            ? t('err_password_reauth', 'Please sign out and sign back in before changing your password.')
+            : t('err_password_update', 'Unable to update your password right now. Please try again.'),
+        type: 'error'
+      });
     } else {
       setNewPassword('');
       setConfirmPassword('');
@@ -454,10 +463,6 @@ export default function SettingsTab({
     }
   };
 
-  /**
-- Triggers an atomic hard deletion of all user financial data via Supabase RPC,
-- with reconciliation if an ambiguous network drop occurs after server commit.
-   */
   const handleWipeData = async () => {
     if (!window.confirm(t('confirm_wipe_data', 'WARNING: This will permanently delete all your financial data, expenses, and history. This action cannot be undone. Are you absolutely sure?'))) {
       return;
@@ -465,6 +470,7 @@ export default function SettingsTab({
 
     const originAccount = activeAccountRef.current;
     const originUserId = userId;
+    setDangerState({ account: originAccount, msg: { text: '', type: '' } });
     setIsProcessingDanger(true);
 
     const finalizeClientWipe = (uid) => {
@@ -483,8 +489,16 @@ export default function SettingsTab({
           // Ignore storage cleanup errors
         }
       }
-      alert(t('succ_data_wiped', 'All financial data has been successfully wiped.'));
-      window.location.reload();
+      setDangerState({
+        account: originAccount,
+        msg: {
+          text: t('succ_data_wiped', 'All financial data has been successfully wiped. Refreshing workspace...'),
+          type: 'success'
+        }
+      });
+      setTimeout(() => {
+        window.location.reload();
+      }, 1200);
     };
 
     try {
@@ -498,7 +512,6 @@ export default function SettingsTab({
       if (window.__activeUserId !== uid || activeAccountRef.current !== originAccount) return;
 
       if (error) {
-        // Reconcile whether the RPC committed before an ambiguous network drop
         const [expCheck, adjCheck, bunCheck, sheetCheck, closedCheck] = await Promise.all([
           supabase.from('expenses').select('id').eq('user_id', uid).limit(1),
           supabase.from('asset_adjustments').select('id').eq('user_id', uid).limit(1),
@@ -528,21 +541,39 @@ export default function SettingsTab({
         }
 
         console.error('Atomic wipe failed:', error);
-        alert(t('err_data_wipe_unverified', 'The wipe outcome could not be verified. Reload to check your financial data before trying again.'));
+        setDangerState({
+          account: originAccount,
+          msg: {
+            text: t('err_data_wipe_unverified', 'We could not confirm whether your data was wiped. Please refresh the page to verify before trying again.'),
+            type: 'error'
+          }
+        });
         return;
       }
 
       const receipt = await supabase.from('user_ledger_epochs').select('wipe_request_id').eq('user_id', uid).maybeSingle();
       if (window.__activeUserId !== uid || activeAccountRef.current !== originAccount) return;
       if (receipt.error || receipt.data?.wipe_request_id !== requestId) {
-        alert(t('err_data_wipe_unverified', 'The wipe outcome could not be verified. Reload to check your financial data before trying again.'));
+        setDangerState({
+          account: originAccount,
+          msg: {
+            text: t('err_data_wipe_unverified', 'We could not confirm whether your data was wiped. Please refresh the page to verify before trying again.'),
+            type: 'error'
+          }
+        });
         return;
       }
       finalizeClientWipe(uid);
     } catch (error) {
       if (originUserId && window.__activeUserId === originUserId && activeAccountRef.current === originAccount) {
         console.error(error);
-        alert(t('err_data_wipe', 'An error occurred while wiping data.'));
+        setDangerState({
+          account: originAccount,
+          msg: {
+            text: t('err_data_wipe', 'Something went wrong while clearing your financial data. Please try again.'),
+            type: 'error'
+          }
+        });
       }
     } finally {
       if (isMountedRef.current && activeAccountRef.current === originAccount) {
@@ -551,28 +582,48 @@ export default function SettingsTab({
     }
   };
 
-  /**
-- Triggers permanent account deletion via Supabase RPC.
-   */
   const handleDeleteAccount = async () => {
     if (!window.confirm(t('confirm_delete_account', 'DANGER: This will permanently delete your entire account, profile, and all associated data. You will be logged out immediately. Are you sure?'))) {
       return;
     }
 
+    const originAccount = activeAccountRef.current;
+    setDangerState({ account: originAccount, msg: { text: '', type: '' } });
     setIsProcessingDanger(true);
 
     try {
       const { error } = await supabase.rpc('delete_user_account');
 
       if (error) {
-        console.error(error);
-        alert(t('err_account_delete', 'Failed to delete account. Ensure the database RPC is configured.'));
+        console.error('Delete account failed:', error);
+        const isLastOwner =
+          error.code === '22023' || /last remaining owner/i.test(error.message || '');
+        setDangerState({
+          account: originAccount,
+          msg: {
+            text: isLastOwner
+              ? t('err_account_delete_last_owner', 'The last remaining owner account cannot be deleted. Please assign another owner first.')
+              : t('err_account_delete_friendly', 'We could not delete your account right now. Please try again in a moment or contact Support.'),
+            type: 'error'
+          }
+        });
       } else {
         await supabase.auth.signOut();
         window.location.reload();
       }
+    } catch (err) {
+      console.error('Delete account error:', err);
+      setDangerState({
+        account: originAccount,
+        msg: {
+          text: t('err_account_delete_friendly', 'We could not delete your account right now. Please try again in a moment or contact Support.'),
+          type: 'error'
+        }
+      });
     } finally {
-      setIsProcessingDanger(false);
+      if (isMountedRef.current && activeAccountRef.current === originAccount) {
+        setIsProcessingDanger(false);
+      }
     }
   };
 
@@ -713,7 +764,7 @@ export default function SettingsTab({
                 )}
               </>
             ) : (
-            <>
+              <>
                 {isResumingRefundCancel && (
                   <button
                     type="button"
@@ -754,7 +805,7 @@ export default function SettingsTab({
         </div>
       </div>
 
-      {/* --- Existing Account Preferences --- */}
+      {/* --- Account Preferences --- */}
       <div className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-gray-200 dark:border-zinc-800 shadow-sm space-y-6">
         <h2 className="text-lg font-bold text-gray-900 dark:text-white border-b border-gray-100 dark:border-zinc-800 pb-3">
           {t('account_preferences')}
@@ -775,7 +826,7 @@ export default function SettingsTab({
               </svg>
             ) : (
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.75} stroke="currentColor" className="w-4 h-4 text-emerald-600">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.750-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
               </svg>
             )}
             {theme === 'dark' ? t('light_mode') : t('dark_mode')}
@@ -937,7 +988,7 @@ export default function SettingsTab({
         </div>
       </div>
 
-      {/* --- Phase 9: Security & Authentication --- */}
+      {/* --- Security & Authentication --- */}
       <div className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-gray-200 dark:border-zinc-800 shadow-sm space-y-6">
         <h2 className="text-lg font-bold text-gray-900 dark:text-white border-b border-gray-100 dark:border-zinc-800 pb-3">
           {t('security_auth', 'Security & Authentication')}
@@ -949,7 +1000,7 @@ export default function SettingsTab({
             <p className="text-xs text-gray-500 dark:text-zinc-500 mb-4">{t('password_desc', 'Ensure your account stays secure by using a strong password.')}</p>
 
             {passwordMsg.text && (
-              <div className={`mb-4 p-3 rounded-md text-xs font-semibold ${passwordMsg.type === 'error' ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}`}>
+              <div className={`mb-4 p-3 rounded-md text-xs font-semibold ${passwordMsg.type === 'error' ? 'bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800' : 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'}`}>
                 {passwordMsg.text}
               </div>
             )}
@@ -983,12 +1034,32 @@ export default function SettingsTab({
         </form>
       </div>
 
-      {/* --- Phase 9: Danger Zone --- */}
+      {/* --- Danger Zone --- */}
       <div className="bg-white dark:bg-zinc-900 rounded-md p-6 border border-rose-200 dark:border-rose-900/50 shadow-sm space-y-6 relative overflow-hidden">
         <div className="absolute top-0 left-0 w-1 h-full bg-rose-500"></div>
         <h2 className="text-lg font-bold text-rose-600 dark:text-rose-500 border-b border-gray-100 dark:border-zinc-800 pb-3">
           {t('danger_zone', 'Danger Zone')}
         </h2>
+
+        {dangerMsg.text && (
+          <div
+            role="status"
+            className={`p-3 rounded-md text-xs font-semibold flex items-center justify-between gap-2 ${
+              dangerMsg.type === 'error'
+                ? 'bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800'
+                : 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+            }`}
+          >
+            <span>{dangerMsg.text}</span>
+            <button
+              type="button"
+              onClick={() => setDangerState({ account: activeAccountIdentity, msg: { text: '', type: '' } })}
+              className="font-black px-1 opacity-75 hover:opacity-100"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-gray-100 dark:border-zinc-800">
           <div>
