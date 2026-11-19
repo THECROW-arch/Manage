@@ -455,48 +455,90 @@ export default function SettingsTab({
   };
 
   /**
-- Triggers an atomic hard deletion of all user financial data via Supabase RPC.
+- Triggers an atomic hard deletion of all user financial data via Supabase RPC,
+- with reconciliation if an ambiguous network drop occurs after server commit.
    */
   const handleWipeData = async () => {
     if (!window.confirm(t('confirm_wipe_data', 'WARNING: This will permanently delete all your financial data, expenses, and history. This action cannot be undone. Are you absolutely sure?'))) {
       return;
     }
 
+    const originAccount = activeAccountRef.current;
+    const originUserId = userId;
     setIsProcessingDanger(true);
+
+    const finalizeClientWipe = (uid) => {
+      if (uid) {
+        try {
+          localStorage.removeItem(`managed_monthly_boosts_${uid}`);
+          localStorage.removeItem(`managed_wealth_objectives_${uid}`);
+          localStorage.removeItem(`managed_expense_meta_${uid}`);
+          localStorage.removeItem(`managed_unsynced_expense_meta_${uid}`);
+          localStorage.removeItem(`managed_last_expense_${uid}`);
+          localStorage.removeItem(`managed_last_reminder_${uid}`);
+          localStorage.removeItem(`managed_last_reminder_${uid}_daily`);
+          localStorage.removeItem(`managed_last_reminder_${uid}_monthly`);
+          localStorage.removeItem(`managed_last_reminder_${uid}_yearly`);
+        } catch {
+          // Ignore storage cleanup errors
+        }
+      }
+      alert(t('succ_data_wiped', 'All financial data has been successfully wiped.'));
+      window.location.reload();
+    };
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
+      const uid = session.user.id;
+      if ((originUserId && uid !== originUserId) || window.__activeUserId !== uid) return;
 
       const { error } = await supabase.rpc('wipe_user_financial_data');
+      if (window.__activeUserId !== uid || activeAccountRef.current !== originAccount) return;
+
       if (error) {
+        // Reconcile whether the RPC committed before an ambiguous network drop
+        const [expCheck, adjCheck, bunCheck, sheetCheck, closedCheck] = await Promise.all([
+          supabase.from('expenses').select('id').eq('user_id', uid).limit(1),
+          supabase.from('asset_adjustments').select('id').eq('user_id', uid).limit(1),
+          supabase.from('bundles').select('id').eq('user_id', uid).limit(1),
+          supabase.from('sandbox_sheets').select('id').eq('user_id', uid).limit(1),
+          supabase.from('closed_months').select('id').eq('user_id', uid).limit(1)
+        ]);
+        if (window.__activeUserId !== uid || activeAccountRef.current !== originAccount) return;
+
+        const allVerifiedEmpty =
+          !expCheck.error &&
+          !adjCheck.error &&
+          !bunCheck.error &&
+          !sheetCheck.error &&
+          !closedCheck.error &&
+          expCheck.data.length === 0 &&
+          adjCheck.data.length === 0 &&
+          bunCheck.data.length === 0 &&
+          sheetCheck.data.length === 0 &&
+          closedCheck.data.length === 0;
+
+        if (allVerifiedEmpty) {
+          finalizeClientWipe(uid);
+          return;
+        }
+
         console.error('Atomic wipe failed:', error);
         alert(t('err_data_wipe_partial', 'Failed to wipe financial data. No records were deleted. Please try again.'));
         return;
       }
 
-      const uid = session.user.id;
-      try {
-        localStorage.removeItem(`managed_monthly_boosts_${uid}`);
-        localStorage.removeItem(`managed_wealth_objectives_${uid}`);
-        localStorage.removeItem(`managed_expense_meta_${uid}`);
-        localStorage.removeItem(`managed_unsynced_expense_meta_${uid}`);
-        localStorage.removeItem(`managed_last_expense_${uid}`);
-        localStorage.removeItem(`managed_last_reminder_${uid}`);
-        localStorage.removeItem(`managed_last_reminder_${uid}_daily`);
-        localStorage.removeItem(`managed_last_reminder_${uid}_monthly`);
-        localStorage.removeItem(`managed_last_reminder_${uid}_yearly`);
-      } catch {
-        // Ignore storage cleanup errors
-      }
-
-      alert(t('succ_data_wiped', 'All financial data has been successfully wiped.'));
-      window.location.reload();
+      finalizeClientWipe(uid);
     } catch (error) {
-      console.error(error);
-      alert(t('err_data_wipe', 'An error occurred while wiping data.'));
+      if (originUserId && window.__activeUserId === originUserId && activeAccountRef.current === originAccount) {
+        console.error(error);
+        alert(t('err_data_wipe', 'An error occurred while wiping data.'));
+      }
     } finally {
-      setIsProcessingDanger(false);
+      if (isMountedRef.current && activeAccountRef.current === originAccount) {
+        setIsProcessingDanger(false);
+      }
     }
   };
 

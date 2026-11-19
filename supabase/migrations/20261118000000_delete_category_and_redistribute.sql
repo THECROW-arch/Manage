@@ -10,14 +10,22 @@ AS $$
 DECLARE
   v_uid uuid := auth.uid();
   v_total_categories integer;
-  v_deleted_count integer;
+  v_deleted_pct numeric;
   v_item jsonb;
+  v_target_id uuid;
+  v_old_pct numeric;
+  v_target_pct numeric;
+  v_total_delta numeric := 0;
+  v_remaining_sum numeric := 0;
 BEGIN
   IF v_uid IS NULL THEN
     RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
   END IF;
 
-  -- Transaction-scoped per-user lock (works even if profiles row is absent or RLS-hidden)
+  IF p_redistribution IS NULL OR jsonb_typeof(p_redistribution) <> 'array' THEN
+    RAISE EXCEPTION 'p_redistribution must be a JSON array' USING ERRCODE = '22023';
+  END IF;
+
   PERFORM pg_advisory_xact_lock(hashtext('user_ledger_' || v_uid::text));
 
   SELECT count(*) INTO v_total_categories
@@ -32,21 +40,52 @@ BEGIN
   WHERE category_id = p_category_id AND user_id = v_uid;
 
   DELETE FROM public.categories
-  WHERE id = p_category_id AND user_id = v_uid;
+  WHERE id = p_category_id AND user_id = v_uid
+  RETURNING percentage INTO v_deleted_pct;
 
-  GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
-  IF v_deleted_count = 0 THEN
+  IF NOT FOUND THEN
     RAISE EXCEPTION 'Category not found or unauthorized' USING ERRCODE = 'P0002';
   END IF;
 
-  IF jsonb_typeof(p_redistribution) = 'array' THEN
-    FOR v_item IN SELECT * FROM jsonb_array_elements(p_redistribution)
-    LOOP
-      UPDATE public.categories
-      SET percentage = (v_item->>'percentage')::numeric
-      WHERE id = (v_item->>'id')::uuid
-        AND user_id = v_uid;
-    END LOOP;
+  FOR v_item IN SELECT * FROM jsonb_array_elements(p_redistribution)
+  LOOP
+    IF jsonb_typeof(v_item) <> 'object'
+       OR (v_item->>'id') IS NULL
+       OR (v_item->>'percentage') IS NULL THEN
+      RAISE EXCEPTION 'Each redistribution item must include id and percentage' USING ERRCODE = '22023';
+    END IF;
+
+    v_target_id := (v_item->>'id')::uuid;
+    v_target_pct := (v_item->>'percentage')::numeric;
+
+    IF v_target_pct < 0 OR v_target_pct > 100 THEN
+      RAISE EXCEPTION 'Category percentage must be between 0 and 100' USING ERRCODE = '22023';
+    END IF;
+
+    SELECT percentage INTO v_old_pct
+    FROM public.categories
+    WHERE id = v_target_id AND user_id = v_uid
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Redistribution target category not found or unauthorized' USING ERRCODE = 'P0002';
+    END IF;
+
+    v_total_delta := v_total_delta + (v_target_pct - COALESCE(v_old_pct, 0));
+
+    UPDATE public.categories
+    SET percentage = v_target_pct
+    WHERE id = v_target_id
+      AND user_id = v_uid;
+  END LOOP;
+
+  SELECT COALESCE(sum(percentage), 0) INTO v_remaining_sum
+  FROM public.categories
+  WHERE user_id = v_uid;
+
+  IF ROUND(v_total_delta, 1) <> ROUND(COALESCE(v_deleted_pct, 0), 1)
+     AND ROUND(v_remaining_sum, 1) <> 100.0 THEN
+    RAISE EXCEPTION 'Redistribution percentages must preserve the deleted category allocation' USING ERRCODE = '22023';
   END IF;
 END;
 $$;

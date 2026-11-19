@@ -4,9 +4,9 @@ import { processAIAgentTurn } from '../utils/aiAgentEngine';
 import { getLocalTranscriber, mergeAndResampleTo16kHz } from '../utils/voiceTranscriber';
 
 /**
- * Builds the localized initial welcome message using i18n translation keys.
- * @param {Function} t - i18next translation function.
- * @returns {{id: string, role: string, text: string, suggestions: string[]}} Welcome message object.
+- Builds the localized initial welcome message using i18n translation keys.
+- @param {Function} t - i18next translation function.
+- @returns {{id: string, role: string, text: string, suggestions: string[]}} Welcome message object.
  */
 function buildWelcomeMessage(t) {
     return {
@@ -23,12 +23,12 @@ function buildWelcomeMessage(t) {
 }
 
 /**
- * Returns the account-scoped localStorage key for AI chat history.
+- Returns the account-scoped localStorage key for AI chat history.
  */
 const getChatStorageKey = (uid) => (uid ? `managed_ai_chat_history_${uid}` : null);
 
 /**
- * Loads the saved AI conversation history for a specific authenticated user ID.
+- Loads the saved AI conversation history for a specific authenticated user ID.
  */
 const loadAccountChatHistory = (uid, t) => {
     const fallbackWelcome = buildWelcomeMessage(t);
@@ -51,6 +51,7 @@ export default function AIAssistantDrawer(props) {
     const { t, i18n } = useTranslation();
     const activeLang = (i18n.resolvedLanguage || i18n.language || 'en').slice(0, 2).toLowerCase();
     const isRtl = activeLang === 'ar';
+    const activeAccount = userId || null;
 
     const [isOpen, setIsOpen] = useState(false);
     const [input, setInput] = useState('');
@@ -59,7 +60,31 @@ export default function AIAssistantDrawer(props) {
     const [isRecording, setIsRecording] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
 
-    const [messages, setMessages] = useState(() => loadAccountChatHistory(userId, t));
+    // Account-scoped chat state so switching accounts never leaks or overwrites another user's history
+    const [chatState, setChatState] = useState(() => ({
+        account: activeAccount,
+        items: loadAccountChatHistory(activeAccount, t)
+    }));
+
+    const messages =
+        chatState.account === activeAccount
+            ? chatState.items
+            : loadAccountChatHistory(activeAccount, t);
+
+    const updateAccountMessages = useCallback(
+        (targetAccount, updater) => {
+            setChatState((prev) => {
+                const baseItems =
+                    prev.account === targetAccount
+                        ? prev.items
+                        : loadAccountChatHistory(targetAccount, t);
+                const nextItems = typeof updater === 'function' ? updater(baseItems) : updater;
+                return { account: targetAccount, items: nextItems };
+            });
+        },
+        [t]
+    );
+
     const msgIdCounterRef = useRef(
         messages.reduce((max, msg) => {
             const match = typeof msg?.id === 'string' ? /^[uae]_(\d+)$/.exec(msg.id) : null;
@@ -105,14 +130,15 @@ export default function AIAssistantDrawer(props) {
     }, []);
 
     useEffect(() => {
-        const key = getChatStorageKey(userId);
+        if (chatState.account !== activeAccount) return;
+        const key = getChatStorageKey(activeAccount);
         if (!key) return;
         try {
-            localStorage.setItem(key, JSON.stringify(messages.slice(-40)));
+            localStorage.setItem(key, JSON.stringify(chatState.items.slice(-40)));
         } catch (e) {
             console.warn('Failed to persist AI chat history:', e);
         }
-    }, [messages, userId]);
+    }, [chatState, activeAccount]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -145,18 +171,25 @@ export default function AIAssistantDrawer(props) {
 
     const handleSendPrompt = async (promptText) => {
         const cleanPrompt = (promptText ?? input).trim();
+        const originUserId = latestPropsRef.current.userId || null;
         if (!cleanPrompt || isProcessing) return;
 
         const nextUserMsgId = `u_${++msgIdCounterRef.current}`;
         const userMsg = { id: nextUserMsgId, role: 'user', text: cleanPrompt };
-        setMessages(prev => [...prev, userMsg]);
+        updateAccountMessages(originUserId, prev => [...prev, userMsg]);
         if (promptText === undefined) setInput('');
         setIsProcessing(true);
 
+        const isSameActiveUser = () =>
+            (latestPropsRef.current.userId || null) === originUserId &&
+            (!originUserId || window.__activeUserId === originUserId);
+
         try {
             const response = await processAIAgentTurn(cleanPrompt, latestPropsRef.current);
+            if (!isSameActiveUser()) return;
+
             const nextAiMsgId = `a_${++msgIdCounterRef.current}`;
-            setMessages(prev => [
+            updateAccountMessages(originUserId, prev => [
                 ...prev,
                 {
                     id: nextAiMsgId,
@@ -167,9 +200,10 @@ export default function AIAssistantDrawer(props) {
                 }
             ]);
         } catch (err) {
+            if (!isSameActiveUser()) return;
             console.error('AI Assistant error:', err);
             const nextErrMsgId = `e_${++msgIdCounterRef.current}`;
-            setMessages(prev => [
+            updateAccountMessages(originUserId, prev => [
                 ...prev,
                 {
                     id: nextErrMsgId,
@@ -178,12 +212,18 @@ export default function AIAssistantDrawer(props) {
                 }
             ]);
         } finally {
-            setIsProcessing(false);
+            if (isSameActiveUser()) {
+                setIsProcessing(false);
+            }
         }
     };
 
     const toggleAssistantVoice = async () => {
         if (isTranscribing) return;
+        const originUserId = latestPropsRef.current.userId || null;
+        const isSameActiveUser = () =>
+            (latestPropsRef.current.userId || null) === originUserId &&
+            (!originUserId || window.__activeUserId === originUserId);
 
         if (isStartingMicRef.current || isStartingMic) {
             releaseMic();
@@ -207,19 +247,27 @@ export default function AIAssistantDrawer(props) {
 
                 setIsTranscribing(true);
                 const transcriber = await getLocalTranscriber();
+                if (!isSameActiveUser()) return;
+
                 const output = await transcriber(audioData, {
                     temperature: 0,
                     chunk_length_s: 30,
                     stride_length_s: 5
                 });
+                if (!isSameActiveUser()) return;
+
                 const transcript = (output?.text || '').trim();
                 if (transcript) {
                     await handleSendPrompt(transcript);
                 }
             } catch (err) {
-                console.error('Assistant voice error:', err);
+                if (isSameActiveUser()) {
+                    console.error('Assistant voice error:', err);
+                }
             } finally {
-                setIsTranscribing(false);
+                if (isSameActiveUser()) {
+                    setIsTranscribing(false);
+                }
             }
             return;
         }
@@ -234,7 +282,7 @@ export default function AIAssistantDrawer(props) {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-            if (micAttemptRef.current !== attemptId || !isStartingMicRef.current) {
+            if (micAttemptRef.current !== attemptId || !isStartingMicRef.current || !isSameActiveUser()) {
                 stream.getTracks().forEach(track => {
                     try { track.stop(); } catch { /* ignore */ }
                 });
@@ -265,7 +313,7 @@ export default function AIAssistantDrawer(props) {
             setIsRecording(true);
         } catch (err) {
             console.error('Mic start failed:', err);
-            if (micAttemptRef.current === attemptId) {
+            if (micAttemptRef.current === attemptId && isSameActiveUser()) {
                 releaseMic();
                 setIsStartingMic(false);
                 setIsRecording(false);
@@ -332,7 +380,7 @@ export default function AIAssistantDrawer(props) {
                         <div className="flex items-center gap-2">
                             <button
                                 type="button"
-                                onClick={() => setMessages([buildWelcomeMessage(t)])}
+                                onClick={() => updateAccountMessages(activeAccount, [buildWelcomeMessage(t)])}
                                 title={t('ai_clear_chat_title')}
                                 className="px-2 py-0.5 rounded bg-emerald-800 hover:bg-emerald-900 text-[10px] font-bold text-emerald-100 transition-colors"
                             >
