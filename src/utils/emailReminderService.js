@@ -144,7 +144,16 @@ export async function sendRecurringExpenseReminderEmail({
             }
         }
 
-        const structuredExpenses = pendingExpenses.slice(0, 50).map((exp) => ({
+        if (pendingExpenses.length > 250) {
+            return {
+                ok: false,
+                status: 'batch_too_large',
+                retryable: false,
+                error: 'Cannot send reminder: more than 250 recurring expenses in a single cycle.'
+            };
+        }
+
+        const structuredExpenses = pendingExpenses.map((exp) => ({
             name: String(exp.name || '').trim().slice(0, 120),
             cost: Number(exp.cost) || 0,
             category: String(exp.category || 'Category').trim().slice(0, 60),

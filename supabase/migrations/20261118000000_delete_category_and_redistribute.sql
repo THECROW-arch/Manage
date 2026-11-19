@@ -17,8 +17,8 @@ BEGIN
     RAISE EXCEPTION 'Not authenticated' USING ERRCODE = '42501';
   END IF;
 
-  -- Serialize concurrent category deletions for this user
-  PERFORM 1 FROM public.profiles WHERE user_id = v_uid FOR UPDATE;
+  -- Transaction-scoped per-user lock (works even if profiles row is absent or RLS-hidden)
+  PERFORM pg_advisory_xact_lock(hashtext('user_ledger_' || v_uid::text));
 
   SELECT count(*) INTO v_total_categories
   FROM public.categories

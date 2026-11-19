@@ -14,9 +14,9 @@ const corsHeaders = {
 };
 
 const VALID_CYCLES = new Set(["daily", "monthly", "yearly"]);
-const MAX_EXPENSE_ITEMS = 50;
+const MAX_EXPENSE_ITEMS = 250;
 const MAX_REMINDERS_PER_HOUR = 6;
-const STALE_CLAIM_MS = 2 * 60 * 1000;
+const IN_FLIGHT_RECONCILE_WAIT_MS = 30 * 1000;
 
 interface StructuredExpenseItem {
   name: string;
@@ -270,7 +270,7 @@ Deno.serve(async (req: Request) => {
     const rawExpenses = payload.pendingExpenses;
     if (!Array.isArray(rawExpenses) || rawExpenses.length === 0 || rawExpenses.length > MAX_EXPENSE_ITEMS) {
       return new Response(
-        JSON.stringify({ error: "pendingExpenses must contain between 1 and 50 items." }),
+        JSON.stringify({ error: `pendingExpenses must contain between 1 and ${MAX_EXPENSE_ITEMS} items.` }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -307,7 +307,7 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // 1. Load user profile preferences & reminder state via service_role
+    // 1. Load user profile preferences & reminder state
     const profileRes = await fetch(
       `${supabaseUrl}/rest/v1/profiles?user_id=eq.${encodeURIComponent(userId)}&select=username,currency,email_reminders_enabled,last_reminder_period`,
       {
@@ -347,34 +347,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // 2. Enforce per-user hourly rate limit in email_reminder_queue
-    const oneHourAgoIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const rateRes = await fetch(
-      `${supabaseUrl}/rest/v1/email_reminder_queue?user_id=eq.${encodeURIComponent(userId)}&status=in.(processing,sent)&created_at=gte.${encodeURIComponent(oneHourAgoIso)}&select=id`,
-      {
-        headers: {
-          apikey: serviceRoleKey,
-          Authorization: `Bearer ${serviceRoleKey}`
-        }
-      }
-    );
-
-    if (!rateRes.ok) {
-      return new Response(
-        JSON.stringify({ error: "Could not verify reminder rate limit state." }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const recentRows = await rateRes.json().catch(() => []);
-    if (Array.isArray(recentRows) && recentRows.length >= MAX_REMINDERS_PER_HOUR) {
-      return new Response(
-        JSON.stringify({ error: "Hourly reminder email limit reached. Please try again later." }),
-        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // 3. Render HTML & plain-text email strictly on the server
+    // 2. Render HTML & plain-text email strictly on the server
     const displayUsername = stripControlChars(
       String(profile?.username || payload.username || authenticatedEmail.split("@")[0])
     ).slice(0, 40) || "Member";
@@ -383,7 +356,7 @@ Deno.serve(async (req: Request) => {
         ? stripControlChars(profile.currency).slice(0, 8)
         : "$";
 
-    const { subject, textBody, htmlBody } = renderServerReminderTemplate({
+    const rendered = renderServerReminderTemplate({
       username: displayUsername,
       periodKey,
       recurrenceCycle,
@@ -391,83 +364,78 @@ Deno.serve(async (req: Request) => {
       currencySymbol
     });
 
-    // 4. Atomically claim (user_id, period_key) in email_reminder_queue before calling Resend
-    const claimRes = await fetch(`${supabaseUrl}/rest/v1/email_reminder_queue`, {
+    // 3. Atomically check hourly quota + claim (user_id, period_key) in one DB transaction
+    const claimRpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/claim_reminder_delivery`, {
       method: "POST",
       headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation"
+        apikey: supabaseAnonKey,
+        Authorization: authHeader,
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        user_id: userId,
-        recipient_email: authUser.email,
-        period_key: periodKey,
-        subject,
-        html_body: htmlBody,
-        text_body: textBody,
-        expense_count: sanitizedItems.length,
-        status: "processing"
+        p_recipient_email: authUser.email,
+        p_period_key: periodKey,
+        p_subject: rendered.subject,
+        p_html_body: rendered.htmlBody,
+        p_text_body: rendered.textBody,
+        p_expense_count: sanitizedItems.length,
+        p_max_per_hour: MAX_REMINDERS_PER_HOUR
       })
     });
 
-    if (claimRes.status === 409) {
-      const existingCheck = await fetch(
-        `${supabaseUrl}/rest/v1/email_reminder_queue?user_id=eq.${encodeURIComponent(userId)}&period_key=eq.${encodeURIComponent(periodKey)}&status=in.(processing,sent)&select=id,status,created_at`,
-        {
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`
-          }
-        }
-      );
-      const existingRows = existingCheck.ok ? await existingCheck.json().catch(() => []) : [];
-      const activeRow = Array.isArray(existingRows) ? existingRows[0] : null;
-
-      if (activeRow?.status === "sent") {
-        const updatedMap = { ...currentPeriodMap, [recurrenceCycle]: periodKey };
-        return new Response(
-          JSON.stringify({
-            ok: true,
-            alreadySent: true,
-            serializedMap: JSON.stringify(updatedMap)
-          }),
-          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      // Recover stale abandoned `processing` lock older than 2 minutes
-      const createdAtMs = activeRow?.created_at ? Date.parse(String(activeRow.created_at)) : NaN;
-      if (activeRow?.id && Number.isFinite(createdAtMs) && Date.now() - createdAtMs > STALE_CLAIM_MS) {
-        await fetch(
-          `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(String(activeRow.id))}&status=eq.processing`,
-          {
-            method: "DELETE",
-            headers: {
-              apikey: serviceRoleKey,
-              Authorization: `Bearer ${serviceRoleKey}`
-            }
-          }
-        );
-      }
-
+    if (!claimRpcRes.ok) {
       return new Response(
-        JSON.stringify({ error: "A reminder for this period is already being processed." }),
-        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    if (!claimRes.ok) {
-      return new Response(
-        JSON.stringify({ error: "Could not initialize reminder delivery queue." }),
+        JSON.stringify({ error: "Could not initialize atomic reminder delivery claim." }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const claimedRows = await claimRes.json().catch(() => []);
-    const claimedRow = Array.isArray(claimedRows) ? claimedRows[0] : null;
-    const queueRowId = claimedRow?.id ? String(claimedRow.id) : "";
+    const claimData = (await claimRpcRes.json().catch(() => null)) as Record<string, unknown> | null;
+    const claimStatus = String(claimData?.status || "");
+
+    if (claimStatus === "already_sent") {
+      const updatedMap = { ...currentPeriodMap, [recurrenceCycle]: periodKey };
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          alreadySent: true,
+          serializedMap: JSON.stringify(updatedMap)
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (claimStatus === "rate_limited") {
+      return new Response(
+        JSON.stringify({ error: "Hourly reminder email limit reached. Please try again later." }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    let queueRowId = "";
+    let subjectToSend = rendered.subject;
+    let htmlToSend = rendered.htmlBody;
+    let textToSend = rendered.textBody;
+
+    if (claimStatus === "in_progress") {
+      const createdAtMs = claimData?.created_at ? Date.parse(String(claimData.created_at)) : NaN;
+      const ageMs = Number.isFinite(createdAtMs) ? Date.now() - createdAtMs : 0;
+
+      if (ageMs < IN_FLIGHT_RECONCILE_WAIT_MS) {
+        return new Response(
+          JSON.stringify({ error: "A reminder for this period is already being processed." }),
+          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Preserve the existing claim and reconcile using the original stored payload & stable idempotency key
+      queueRowId = String(claimData?.id || "");
+      subjectToSend = String(claimData?.subject || rendered.subject);
+      htmlToSend = String(claimData?.html_body || rendered.htmlBody);
+      textToSend = String(claimData?.text_body || rendered.textBody);
+    } else if (claimStatus === "claimed") {
+      queueRowId = String(claimData?.id || "");
+    }
 
     if (!queueRowId) {
       return new Response(
@@ -476,13 +444,13 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // 5. Send via Resend
+    // 4. Send via Resend with deterministic Idempotency-Key so retries never send duplicate emails
     const resendApiKey = Deno.env.get("RESEND_API_KEY");
     const fromAddress = Deno.env.get("REMINDER_FROM_EMAIL") || "MANAGED <onboarding@resend.dev>";
 
     if (!resendApiKey) {
       await fetch(
-        `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}`,
+        `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}&status=eq.processing`,
         {
           method: "DELETE",
           headers: {
@@ -497,35 +465,40 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const idempotencyKey = `reminder_${userId}_${sanitizeTagValue(periodKey)}`;
     const resendResponse = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${resendApiKey}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey
       },
       signal: AbortSignal.timeout(15000),
       body: JSON.stringify({
         from: fromAddress,
         to: [authUser.email],
-        subject,
-        html: htmlBody,
-        text: textBody,
+        subject: subjectToSend,
+        html: htmlToSend,
+        text: textToSend,
         tags: [{ name: "period", value: sanitizeTagValue(periodKey) }]
       })
     }).catch(() => null);
 
     if (!resendResponse || !resendResponse.ok) {
-      // Release the processing lock so a retry can attempt delivery cleanly
-      await fetch(
-        `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}&status=eq.processing`,
-        {
-          method: "DELETE",
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`
+      // Only release the claim if Resend explicitly rejected with 4xx (not delivered).
+      // For network timeouts or 5xx, keep the 'processing' claim intact so retries reconcile via Idempotency-Key.
+      if (resendResponse && resendResponse.status >= 400 && resendResponse.status < 500) {
+        await fetch(
+          `${supabaseUrl}/rest/v1/email_reminder_queue?id=eq.${encodeURIComponent(queueRowId)}&status=eq.processing`,
+          {
+            method: "DELETE",
+            headers: {
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${serviceRoleKey}`
+            }
           }
-        }
-      );
+        );
+      }
       return new Response(
         JSON.stringify({ error: "Email delivery provider failed to process the reminder request." }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -534,7 +507,7 @@ Deno.serve(async (req: Request) => {
 
     const resultData = await resendResponse.json().catch(() => ({}));
 
-    // 6. Mark queue row as 'sent' and persist updated period map on profile (fail closed if persistence fails)
+    // 5. Mark queue row as 'sent' and persist updated period map on profile (fail closed)
     const updatedMap = { ...currentPeriodMap, [recurrenceCycle]: periodKey };
     const serializedMap = JSON.stringify(updatedMap);
 
@@ -566,10 +539,6 @@ Deno.serve(async (req: Request) => {
     ]);
 
     if (!queuePatchRes.ok || !profilePatchRes.ok) {
-      console.error("Failed to persist post-send reminder state:", {
-        queueStatus: queuePatchRes.status,
-        profileStatus: profilePatchRes.status
-      });
       return new Response(
         JSON.stringify({
           error: "Reminder email was dispatched, but saving delivery confirmation state failed."

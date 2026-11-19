@@ -2184,6 +2184,7 @@ export default function App() {
 
   const handleAddOccasionItem = async (bundleId) => {
     if (isReadOnly) return;
+    const originUserId = session?.user?.id;
     const input = occasionItemInputs[bundleId] || { name: '', allocations: {} };
     if (!input.name.trim()) {
       setAlertMsg(t('err_item_name_req'));
@@ -2228,35 +2229,81 @@ export default function App() {
     };
 
     const updatedItems = [...currentItems, newItem];
-    setBundles(bundles.map(b => b.id === bundleId ? { ...b, items: updatedItems } : b));
-    setOccasionItemInputs({ ...occasionItemInputs, [bundleId]: { name: '', allocations: {} } });
+    setBundles(prev => prev.map(b => b.id === bundleId ? { ...b, items: updatedItems } : b));
+    setOccasionItemInputs(prev => ({ ...prev, [bundleId]: { name: '', allocations: {} } }));
 
     try {
-      const { error } = await supabase.from('bundles').update({ items: updatedItems }).eq('id', bundleId);
+      const { data: updatedRows, error } = await supabase
+        .from('bundles')
+        .update({ items: updatedItems })
+        .eq('id', bundleId)
+        .eq('status', 'open')
+        .select();
+
+      if (!originUserId || window.__activeUserId !== originUserId) return;
       if (error) throw error;
+
+      if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
+        const { data: freshBundle } = await supabase
+          .from('bundles')
+          .select('*')
+          .eq('id', bundleId)
+          .maybeSingle();
+        if (window.__activeUserId === originUserId && freshBundle) {
+          setBundles(prev => prev.map(b => b.id === bundleId ? freshBundle : b));
+        }
+        setAlertMsg(t('err_occasion_already_locked', 'This special occasion was already finalized and cannot be modified.'));
+      }
     } catch {
-      setAlertMsg(t('err_db_save_occasion_item'));
+      if (window.__activeUserId === originUserId) {
+        setAlertMsg(t('err_db_save_occasion_item'));
+      }
     }
   };
 
   const handleDeleteOccasionItem = async (bundleId, itemId) => {
     if (isReadOnly) return;
+    const originUserId = session?.user?.id;
     const targetBundle = bundles.find(b => b.id === bundleId);
     if (!targetBundle || targetBundle.status === 'locked') return;
 
     const updatedItems = (targetBundle.items || []).filter(i => i.id !== itemId);
-    setBundles(bundles.map(b => b.id === bundleId ? { ...b, items: updatedItems } : b));
+    setBundles(prev => prev.map(b => b.id === bundleId ? { ...b, items: updatedItems } : b));
 
     try {
-      const { error } = await supabase.from('bundles').update({ items: updatedItems }).eq('id', bundleId);
+      const { data: updatedRows, error } = await supabase
+        .from('bundles')
+        .update({ items: updatedItems })
+        .eq('id', bundleId)
+        .eq('status', 'open')
+        .select();
+
+      if (!originUserId || window.__activeUserId !== originUserId) return;
       if (error) throw error;
+
+      if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
+        const { data: freshBundle } = await supabase
+          .from('bundles')
+          .select('*')
+          .eq('id', bundleId)
+          .maybeSingle();
+        if (window.__activeUserId === originUserId && freshBundle) {
+          setBundles(prev => prev.map(b => b.id === bundleId ? freshBundle : b));
+        }
+        setAlertMsg(t('err_occasion_already_locked', 'This special occasion was already finalized and cannot be modified.'));
+      }
     } catch {
-      setAlertMsg(t('err_remove_item'));
+      if (window.__activeUserId === originUserId) {
+        setAlertMsg(t('err_remove_item'));
+      }
     }
   };
 
   const handleLockAndFinalizeBundle = async (bundle) => {
     if (isReadOnly || bundle.status === 'locked') return;
+    const originUserId = session?.user?.id;
+    if (!originUserId) return;
+
     const items = Array.isArray(bundle.items) ? bundle.items : [];
     const totalSpentInBundle = items.reduce((s, i) => s + parseFloat(i.cost), 0);
 
@@ -2295,7 +2342,7 @@ export default function App() {
 
         if (absorbedByCurrentMonth > 0) {
           newBundleTransactions.push({
-            user_id: session.user.id,
+            user_id: originUserId,
             name: ` ${bundle.name} (${items.length} items • Monthly ${catObj.name})`,
             cost: absorbedByCurrentMonth,
             category_id: catId,
@@ -2309,7 +2356,7 @@ export default function App() {
 
         if (pulledFromLifetimeVault > 0) {
           newPortfolioWithdrawals.push({
-            user_id: session.user.id,
+            user_id: originUserId,
             category_id: catId,
             amount: -pulledFromLifetimeVault,
             adjustment_date: `${bundle.month}-${getToday().slice(8, 10)}`,
@@ -2318,7 +2365,7 @@ export default function App() {
         }
       } else {
         newBundleTransactions.push({
-          user_id: session.user.id,
+          user_id: originUserId,
           name: Object.keys(finalCategoryTotals).length > 1
             ? ` ${bundle.name} (${items.length} items • ${catObj?.name || 'Split'})`
             : ` ${bundle.name} (${items.length} items)`,
@@ -2337,8 +2384,11 @@ export default function App() {
       const { data: rpcResult, error: rpcError } = await supabase.rpc('finalize_bundle', {
         p_bundle_id: bundle.id,
         p_expense_inserts: newBundleTransactions,
-        p_adjustment_inserts: newPortfolioWithdrawals
+        p_adjustment_inserts: newPortfolioWithdrawals,
+        p_expected_items: items
       });
+
+      if (window.__activeUserId !== originUserId) return;
       if (rpcError) throw rpcError;
 
       const insertedExps = Array.isArray(rpcResult?.inserted_expenses) ? rpcResult.inserted_expenses : [];
@@ -2349,7 +2399,33 @@ export default function App() {
       setBundles(current => current.map(b => b.id === bundle.id ? { ...b, status: 'locked' } : b));
       setAlertMsg(t('succ_bundle_locked', { name: bundle.name }));
     } catch (error) {
-      setAlertMsg(t('err_locking_occasion', { error: error.message || 'Database error' }));
+      if (window.__activeUserId !== originUserId) return;
+
+      // Refresh bundle & ledger rows so an ambiguous network drop or P0002 conflict reconciles UI state
+      const { data: freshBundle } = await supabase
+        .from('bundles')
+        .select('*')
+        .eq('id', bundle.id)
+        .maybeSingle();
+
+      if (window.__activeUserId !== originUserId) return;
+
+      if (freshBundle) {
+        setBundles(current => current.map(b => b.id === bundle.id ? freshBundle : b));
+        if (freshBundle.status === 'locked') {
+          const [expRes, adjRes] = await Promise.all([
+            supabase.from('expenses').select('*').eq('user_id', originUserId).order('expense_date', { ascending: false }),
+            supabase.from('asset_adjustments').select('*').eq('user_id', originUserId).order('adjustment_date', { ascending: false })
+          ]);
+          if (window.__activeUserId !== originUserId) return;
+          if (!expRes.error && Array.isArray(expRes.data)) setExpenses(expRes.data);
+          if (!adjRes.error && Array.isArray(adjRes.data)) setAssetAdjustments(adjRes.data);
+          setAlertMsg(t('succ_bundle_locked', { name: freshBundle.name || bundle.name }));
+          return;
+        }
+      }
+
+      setAlertMsg(t('err_locking_occasion', { error: error.message || 'Bundle items changed or database error. Please retry.' }));
     }
   };
 
